@@ -1,0 +1,88 @@
+// Kick Pusher event helpers, ported from Friendly Chat.
+(function (FCM) {
+  'use strict';
+
+  // These take whatever arrived on the socket, so each one coerces rather than
+  // relying on a default parameter: a default only covers `undefined`, and a
+  // Pusher frame can carry a literal null.
+  FCM.isPusherProtocolEvent = function (eventName) {
+    const name = String(eventName || '');
+    return name.startsWith('pusher:') || name.startsWith('pusher_internal:');
+  };
+
+  // Kick namespaces its events "App\Events\NameEvent".
+  function kickEventShortName(eventName) {
+    return String(eventName || '').replace(/^App\\Events\\/, '').replace(/Event$/, '');
+  }
+
+  FCM.kickBadgeClass = function (badges = []) {
+    if (!Array.isArray(badges) || !badges.length) return null;
+    const types = badges.map((b) => String((b && b.type) || '').toLowerCase());
+    if (types.includes('broadcaster') || types.includes('moderator')) return 'mod';
+    if (types.includes('vip')) return 'vip';
+    if (types.includes('subscriber') || types.includes('founder')) return 'sub';
+    return null;
+  };
+
+  FCM.formatKickEventSummary = function (eventName, rawPayload) {
+    // A default parameter only covers `undefined`, and Pusher can deliver a
+    // data field of literal "null", which parses to null and would otherwise
+    // throw on the first property read.
+    const payload = (rawPayload && typeof rawPayload === 'object') ? rawPayload : {};
+    const shortName = kickEventShortName(eventName);
+    const sender = FCM.firstPresent(
+      payload.gifter_username,
+      payload.sender && payload.sender.username,
+      payload.username,
+      FCM.usernameFrom(payload.user),
+      payload.banned_by && payload.banned_by.username,
+      payload.host_username
+    ) || 'Someone';
+
+    const giftedUsernames = Array.isArray(payload.gifted_usernames) ? payload.gifted_usernames : [];
+    const luckyUsernames = Array.isArray(payload.usernames) ? payload.usernames : [];
+    const recipients = Array.isArray(payload.recipients) ? payload.recipients : [];
+    const count = FCM.firstPresent(
+      giftedUsernames.length || null,
+      luckyUsernames.length || null,
+      recipients.length || null,
+      payload.gifted_quantity, payload.gift_count, payload.quantity,
+      payload.total, payload.count, payload.amount
+    );
+    const recipient = FCM.firstPresent(
+      FCM.usernameFrom(payload.receiver),
+      FCM.usernameFrom(payload.recipient),
+      FCM.usernameFrom(payload.target),
+      FCM.usernameFrom(recipients[0]),
+      giftedUsernames[0],
+      luckyUsernames[0]
+    );
+
+    const map = {
+      'App\\Events\\SubscriptionEvent': `${sender} subscribed.`,
+      'App\\Events\\ChannelSubscriptionEvent': `${sender} subscribed.`,
+      'App\\Events\\ResubscriptionEvent': `${sender} resubscribed.`,
+      'App\\Events\\GiftedSubscriptionsEvent': `${sender} gifted ${count || '?'} subs${recipient && count === 1 ? ` to ${recipient}` : ''}.`,
+      'App\\Events\\SubscriptionGiftedEvent': `${sender} gifted a sub${recipient ? ` to ${recipient}` : ''}.`,
+      'App\\Events\\LuckyUsersWhoGotGiftSubscriptionsEvent': `${sender} gifted ${count || '?'} subs${luckyUsernames.length ? ` to ${luckyUsernames.slice(0, 3).join(', ')}${luckyUsernames.length > 3 ? ', and more' : ''}` : ''}.`,
+      'App\\Events\\ChatroomClearEvent': 'Chat was cleared by a moderator.',
+      'App\\Events\\StreamHostEvent': `${sender} is hosting the channel.`,
+      'App\\Events\\HypeTrainStartedEvent': `${sender} started a Hype Train!`,
+      'App\\Events\\HypeTrainProgressEvent': `Hype Train progress${count ? `: ${count}` : ''}.`,
+      'App\\Events\\HypeTrainEndedEvent': 'Hype Train ended.',
+      'App\\Events\\BitsEvent': `${sender} cheered${count ? ` ${count} bits` : ''}.`,
+      'App\\Events\\ChannelPointsRedeemedEvent': `${sender} redeemed channel points.`,
+      'App\\Events\\PollUpdateEvent': 'Poll updated.',
+    };
+    if (map[eventName]) return map[eventName];
+
+    if (shortName.includes('Gift') && shortName.includes('Subscription')) {
+      return `${sender} gifted ${count || 1} sub${Number(count) === 1 ? '' : 's'}${recipient && Number(count) === 1 ? ` to ${recipient}` : ''}.`;
+    }
+    if (shortName.includes('Subscription')) return `${sender} subscribed.`;
+
+    // Housekeeping events are not worth a row in the feed.
+    if (/Updated|Statistic|Leaderboard|Livestream|Pinned|Deleted|Banned/i.test(shortName)) return '';
+    return `${sender} triggered ${shortName}.`;
+  };
+})(self.FCM);

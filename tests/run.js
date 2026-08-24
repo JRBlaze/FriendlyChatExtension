@@ -1,0 +1,2509 @@
+// Offline test suite. Nothing here touches the network: every platform
+// response is stubbed, so the parsers, the renderer and the cross-platform
+// matcher are all driven exactly as the extension drives them.
+//
+//   node tests/run.js            run everything
+//   node tests/run.js irc        run one suite (irc, kick, render, discovery, sites)
+
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
+
+const ROOT = path.join(__dirname, '..');
+
+let passed = 0;
+let failed = 0;
+const failures = [];
+
+function eq(actual, expected, label) {
+  const a = JSON.stringify(actual);
+  const b = JSON.stringify(expected);
+  if (a === b) { passed++; return; }
+  failed++;
+  failures.push(`${label}\n      expected: ${b}\n      actual:   ${a}`);
+}
+
+function ok(value, label) {
+  if (value) { passed++; return; }
+  failed++;
+  failures.push(`${label}\n      expected truthy, got: ${JSON.stringify(value)}`);
+}
+
+function contains(haystack, needle, label) {
+  if (String(haystack).includes(needle)) { passed++; return; }
+  failed++;
+  failures.push(`${label}\n      expected to contain: ${needle}\n      actual: ${haystack}`);
+}
+
+function missing(haystack, needle, label) {
+  if (!String(haystack).includes(needle)) { passed++; return; }
+  failed++;
+  failures.push(`${label}\n      expected NOT to contain: ${needle}\n      actual: ${haystack}`);
+}
+
+// ── Sandbox ───────────────────────────────────────────────────────────────────
+
+function makeSandbox(extra = {}) {
+  const sandbox = {
+    console,
+    setTimeout,
+    clearTimeout,
+    setInterval,
+    clearInterval,
+    URL,
+    URLSearchParams,
+    WebSocket: function () {},
+    ...extra,
+  };
+  sandbox.self = sandbox;
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+  return sandbox;
+}
+
+function load(sandbox, ...relPaths) {
+  relPaths.forEach((rel) => {
+    const code = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+    vm.runInContext(code, sandbox, { filename: rel });
+  });
+  return sandbox.FCM;
+}
+
+const SHARED = [
+  'src/shared/namespace.js',
+  'src/shared/constants.js',
+  'src/shared/util.js',
+  'src/shared/irc.js',
+  'src/shared/emote-parsers.js',
+  'src/shared/kick-events.js',
+];
+
+// ── Suites ────────────────────────────────────────────────────────────────────
+
+const suites = {};
+
+suites.irc = function () {
+  const FCM = load(makeSandbox(), ...SHARED);
+
+  const line = '@badge-info=subscriber/13;badges=subscriber/12,premium/1;color=#1E90FF;'
+    + 'display-name=SomeUser;emotes=25:0-4/1902:12-16;id=abc-123;mod=0;room-id=71092938;'
+    + 'subscriber=1;tmi-sent-ts=1700000000000;user-id=555 '
+    + ':someuser!someuser@someuser.tmi.twitch.tv PRIVMSG #xqc :Kappa hello Keepo there';
+
+  const parsed = FCM.parseIrcLine(line);
+  eq(parsed.command, 'PRIVMSG', 'irc: command is read from structure');
+  eq(parsed.params[0], '#xqc', 'irc: channel param');
+  eq(parsed.params[1], 'Kappa hello Keepo there', 'irc: trailing param keeps its spaces');
+  eq(parsed.tags['display-name'], 'SomeUser', 'irc: display-name tag');
+  eq(parsed.tags['tmi-sent-ts'], '1700000000000', 'irc: timestamp tag');
+  eq(FCM.ircNick(parsed.prefix), 'someuser', 'irc: nick from prefix');
+
+  // A message that merely contains a command word must not be mistaken for one.
+  const trap = FCM.parseIrcLine(
+    '@display-name=Troll :troll!troll@troll.tmi.twitch.tv PRIVMSG #xqc :USERSTATE lol'
+  );
+  eq(trap.command, 'PRIVMSG', 'irc: USERSTATE inside a message is still a PRIVMSG');
+
+  // IRCv3 tag escaping.
+  const escaped = FCM.parseIrcLine('@system-msg=hello\\sworld\\:x :tmi.twitch.tv USERNOTICE #c');
+  eq(escaped.tags['system-msg'], 'hello world;x', 'irc: tag values are unescaped');
+
+  const emoteMap = FCM.parseTwitchEmoteMap('25:0-4/1902:12-16');
+  eq(emoteMap[0], { id: '25', end: 4 }, 'irc: emote map start index');
+  eq(emoteMap[12], { id: '1902', end: 16 }, 'irc: emote map second emote');
+  eq(FCM.parseTwitchEmoteMap(''), null, 'irc: empty emote tag gives null');
+
+  eq(FCM.twitchBadgeClass('moderator/1'), 'mod', 'irc: moderator badge');
+  eq(FCM.twitchBadgeClass('subscriber/12,premium/1'), 'sub', 'irc: subscriber badge');
+  eq(FCM.twitchBadgeClass('vip/1'), 'vip', 'irc: vip badge');
+  eq(FCM.twitchBadgeClass(''), null, 'irc: no badge');
+
+  const raid = FCM.twitchUserNoticeSummary({
+    'msg-id': 'raid', 'display-name': 'Streamer', 'msg-param-viewerCount': '1200',
+  });
+  eq(raid, 'Streamer is raiding with 1200 viewers.', 'irc: raid summary');
+
+  const resub = FCM.twitchUserNoticeSummary({
+    'msg-id': 'resub', 'display-name': 'Fan', 'msg-param-cumulative-months': '24',
+    'msg-param-sub-plan': '2000',
+  });
+  eq(resub, 'Fan resubscribed (24 months) (Tier 2).', 'irc: resub summary');
+};
+
+suites.kick = function () {
+  const FCM = load(makeSandbox(), ...SHARED);
+
+  eq(
+    FCM.formatKickEventSummary('App\\Events\\SubscriptionEvent', { username: 'Someone' }),
+    'Someone subscribed.',
+    'kick: subscription event'
+  );
+  eq(
+    FCM.formatKickEventSummary('App\\Events\\GiftedSubscriptionsEvent', {
+      gifter_username: 'Whale', gifted_usernames: ['a', 'b', 'c'],
+    }),
+    'Whale gifted 3 subs.',
+    'kick: gifted subs event'
+  );
+  eq(
+    FCM.formatKickEventSummary('App\\Events\\ChatroomClearEvent', {}),
+    'Chat was cleared by a moderator.',
+    'kick: chat clear event'
+  );
+  eq(
+    FCM.formatKickEventSummary('App\\Events\\LivestreamUpdated', {}),
+    '',
+    'kick: housekeeping events are dropped'
+  );
+
+  ok(FCM.isPusherProtocolEvent('pusher:ping'), 'kick: pusher protocol event detected');
+  ok(FCM.isPusherProtocolEvent('pusher_internal:subscription_succeeded'), 'kick: internal event detected');
+  ok(!FCM.isPusherProtocolEvent('App\\Events\\ChatMessageEvent'), 'kick: chat event is not protocol');
+
+  eq(FCM.kickBadgeClass([{ type: 'subscriber' }]), 'sub', 'kick: subscriber badge class');
+  eq(FCM.kickBadgeClass([{ type: 'moderator' }, { type: 'subscriber' }]), 'mod', 'kick: mod wins');
+  eq(FCM.kickBadgeClass([]), null, 'kick: no badges');
+
+  // The real shape returned by kick.com/emotes/<slug>.
+  const store = FCM.parseKickEmotePayload([
+    { id: 668, emotes: [{ id: 4001, name: 'xqcL' }, { id: 4002, name: 'xqcCheer' }] },
+    { id: 'Global', name: 'Global', emotes: [{ id: 1, name: 'emojiOne' }] },
+    { id: 'Emoji', name: 'Emojis', emotes: [{ id: 2, name: 'smile' }] },
+  ]);
+  eq(store.xqcL.url, 'https://files.kick.com/emotes/4001/fullsize', 'kick: channel emote url');
+  eq(store.xqcL.source, 'Kick Channel', 'kick: channel emote source');
+  eq(store.emojiOne.source, 'Kick Global', 'kick: global emote source');
+  eq(store.smile.source, 'Kick Emoji', 'kick: emoji set source');
+
+  // Non-numeric ids do not resolve on the CDN and must be skipped.
+  const skipped = FCM.parseKickEmotePayload([{ id: 1, emotes: [{ id: 'abc', name: 'bogus' }] }]);
+  eq(Object.keys(skipped).length, 0, 'kick: non-numeric emote ids are skipped');
+};
+
+// Enough of a DOM for the row builders, which only set properties on the node
+// they create. Reading back innerHTML is what the assertions check.
+function stubDocument() {
+  return {
+    createElement: () => ({ dataset: {}, className: '', innerHTML: '', style: {} }),
+  };
+}
+
+suites.render = function () {
+  const sandbox = makeSandbox({
+    chrome: { storage: { sync: { get: async () => ({}) } } },
+    document: stubDocument(),
+  });
+  const FCM = load(sandbox, ...SHARED, 'src/content/render.js');
+
+  FCM.setViewSettings({ ...FCM.DEFAULT_SETTINGS, highlightNames: 'MyName' });
+
+  // Twitch emotes come from codepoint positions in the tag.
+  const tw = FCM.renderMessageBody('twitch', 'Kappa hello', {
+    emoteMap: FCM.parseTwitchEmoteMap('25:0-4'),
+  });
+  contains(tw.html, 'static-cdn.jtvnw.net/emoticons/v2/25/', 'render: twitch emote image');
+  contains(tw.html, 'alt="Kappa"', 'render: twitch emote alt text');
+  contains(tw.html, ' hello', 'render: text after the emote survives');
+
+  // Positions are codepoint indices, so an emoji earlier in the line must not
+  // shift the emote.
+  const shifted = FCM.renderMessageBody('twitch', '\u{1F600} Kappa', {
+    emoteMap: { 2: { id: '25', end: 6 } },
+  });
+  contains(shifted.html, 'alt="Kappa"', 'render: emote position is codepoint-based, not UTF-16');
+
+  // Kick emotes arrive as inline tokens.
+  const kick = FCM.renderMessageBody('kick', 'hey [emote:37226:emojiKEK] there', { emotes: [] });
+  contains(kick.html, 'files.kick.com/emotes/37226/fullsize', 'render: kick inline emote token');
+  contains(kick.html, 'alt="emojiKEK"', 'render: kick emote name');
+  missing(kick.html, '[emote:', 'render: the raw token is replaced');
+
+  // Third-party emotes match on the whole word only.
+  FCM.setEmotes('twitch', 'thirdparty', { PogU: { url: 'https://cdn.7tv/pogu.webp', source: '7TV' } });
+  const seventv = FCM.renderMessageBody('twitch', 'that was PogU honestly', {});
+  contains(seventv.html, 'cdn.7tv/pogu.webp', 'render: 7TV emote by name');
+  const partial = FCM.renderMessageBody('twitch', 'PogUUU', {});
+  missing(partial.html, 'cdn.7tv/pogu.webp', 'render: partial word is not an emote');
+
+  // Links.
+  const link = FCM.renderMessageBody('twitch', 'see https://example.com/a?b=1&c=2 now', {});
+  contains(link.html, 'href="https://example.com/a?b=1&amp;c=2"', 'render: link href is escaped once');
+  contains(link.html, 'rel="noopener noreferrer"', 'render: link is safe to click');
+  const bracketed = FCM.renderMessageBody('twitch', '(https://example.com)', {});
+  contains(bracketed.html, 'href="https://example.com"', 'render: trailing bracket is not part of the link');
+
+  // Mentions.
+  const mention = FCM.renderMessageBody('twitch', 'hey @MyName how are you', {});
+  ok(mention.mentioned, 'render: mention detected');
+  contains(mention.html, 'fcm-mention', 'render: mention is highlighted');
+  const notMention = FCM.renderMessageBody('twitch', 'MyNameIsLong', {});
+  ok(!notMention.mentioned, 'render: a longer word is not a mention');
+
+  // Escaping: a message must never be able to inject markup.
+  const xss = FCM.renderMessageBody('twitch', '<img src=x onerror=alert(1)> & "quoted"', {});
+  missing(xss.html, '<img src=x', 'render: raw HTML in a message is escaped');
+  contains(xss.html, '&lt;img', 'render: angle brackets escaped');
+  contains(xss.html, '&amp;', 'render: ampersand escaped');
+
+  // An emote name containing characters HTML escaping rewrites.
+  FCM.setEmotes('kick', 'thirdparty', { '<3': { url: 'https://cdn/heart.png', source: '7TV' } });
+  const tricky = FCM.renderMessageBody('kick', 'love <3 you', {});
+  contains(tricky.html, 'alt="&lt;3"', 'render: emote alt text is escaped');
+  contains(tricky.html, 'cdn/heart.png', 'render: emote with symbol name still resolves');
+
+  // Badges.
+  FCM.setBadges('twitch', {
+    global: { moderator: { 1: { image_url_1x: 'https://badge/mod.png' } } },
+    channel: { subscriber: { 12: { image_url_1x: 'https://badge/sub12.png' } } },
+  });
+  const badgeHtml = FCM.renderBadges('twitch', 'moderator/1,subscriber/12');
+  contains(badgeHtml, 'badge/mod.png', 'render: global badge image');
+  contains(badgeHtml, 'badge/sub12.png', 'render: channel badge overrides global set');
+  eq(FCM.renderBadges('twitch', 'mystery/9'), '',
+    'render: a decorative badge set with no image is dropped, not shown raw');
+  contains(FCM.renderBadges('twitch', 'moderator/9'), 'MOD',
+    'render: a role badge with no image falls back to a short label');
+
+  const kickBadges = FCM.renderBadges('kick', [{ type: 'moderator' }, { type: 'og' }]);
+  contains(kickBadges, 'MOD', 'render: kick moderator label');
+  contains(kickBadges, 'OG', 'render: kick unknown-type label is derived');
+
+  // System rows get a platform label out of the text.
+  eq(FCM.formatSystemMessage('Kick: disconnected').type, 'error', 'render: disconnect is an error row');
+  eq(FCM.formatSystemMessage('Kick: disconnected').label, 'Kick', 'render: platform label extracted');
+  eq(FCM.formatSystemMessage('[Merged] Watching Twitch/xqc').label, 'Merged', 'render: bracket label');
+  eq(FCM.formatSystemMessage('Loaded 60 Twitch history messages').type, 'history', 'render: history row');
+
+  // System and event rows carry the same SYSTEM / EVENT tag the desktop app
+  // shows, which is what keeps them from reading like a viewer's message.
+  const sysRow = FCM.buildSysEl('Kick: disconnected');
+  contains(sysRow.innerHTML, 'fcm-sys-tag">SYSTEM<', 'render: system rows are tagged SYSTEM');
+  contains(sysRow.innerHTML, 'fcm-sys-error">Kick<', 'render: system row label chip');
+  contains(sysRow.innerHTML, 'fcm-sys-body">disconnected<', 'render: prefix is stripped from the body');
+  eq(sysRow.className, 'fcm-sys fcm-sys-error', 'render: error rows get the error class');
+
+  const eventRow = FCM.buildEventEl('twitch', 'Someone subscribed.', new Set(['twitch']));
+  contains(eventRow.innerHTML, 'fcm-sys-tag">EVENT<', 'render: event rows are tagged EVENT');
+  contains(eventRow.innerHTML, 'fcm-sys-twitch">Twitch<', 'render: event row names its platform');
+  eq(eventRow.dataset.platform, 'twitch', 'render: event rows are filterable by platform');
+
+  // The role chip is a fallback only, so a Kick row never reads "SUBSUBname".
+  const kickRow = FCM.buildMessageEl({
+    platform: 'kick', author: 'someone', text: 'hi',
+    badgesRaw: [{ type: 'subscriber' }], badgeClass: 'sub',
+  }, new Set(['kick']));
+  eq((kickRow.innerHTML.match(/SUB/g) || []).length, 1, 'render: role is labelled exactly once');
+  contains(kickRow.innerHTML, 'data-name="someone"', 'render: author carries its own name for the menu');
+
+  const twitchRow = FCM.buildMessageEl({
+    platform: 'twitch', author: 'mod', text: 'hi',
+    badgesRaw: 'moderator/1', badgeClass: 'mod',
+  }, new Set(['twitch']));
+  contains(twitchRow.innerHTML, 'badge/mod.png', 'render: twitch badge image used');
+  missing(twitchRow.innerHTML, 'fcm-chip-mod', 'render: no duplicate chip beside a badge image');
+
+  // Timestamps and badges are always in the markup; the toggles hide them with
+  // CSS so switching one off applies to messages already on screen.
+  const withTime = FCM.buildMessageEl({
+    platform: 'twitch', author: 'someone', text: 'hi',
+    badgesRaw: 'moderator/1', timestamp: 1700000000000,
+  }, new Set(['twitch']));
+  contains(withTime.innerHTML, 'fcm-time', 'render: the timestamp is always built');
+  contains(withTime.innerHTML, 'fcm-badges', 'render: badges are always built');
+
+  FCM.setViewSettings({ ...FCM.DEFAULT_SETTINGS, timestamps: false, showBadges: false });
+  const hidden = FCM.buildMessageEl({
+    platform: 'twitch', author: 'someone', text: 'hi',
+    badgesRaw: 'moderator/1', timestamp: 1700000000000,
+  }, new Set(['twitch']));
+  contains(hidden.innerHTML, 'fcm-time',
+    'render: hiding timestamps is a CSS concern, not a build-time one');
+  contains(hidden.innerHTML, 'fcm-badges',
+    'render: hiding badges is a CSS concern, not a build-time one');
+  FCM.setViewSettings({ ...FCM.DEFAULT_SETTINGS, highlightNames: 'MyName' });
+
+  // Chatters seen in the feed become @mention candidates.
+  ok(FCM.recentChatters().some((c) => c.name === 'someone' && c.platform === 'kick'),
+    'render: authors are remembered for @ autocomplete');
+  ok(FCM.recentChatters().some((c) => c.name === 'mod' && c.platform === 'twitch'),
+    'render: both platforms contribute chatters');
+};
+
+suites.settings = function () {
+  // Two toggles flipped in quick succession must both survive: the second save
+  // has to see the first one's result, not the state from before it.
+  const store = {};
+  const sandbox = makeSandbox({
+    chrome: {
+      storage: {
+        sync: {
+          get: async (key) => {
+            // A real storage round-trip is not instantaneous, which is exactly
+            // what lets an unserialised read-modify-write lose an update.
+            await new Promise((r) => setTimeout(r, 5));
+            return { [key]: store[key] };
+          },
+          set: async (obj) => {
+            await new Promise((r) => setTimeout(r, 5));
+            Object.assign(store, obj);
+          },
+        },
+      },
+    },
+  });
+  const FCM = load(sandbox, ...SHARED);
+
+  return (async () => {
+    const [a, b] = await Promise.all([
+      FCM.saveSettings({ showBadges: false }),
+      FCM.saveSettings({ timestamps: false }),
+    ]);
+    const saved = await FCM.loadSettings();
+    eq(saved.showBadges, false, 'settings: the first concurrent change survives');
+    eq(saved.timestamps, false, 'settings: the second concurrent change survives');
+    eq(b.showBadges, false, 'settings: the later save saw the earlier one');
+    ok(a && b, 'settings: both saves resolve');
+
+    // Untouched defaults are preserved rather than dropped by a partial patch.
+    eq(saved.maxMessages, FCM.DEFAULT_SETTINGS.maxMessages,
+      'settings: a partial patch keeps the other values');
+
+    await FCM.saveSettings({ showBadges: true });
+    eq((await FCM.loadSettings()).showBadges, true, 'settings: values can be turned back on');
+    eq((await FCM.loadSettings()).timestamps, false,
+      'settings: turning one back on leaves the other alone');
+  })();
+};
+
+suites.compose = function () {
+  const sandbox = makeSandbox({
+    chrome: { storage: { sync: { get: async () => ({}) } } },
+    document: { ...stubDocument(), querySelector: () => null },
+  });
+  const FCM = load(sandbox, ...SHARED, 'src/content/render.js', 'src/content/compose.js');
+  FCM.setViewSettings(FCM.DEFAULT_SETTINGS);
+
+  FCM.setEmotes('twitch', 'native', { Kappa: { url: 'https://t/kappa.png', source: 'Twitch' } });
+  FCM.setEmotes('twitch', 'thirdparty', {
+    PogU: { url: 'https://7tv/pogu.webp', source: '7TV' },
+    // Same name in a second store: the first one wins, and it appears once.
+    Kappa: { url: 'https://7tv/kappa.webp', source: '7TV' },
+  });
+  FCM.setEmotes('kick', 'native', { emojiKEK: { url: 'https://k/kek.png', source: 'Kick Global' } });
+
+  const entries = FCM.allEmoteEntries();
+  const names = entries.map((e) => e.name);
+  eq(names.filter((n) => n === 'Kappa').length, 1, 'compose: duplicate emote names are de-duplicated');
+  eq(entries.find((e) => e.name === 'Kappa').source, 'Twitch',
+    'compose: the native store wins over third-party for the same name');
+  ok(names.includes('PogU'), 'compose: third-party emotes are offered');
+  ok(names.includes('emojiKEK'), 'compose: emotes from both platforms are offered');
+  ok(entries.every((e) => e.url), 'compose: every offered emote has an image');
+
+  // The picker groups by source, so every entry needs one.
+  ok(entries.every((e) => e.source), 'compose: every emote reports a source for grouping');
+
+  FCM.rememberChatter('twitch', 'Alice');
+  FCM.rememberChatter('kick', 'alice');
+  FCM.rememberChatter('twitch', 'Alice');
+  const alices = FCM.recentChatters().filter((c) => c.name.toLowerCase() === 'alice');
+  eq(alices.length, 2, 'compose: the same name on two platforms is two chatters');
+};
+
+// A reply has to land in the chat the person actually spoke in. The routing
+// itself lives in the overlay, but it is driven entirely by the platform that
+// compose.js reports, so that is what gets pinned down here.
+suites.reply = function () {
+  function fakeEl(tag = 'div') {
+    const node = {
+      tagName: tag.toUpperCase(),
+      children: [],
+      dataset: {}, style: {}, innerHTML: '', textContent: '',
+      value: '', selectionStart: 0, placeholder: '',
+      clientHeight: 400, offsetHeight: 40,
+      appendChild(c) { this.children.push(c); return c; },
+      addEventListener() {}, removeEventListener() {},
+      querySelector() { return null; },
+      querySelectorAll() { return []; },
+      focus() {}, remove() {}, closest() { return null; },
+      setSelectionRange(a) { this.selectionStart = a; },
+      getBoundingClientRect() { return { left: 0, top: 0, width: 240, height: 120 }; },
+    };
+    const classes = new Set();
+    node.classList = {
+      add: (c) => classes.add(c),
+      remove: (c) => classes.delete(c),
+      contains: (c) => classes.has(c),
+      toggle: (c, f) => (f ? classes.add(c) : classes.delete(c)),
+    };
+    Object.defineProperty(node, 'className', {
+      get: () => [...classes].join(' '),
+      set: (v) => { classes.clear(); String(v).split(/\s+/).filter(Boolean).forEach((c) => classes.add(c)); },
+    });
+    return node;
+  }
+
+  const sandbox = makeSandbox({
+    chrome: { storage: { sync: { get: async () => ({}) } } },
+    document: { createElement: (t) => fakeEl(t) },
+    window: { getSelection: () => null },
+  });
+  const FCM = load(sandbox, ...SHARED, 'src/content/render.js', 'src/content/compose.js');
+  FCM.setViewSettings(FCM.DEFAULT_SETTINGS);
+  FCM.setEmotes('twitch', 'thirdparty', { PogU: { url: 'https://7tv/pogu.webp', source: '7TV' } });
+
+  const replies = [];
+  const inputEl = fakeEl('input');
+  const compose = FCM.createCompose({
+    panel: fakeEl(), inputEl, feedEl: fakeEl(), emoteBtn: fakeEl('button'),
+    toast: () => {},
+    onReplyTo: (platform, name) => replies.push({ platform, name }),
+  });
+
+  // 1. Replying from the username menu reports the platform that person is on.
+  compose.insertMention('KickViewer', 'kick');
+  eq(replies.pop(), { platform: 'kick', name: 'KickViewer' },
+    'reply: the menu reply names the platform the person spoke on');
+  eq(inputEl.value, '@KickViewer ', 'reply: the mention is inserted');
+
+  compose.insertMention('TwitchViewer', 'twitch');
+  eq(replies.pop(), { platform: 'twitch', name: 'TwitchViewer' },
+    'reply: the other direction reports Twitch');
+  eq(inputEl.value, '@KickViewer @TwitchViewer ',
+    'reply: a second reply is appended, so both people are addressed');
+
+  // 2. Completing a @name from the suggestion list scopes it the same way.
+  FCM.rememberChatter('kick', 'kekwenjoyer');
+  inputEl.value = '@kekw';
+  inputEl.selectionStart = 5;
+  replies.length = 0;
+  const tab = { key: 'Tab', preventDefault() {} };
+  // The input handler is wired to the real element, so drive it directly.
+  compose.updateAutocomplete();
+  ok(compose.isPopupOpen(), 'reply: the mention list opens for @kekw');
+  ok(compose.handleKey(tab), 'reply: Tab completes from the mention list');
+  eq(inputEl.value, '@kekwenjoyer ', 'reply: Tab inserted the full name');
+  eq(replies.pop(), { platform: 'kick', name: 'kekwenjoyer' },
+    'reply: an autocompleted mention scopes the send to that person\'s platform');
+
+  // 3. Completing an emote is not addressing anyone, so it must not scope.
+  inputEl.value = ':pog';
+  inputEl.selectionStart = 4;
+  replies.length = 0;
+  compose.updateAutocomplete();
+  ok(compose.isPopupOpen(), 'reply: the emote list opens for :pog');
+  compose.handleKey(tab);
+  eq(inputEl.value, 'PogU ', 'reply: Tab inserted the emote');
+  eq(replies.length, 0, 'reply: completing an emote does not scope the send');
+
+  // 4. A mention with no platform (typed by hand, never completed) cannot be
+  //    attributed, so it leaves the targets alone.
+  replies.length = 0;
+  compose.insertMention('SomeoneTypedByHand');
+  eq(replies.length, 0, 'reply: an unattributed mention does not scope the send');
+};
+
+// The OAuth flow redirects through the platforms' own login pages, which the
+// content script matches. Mounting a chat overlay on top of a sign-in form is
+// never right, so those paths must not read as channels.
+suites.authpages = function () {
+  const FCM = load(makeSandbox(), ...SHARED, 'src/background/discovery.js');
+
+  const twitchNonChannels = [
+    'login', 'signup', 'logout', 'oauth2', 'authorize', 'connect', 'activate',
+    'settings', 'directory', 'dashboard', 'checkout', 'subscribe',
+  ];
+  twitchNonChannels.forEach((path) => {
+    ok(FCM.TWITCH_RESERVED.has(path), `authpages: twitch.tv/${path} is not treated as a channel`);
+    eq(FCM.slugFromUrl(`https://www.twitch.tv/${path}`, 'twitch'), null,
+      `authpages: twitch.tv/${path} yields no counterpart candidate`);
+  });
+
+  const kickNonChannels = ['login', 'signup', 'logout', 'oauth', 'authorize', 'account', 'verify'];
+  kickNonChannels.forEach((path) => {
+    ok(FCM.KICK_RESERVED.has(path), `authpages: kick.com/${path} is not treated as a channel`);
+    eq(FCM.slugFromUrl(`https://kick.com/${path}`, 'kick'), null,
+      `authpages: kick.com/${path} yields no counterpart candidate`);
+  });
+
+  // Real channels must still work — the guard must not be over-broad.
+  ['somechannel', 'xqc', 'a_streamer', 'logan'].forEach((name) => {
+    ok(!FCM.TWITCH_RESERVED.has(name), `authpages: twitch.tv/${name} is still a channel`);
+    eq(FCM.slugFromUrl(`https://www.twitch.tv/${name}`, 'twitch'), name,
+      `authpages: twitch.tv/${name} still resolves`);
+  });
+
+  // Names that merely start with a reserved word are not reserved.
+  ['loginbob', 'connorlogin', 'signupguy'].forEach((name) => {
+    ok(!FCM.TWITCH_RESERVED.has(name), `authpages: ${name} is a channel, not a reserved page`);
+  });
+
+  // And the per-site URL parsers agree.
+  ['twitch', 'kick'].forEach((id) => {
+    const sandbox = makeSandbox({
+      location: { hostname: id === 'twitch' ? 'www.twitch.tv' : 'kick.com', pathname: '/' },
+      document: { querySelector: () => null, querySelectorAll: () => [] },
+      window: {},
+    });
+    const S = load(sandbox, ...SHARED, 'src/content/sites.js');
+    ['/login', '/signup', '/oauth2/authorize'].forEach((path) => {
+      sandbox.location.pathname = path;
+      eq(S.SITES[id].channelFromUrl(), null, `authpages: ${id}${path} mounts nothing`);
+    });
+    sandbox.location.pathname = '/realchannel';
+    eq(S.SITES[id].channelFromUrl(), 'realchannel', `authpages: ${id} still finds a real channel`);
+  });
+};
+
+suites.sites = function () {
+  const FCM = load(makeSandbox(), ...SHARED, 'src/background/discovery.js');
+
+  eq(FCM.slugFromUrl('https://kick.com/xqc', 'kick'), 'xqc', 'sites: kick url');
+  eq(FCM.slugFromUrl('https://www.kick.com/Some-User/', 'kick'), 'some-user', 'sites: kick url is lowercased');
+  eq(FCM.slugFromUrl('https://www.twitch.tv/xqc?tt_medium=x', 'twitch'), 'xqc', 'sites: twitch url with query');
+  eq(FCM.slugFromUrl('https://twitch.tv/directory/game/Chess', 'twitch'), null, 'sites: reserved path rejected');
+  eq(FCM.slugFromUrl('https://kick.com/browse', 'kick'), null, 'sites: kick reserved path rejected');
+  eq(FCM.slugFromUrl('https://example.com/xqc', 'kick'), null, 'sites: wrong host rejected');
+  eq(FCM.slugFromUrl('https://kick.com/', 'kick'), null, 'sites: bare host rejected');
+  eq(FCM.slugFromUrl('not a url', 'kick'), null, 'sites: garbage rejected');
+  eq(FCM.slugFromUrl('https://kick.com/a', 'kick'), null, 'sites: one-character slug rejected');
+
+  // The URL parsers used by the content script.
+  ['twitch', 'kick'].forEach((id) => {
+    const cases = id === 'twitch'
+      ? [
+        ['/xqc', 'xqc'],
+        ['/xqc/videos', 'xqc'],
+        ['/popout/xqc/chat', 'xqc'],
+        ['/moderator/xqc', 'xqc'],
+        ['/directory/following', null],
+        ['/settings/profile', null],
+        ['/', null],
+      ]
+      : [
+        ['/xqc', 'xqc'],
+        ['/some-user', 'some-user'],
+        ['/browse', null],
+        ['/category/irl', null],
+        ['/', null],
+      ];
+
+    const sandbox = makeSandbox({
+      location: { hostname: id === 'twitch' ? 'www.twitch.tv' : 'kick.com', pathname: '/' },
+      document: { querySelector: () => null, querySelectorAll: () => [] },
+      window: {},
+    });
+    const S = load(sandbox, ...SHARED, 'src/content/sites.js');
+    cases.forEach(([pathname, expected]) => {
+      sandbox.location.pathname = pathname;
+      eq(S.SITES[id].channelFromUrl(), expected, `sites: ${id} ${pathname}`);
+    });
+  });
+};
+
+suites.discovery = function () {
+  // Stubs standing in for the two platform APIs and chrome.storage.local.
+  function build({ kickChannels = {}, twitchUsers = {}, storage = {} } = {}) {
+    const store = { ...storage };
+    const calls = [];
+
+    const sandbox = makeSandbox({
+      chrome: {
+        storage: {
+          local: {
+            get: async (key) => ({ [key]: store[key] }),
+            set: async (obj) => { Object.assign(store, obj); },
+          },
+        },
+      },
+      fetch: async (url, init) => {
+        calls.push(String(url));
+        if (String(url).includes('gql.twitch.tv')) {
+          const body = JSON.parse(init.body);
+          const login = Array.isArray(body)
+            ? body[0].variables.channelLogin
+            : body.variables.l;
+          const query = Array.isArray(body) ? '' : String(body.query || '');
+          const data = { user: twitchUsers[login] || null };
+          // The badge query asks for a different shape from the same endpoint.
+          if (query.includes('broadcastBadges')) {
+            data.user = {
+              broadcastBadges: [
+                { setID: 'subscriber', version: '12', title: '1-Year Sub', imageURL: 'https://cdn/sub12.png' },
+              ],
+            };
+          }
+          if (query.includes('badges{')) {
+            data.badges = [
+              { setID: 'moderator', version: '1', title: 'Moderator', imageURL: 'https://cdn/mod.png' },
+              { setID: 'subscriber', version: '0', title: 'Sub', imageURL: 'https://cdn/sub0.png' },
+            ];
+          }
+          return { ok: true, json: async () => ({ data }) };
+        }
+        const m = String(url).match(/kick\.com\/api\/v\d\/channels\/([^/?]+)/);
+        if (m) {
+          const data = kickChannels[m[1]];
+          return data
+            ? { ok: true, json: async () => data }
+            : { ok: false, status: 404, json: async () => ({}) };
+        }
+        return { ok: false, status: 404, json: async () => ({}) };
+      },
+    });
+    return { FCM: load(sandbox, ...SHARED, 'src/background/discovery.js'), store, calls };
+  }
+
+  // Mirrors the real kick.com/api/v2/channels/<slug> shape. The response
+  // carries its own canonical slug, which is what summarize() reports back.
+  function kickChannel(slug, displayName, live) {
+    return {
+      id: 668, user_id: 676, slug,
+      chatroom: { id: 668 },
+      livestream: live
+        ? { session_title: 'juicer time', viewer_count: 12345, categories: [{ name: 'Just Chatting' }] }
+        : null,
+      user: { username: displayName, profile_pic: 'https://kick/pic.png' },
+    };
+  }
+
+  const KICK_XQC = kickChannel('xqc', 'xQc', true);
+
+  return (async () => {
+    // 1. Same name on both platforms, live on the other side.
+    {
+      const { FCM } = build({ kickChannels: { xqc: KICK_XQC } });
+      const found = await FCM.resolveCounterpart({ platform: 'twitch', channel: 'xqc', hints: [] });
+      ok(found, 'discovery: same-name counterpart found');
+      eq(found.platform, 'kick', 'discovery: counterpart platform');
+      eq(found.channel, 'xqc', 'discovery: counterpart channel');
+      eq(found.live, true, 'discovery: counterpart is live');
+      eq(found.viewers, 12345, 'discovery: viewer count carried through');
+      eq(found.category, 'Just Chatting', 'discovery: category carried through');
+      eq(found.displayName, 'xQc', 'discovery: display name from the user object');
+      eq(found.match, 'same-name', 'discovery: match reason');
+    }
+
+    // 2. A different name, discovered from a link on the channel page.
+    {
+      const { FCM } = build({
+        kickChannels: { therealstreamer: kickChannel('therealstreamer', 'TheRealStreamer', false) },
+      });
+      const found = await FCM.resolveCounterpart({
+        platform: 'twitch',
+        channel: 'streamerguy',
+        hints: ['https://kick.com/therealstreamer', 'https://kick.com/browse'],
+      });
+      ok(found, 'discovery: page-link counterpart found');
+      eq(found.channel, 'therealstreamer', 'discovery: slug taken from the page link');
+      eq(found.match, 'page-link', 'discovery: match reason is the page link');
+      eq(found.live, false, 'discovery: offline counterpart reported as offline');
+    }
+
+    // 3. Nothing on the other platform.
+    {
+      const { FCM, store } = build({});
+      const found = await FCM.resolveCounterpart({ platform: 'twitch', channel: 'nobody', hints: [] });
+      eq(found, null, 'discovery: no counterpart returns null');
+      const links = store[FCM.STORAGE_KEYS.links];
+      eq(links['twitch:nobody'].none, true, 'discovery: the miss is cached so it is not re-probed');
+    }
+
+    // 4. Kick -> Twitch, the other direction.
+    {
+      const { FCM } = build({
+        twitchUsers: {
+          bigstreamer: {
+            id: '1', login: 'bigstreamer', displayName: 'BigStreamer',
+            profileImageURL: 'https://twitch/pic.png',
+            stream: { id: '9', viewersCount: 40857, title: 'big stream', game: { name: 'Counter-Strike' } },
+          },
+        },
+      });
+      const found = await FCM.resolveCounterpart({ platform: 'kick', channel: 'bigstreamer', hints: [] });
+      ok(found, 'discovery: kick -> twitch counterpart found');
+      eq(found.platform, 'twitch', 'discovery: reverse direction platform');
+      eq(found.live, true, 'discovery: reverse direction live state');
+      eq(found.category, 'Counter-Strike', 'discovery: reverse direction category');
+      eq(found.url, 'https://www.twitch.tv/bigstreamer', 'discovery: reverse direction url');
+    }
+
+    // 5. A manual mapping beats both the page link and the same-name guess.
+    {
+      const { FCM } = build({
+        kickChannels: { chosen: kickChannel('chosen', 'Chosen', false), xqc: KICK_XQC },
+        storage: {
+          fcm_channel_links_v1: {
+            'twitch:xqc': { channel: 'chosen', match: 'manual', manual: true, at: Date.now() },
+          },
+        },
+      });
+      const found = await FCM.resolveCounterpart({
+        platform: 'twitch', channel: 'xqc', hints: ['https://kick.com/xqc'],
+      });
+      eq(found.channel, 'chosen', 'discovery: manual mapping wins');
+      eq(found.match, 'manual', 'discovery: manual match reason');
+    }
+
+    // 6. A manual "no counterpart" mapping suppresses the lookup entirely.
+    {
+      const { FCM, calls } = build({
+        kickChannels: { xqc: KICK_XQC },
+        storage: {
+          fcm_channel_links_v1: {
+            'twitch:xqc': { none: true, manual: true, at: Date.now() },
+          },
+        },
+      });
+      const found = await FCM.resolveCounterpart({ platform: 'twitch', channel: 'xqc', hints: [] });
+      eq(found, null, 'discovery: manual opt-out returns null');
+      eq(calls.length, 0, 'discovery: manual opt-out makes no network calls');
+    }
+
+    // 7. Reserved paths in the hints never become candidates.
+    {
+      const { FCM } = build({ kickChannels: { settings: KICK_XQC } });
+      const found = await FCM.resolveCounterpart({
+        platform: 'twitch', channel: 'someone', hints: ['https://kick.com/settings'],
+      });
+      eq(found, null, 'discovery: a reserved-path hint is ignored');
+    }
+
+    // 8. Badges come from GQL, and the global set is fetched only once.
+    {
+      const { FCM, calls } = build({});
+      const first = await FCM.twitchApi.badges('somechannel');
+      eq(first.global.moderator['1'].image_url_1x, 'https://cdn/mod.png', 'badges: global badge mapped');
+      eq(first.channel.subscriber['12'].image_url_1x, 'https://cdn/sub12.png', 'badges: channel badge mapped');
+      eq(first.global.subscriber['0'].title, 'Sub', 'badges: title carried through');
+
+      const second = await FCM.twitchApi.badges('another');
+      eq(second.global.moderator['1'].image_url_1x, 'https://cdn/mod.png', 'badges: global set reused');
+      eq(second.channel.subscriber['12'].image_url_1x, 'https://cdn/sub12.png', 'badges: second channel set');
+      eq(calls.length, 2, 'badges: one request per channel, not one per badge set');
+    }
+  })();
+};
+
+suites.emotes = function () {
+  function build() {
+    const calls = [];
+    const sandbox = makeSandbox({
+      fetch: async (url) => {
+        calls.push(String(url));
+        const u = String(url);
+        if (u === 'https://7tv.io/v3/emote-sets/global') {
+          return { ok: true, json: async () => ({
+            emotes: [{ name: 'GlobalPog', data: { host: { url: '//cdn.7tv.app/emote/1', files: [{ name: '2x.webp' }] } } }],
+          }) };
+        }
+        if (/7tv\.io\/v3\/users\//.test(u)) {
+          return { ok: true, json: async () => ({
+            emote_set: { emotes: [{ name: 'ChannelPog', data: { host: { url: '//cdn.7tv.app/emote/2', files: [{ name: '2x.webp' }] } } }] },
+          }) };
+        }
+        if (u.includes('betterttv.net/3/cached/emotes/global')) {
+          return { ok: true, json: async () => ([{ code: 'bttvGlobal', id: 'b1' }]) };
+        }
+        if (u.includes('betterttv.net/3/cached/users/twitch/')) {
+          return { ok: true, json: async () => ({ channelEmotes: [{ code: 'bttvChan', id: 'b2' }], sharedEmotes: [] }) };
+        }
+        if (u.includes('frankerfacez.com')) {
+          return { ok: true, json: async () => ({
+            sets: { 1: { emoticons: [{ name: 'ffzEmote', urls: { 2: '//cdn.ffz/2.png' } }] } },
+          }) };
+        }
+        return { ok: false, status: 404, json: async () => ({}) };
+      },
+    });
+    return { FCM: load(sandbox, ...SHARED, 'src/background/emotes.js'), calls };
+  }
+
+  return (async () => {
+    {
+      const { FCM, calls } = build();
+      const store = await FCM.emoteLoader.thirdParty('twitch', 'somechannel', '71092938');
+      eq(store.GlobalPog.url, 'https://cdn.7tv.app/emote/1/2x.webp', 'emotes: 7TV global url built from host+file');
+      eq(store.GlobalPog.source, '7TV', 'emotes: 7TV source label');
+      eq(store.ChannelPog.url, 'https://cdn.7tv.app/emote/2/2x.webp', 'emotes: 7TV channel set');
+      eq(store.bttvGlobal.url, 'https://cdn.betterttv.net/emote/b1/2x', 'emotes: BTTV global');
+      eq(store.bttvChan.url, 'https://cdn.betterttv.net/emote/b2/2x', 'emotes: BTTV channel');
+      eq(store.ffzEmote.url, 'https://cdn.ffz/2.png', 'emotes: FFZ protocol-relative url fixed up');
+      ok(calls.includes('https://7tv.io/v3/users/twitch/71092938'),
+        'emotes: 7TV twitch lookup uses the numeric user id');
+    }
+
+    {
+      // 7TV's Kick integration 404s on a slug, so it must get the numeric id.
+      const { FCM, calls } = build();
+      const store = await FCM.emoteLoader.thirdParty('kick', 'xqc', '676');
+      ok(calls.includes('https://7tv.io/v3/users/kick/676'),
+        'emotes: 7TV kick lookup uses the numeric user id, not the slug');
+      ok(!calls.some((c) => c.includes('/users/kick/xqc')),
+        'emotes: the kick slug is never used as a 7TV key');
+      ok(!calls.some((c) => c.includes('betterttv') || c.includes('frankerfacez')),
+        'emotes: BTTV and FFZ are skipped for Kick (they are Twitch-keyed)');
+      eq(store.ChannelPog.source, '7TV', 'emotes: kick channel 7TV set loaded');
+    }
+
+    {
+      // A provider that fails must not take the others down with it.
+      const sandbox = makeSandbox({
+        fetch: async (url) => {
+          if (String(url).includes('7tv.io/v3/emote-sets/global')) throw new Error('network down');
+          if (String(url).includes('betterttv.net/3/cached/emotes/global')) {
+            return { ok: true, json: async () => ([{ code: 'survivor', id: 'x1' }]) };
+          }
+          return { ok: false, status: 500, json: async () => ({}) };
+        },
+      });
+      const FCM = load(sandbox, ...SHARED, 'src/background/emotes.js');
+      const store = await FCM.emoteLoader.thirdParty('twitch', 'chan', '1');
+      eq(store.survivor.url, 'https://cdn.betterttv.net/emote/x1/2x',
+        'emotes: a failing provider does not block the rest');
+    }
+  })();
+};
+
+suites.theme = function () {
+  // Builds a page whose <html> carries the given marks and whose chat sits
+  // inside a container painted the given colour.
+  function pageWith({ htmlClass = '', htmlAttrs = {}, bodyClass = '', chain = [] }) {
+    const styles = new Map();
+    const make = (bg) => {
+      const el = { parentElement: null, className: '', dataset: {}, getAttribute: () => null };
+      styles.set(el, { backgroundColor: bg });
+      return el;
+    };
+    const nodes = chain.map(make);
+    nodes.forEach((el, i) => { el.parentElement = nodes[i + 1] || null; });
+
+    const body = make('rgba(0, 0, 0, 0)');
+    body.className = bodyClass;
+    if (nodes.length) nodes[nodes.length - 1].parentElement = body;
+
+    const root = {
+      className: htmlClass,
+      dataset: htmlAttrs.dataset || {},
+      getAttribute: (k) => htmlAttrs[k] || null,
+      parentElement: null,
+    };
+    styles.set(root, { backgroundColor: 'rgba(0, 0, 0, 0)' });
+    body.parentElement = root;
+
+    return {
+      sandbox: {
+        document: { documentElement: root, body },
+        getComputedStyle: (el) => styles.get(el) || { backgroundColor: '' },
+        window: { matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) },
+      },
+      chat: nodes[0] || body,
+    };
+  }
+
+  function detect(spec) {
+    const page = pageWith(spec);
+    const sandbox = makeSandbox({
+      ...page.sandbox,
+      MutationObserver: function () { this.observe = () => {}; this.disconnect = () => {}; },
+    });
+    sandbox.window.matchMedia = page.sandbox.window.matchMedia;
+    const FCM = load(sandbox, ...SHARED, 'src/content/sites.js');
+    return FCM.detectSiteTheme(page.chat);
+  }
+
+  // Twitch marks the root element; Kick uses a Tailwind-style class.
+  eq(detect({ htmlClass: 'tw-root--theme-dark' }), 'dark', 'theme: Twitch dark class');
+  eq(detect({ htmlClass: 'tw-root--theme-light' }), 'light', 'theme: Twitch light class');
+  eq(detect({ htmlAttrs: { 'data-a-theme': 'dark' } }), 'dark', 'theme: Twitch theme attribute');
+  eq(detect({ htmlClass: 'dark' }), 'dark', 'theme: Kick dark class');
+  eq(detect({ htmlClass: 'light' }), 'light', 'theme: Kick light class');
+  eq(detect({ htmlAttrs: { dataset: { theme: 'light' } } }), 'light', 'theme: data-theme attribute');
+
+  // With no marks at all, what the page is actually painted decides it. This
+  // is what keeps working when either site renames its classes.
+  eq(detect({ chain: ['rgb(24, 24, 27)'] }), 'dark', 'theme: a dark background reads as dark');
+  eq(detect({ chain: ['rgb(255, 255, 255)'] }), 'light', 'theme: a white background reads as light');
+  eq(detect({ chain: ['rgb(240, 240, 245)'] }), 'light', 'theme: an off-white background reads as light');
+  eq(detect({ chain: ['rgb(14, 14, 16)'] }), 'dark', 'theme: near-black reads as dark');
+
+  // A transparent element paints nothing, so the search continues upward.
+  eq(detect({ chain: ['rgba(0, 0, 0, 0)', 'rgb(255, 255, 255)'] }), 'light',
+    'theme: a transparent child defers to the first painted ancestor');
+  eq(detect({ chain: ['rgba(0, 0, 0, 0)', 'rgba(0, 0, 0, 0)', 'rgb(20, 20, 20)'] }), 'dark',
+    'theme: it keeps climbing past every transparent layer');
+
+  // A class name that merely contains the word must not win.
+  eq(detect({ htmlClass: 'darkroom-player', chain: ['rgb(255, 255, 255)'] }), 'light',
+    'theme: "darkroom" is not a dark-mode marker');
+  eq(detect({ htmlClass: 'has-light-sidebar', chain: ['rgb(255,255,255)'] }), 'light',
+    'theme: hyphenated markers still resolve sensibly');
+};
+
+suites.auth = function () {
+  function build({ redirect, launchError, tokenResponse, configResponse } = {}) {
+    const store = {};
+    const calls = [];
+    const sandbox = makeSandbox({
+      chrome: {
+        identity: {
+          getRedirectURL: () => 'https://abcd.chromiumapp.org/',
+          launchWebAuthFlow: (opts, cb) => {
+            calls.push({ authUrl: opts.url, interactive: opts.interactive });
+            if (launchError) { sandbox.chrome.runtime.lastError = { message: launchError }; cb(); return; }
+            cb(typeof redirect === 'function' ? redirect(opts.url) : redirect);
+          },
+        },
+        runtime: { lastError: null },
+        tabs: {
+          onUpdated: { addListener: (fn) => { sandbox.__onUpdated = fn; }, removeListener: () => {} },
+          onRemoved: { addListener: () => {}, removeListener: () => {} },
+          remove: () => {},
+          get: () => {},
+          create: (opts, cb) => {
+            calls.push({ tabUrl: opts.url });
+            cb({ id: 7 });
+            // Stand in for the browser reaching the redirect: nothing is
+            // listening there, but the tab's URL still changes to it.
+            const back = typeof redirect === 'function' ? redirect(opts.url) : redirect;
+            setTimeout(() => sandbox.__onUpdated(7, { url: back }, { id: 7, url: back }), 0);
+          },
+        },
+        storage: {
+          local: {
+            get: async (k) => ({ [k]: store[k] }),
+            set: async (o) => { Object.assign(store, o); },
+          },
+          sync: { get: async () => ({}), set: async () => {} },
+        },
+      },
+      crypto: {
+        getRandomValues: (a) => { for (let i = 0; i < a.length; i++) a[i] = i; return a; },
+        subtle: { digest: async () => new Uint8Array(32).buffer },
+      },
+      btoa: (s) => Buffer.from(s, 'binary').toString('base64'),
+      TextEncoder,
+      fetch: async (url, init) => {
+        const u = String(url);
+        calls.push({ url: u, method: (init && init.method) || 'GET', body: init && init.body });
+        if (u.includes('/oauth2/validate')) {
+          return { ok: true, json: async () => ({ user_id: '55', login: 'me', scopes: ['chat:edit'], expires_in: 3600 }) };
+        }
+        if (u.includes('/kick-config')) {
+          return { ok: true, json: async () => (configResponse || { client_id: 'kick-cid' }) };
+        }
+        if (u.includes('/kick-token') || u.includes('/kick-refresh')) {
+          const body = tokenResponse || { access_token: 'KA', refresh_token: 'KR', expires_in: 3600 };
+          return { ok: !body.error, json: async () => body };
+        }
+        if (u.includes('/users')) {
+          return { ok: true, json: async () => ({ data: [{ name: 'kickme', user_id: 7 }] }) };
+        }
+        return { ok: false, status: 404, json: async () => ({}) };
+      },
+    });
+    const FCM = load(sandbox, ...SHARED, 'src/background/auth.js');
+    return { FCM, store, calls, sandbox };
+  }
+
+  return (async () => {
+    const FCM_SHARED = 'http://localhost:8080/friendly-chat.html';
+
+    // ── Twitch implicit grant ──
+    {
+      const { FCM, store, calls } = build({
+        redirect: (url) => {
+          const state = new URL(url).searchParams.get('state');
+          return 'https://abcd.chromiumapp.org/#access_token=TW&state=' + state;
+        },
+      });
+      const result = await FCM.auth.connect('twitch', {});
+      eq(result.login, 'me', 'auth: twitch reports who signed in');
+
+      const authUrl = new URL(calls[0].authUrl);
+      eq(authUrl.searchParams.get('response_type'), 'token', 'auth: twitch uses the implicit grant');
+      eq(authUrl.searchParams.get('redirect_uri'), 'https://abcd.chromiumapp.org/',
+        'auth: the extension redirect is what gets registered');
+      ok(authUrl.searchParams.get('scope').includes('moderator:manage:banned_users'),
+        'auth: moderation scope is requested, or the mod tools could never appear');
+      ok(authUrl.searchParams.get('scope').includes('user:write:chat'),
+        'auth: sending scope is requested');
+      ok(authUrl.searchParams.get('state'), 'auth: a state value is sent');
+
+      const saved = store[FCM.STORAGE_KEYS.auth].twitch;
+      eq(saved.accessToken, 'TW', 'auth: the token is stored');
+      eq(saved.userId, '55', 'auth: the account id is stored for sending');
+      ok(saved.expiresAt > Date.now(), 'auth: an expiry is recorded');
+
+      const summary = await FCM.auth.summary();
+      eq(summary.twitch.connected, true, 'auth: the summary reports connected');
+      eq(summary.twitch.token, undefined, 'auth: the summary never carries the token itself');
+    }
+
+    // ── A mismatched state must be refused ──
+    {
+      const { FCM } = build({ redirect: 'https://abcd.chromiumapp.org/#access_token=TW&state=wrong' });
+      let threw = '';
+      try { await FCM.auth.connect('twitch', {}); } catch (e) { threw = e.message; }
+      contains(threw, 'did not match', 'auth: a forged or stale response is rejected');
+    }
+
+    // ── The provider refusing is reported, not swallowed ──
+    {
+      const { FCM } = build({ redirect: 'https://abcd.chromiumapp.org/#error=access_denied' });
+      let threw = '';
+      try { await FCM.auth.connect('twitch', {}); } catch (e) { threw = e.message; }
+      contains(threw, 'access_denied', 'auth: a refusal surfaces its reason');
+    }
+
+    // ── A closed sign-in window is reported ──
+    {
+      const { FCM } = build({ redirect: undefined });
+      let threw = '';
+      try { await FCM.auth.connect('twitch', {}); } catch (e) { threw = e.message; }
+      contains(threw, 'closed', 'auth: closing the window is explained');
+    }
+
+    // ── Kick PKCE ──
+    {
+      const { FCM, store, calls } = build({
+        redirect: (url) => {
+          const state = new URL(url).searchParams.get('state');
+          return 'https://abcd.chromiumapp.org/?code=CODE&state=' + state;
+        },
+      });
+      await FCM.auth.connect('kick', { kickRedirect: 'extension' });
+
+      const authCall = calls.find((c) => c.authUrl);
+      const authUrl = new URL(authCall.authUrl);
+      eq(authUrl.searchParams.get('response_type'), 'code', 'auth: kick uses the code flow');
+      eq(authUrl.searchParams.get('code_challenge_method'), 'S256', 'auth: with PKCE');
+      ok(authUrl.searchParams.get('code_challenge'), 'auth: a challenge is sent');
+      ok(authUrl.searchParams.get('scope').includes('moderation:ban'),
+        'auth: kick moderation scope is requested');
+
+      const exchange = calls.find((c) => c.url && c.url.includes('/kick-token'));
+      ok(exchange, 'auth: the code is exchanged through the proxy, never in the browser');
+      const sent = JSON.parse(exchange.body);
+      eq(sent.code, 'CODE', 'auth: the code is passed on');
+      ok(sent.code_verifier, 'auth: the verifier is passed on');
+      eq(sent.redirect_uri, 'https://abcd.chromiumapp.org/', 'auth: the redirect must match');
+
+      const saved = store[FCM.STORAGE_KEYS.auth].kick;
+      eq(saved.accessToken, 'KA', 'auth: kick token stored');
+      eq(saved.refreshToken, 'KR', 'auth: kick refresh token stored');
+      eq(saved.login, 'kickme', 'auth: the kick account is named');
+    }
+
+    // ── The proxy is asked first, and it wins ──
+    {
+      const { FCM, calls } = build({
+        configResponse: { client_id: 'proxy-says-this-one' },
+        redirect: (url) => 'https://abcd.chromiumapp.org/?code=CODE&state='
+          + new URL(url).searchParams.get('state'),
+      });
+      await FCM.auth.connect('kick', { kickRedirect: 'extension' });
+      const authCall = calls.find((c) => c.authUrl);
+      eq(new URL(authCall.authUrl).searchParams.get('client_id'), 'proxy-says-this-one',
+        'auth: the proxy decides which Kick application is used');
+    }
+
+    // ── A blip fetching the id falls back rather than blocking sign-in ──
+    {
+      const { FCM, calls } = build({
+        configResponse: {},
+        redirect: (url) => 'https://abcd.chromiumapp.org/?code=CODE&state='
+          + new URL(url).searchParams.get('state'),
+      });
+      await FCM.auth.connect('kick', { kickRedirect: 'extension' });
+      const authCall = calls.find((c) => c.authUrl);
+      eq(new URL(authCall.authUrl).searchParams.get('client_id'), FCM.DEFAULT_KICK_CLIENT_ID,
+        'auth: a failed config lookup falls back to the built-in id');
+    }
+
+    // ── The default: reuse the redirect the desktop app already registered ──
+    {
+      const { FCM, calls } = build({
+        redirect: (url) => FCM_SHARED + '?code=CODE&state='
+          + encodeURIComponent(new URL(url).searchParams.get('state')),
+      });
+      await FCM.auth.connect('kick', {});
+      const opened = calls.find((c) => c.tabUrl);
+      ok(opened, 'kickshared: sign-in opens a tab, since chrome.identity cannot end on localhost');
+      const authUrl = new URL(opened.tabUrl);
+      eq(authUrl.searchParams.get('redirect_uri'), FCM_SHARED,
+        "kickshared: Kick is told to use the desktop app's already-registered URL");
+      eq(authUrl.searchParams.get('code_challenge_method'), 'S256', 'kickshared: still PKCE');
+
+      const exchange = JSON.parse(calls.find((c) => c.url && c.url.includes('/kick-token')).body);
+      eq(exchange.redirect_uri, FCM_SHARED,
+        'kickshared: the exchange repeats it, as Kick requires');
+      ok(exchange.code_verifier, 'kickshared: the verifier goes to the worker, never the secret');
+
+      const summary = await FCM.auth.summary();
+      eq(summary.kick.connected, true, 'kickshared: the account ends up connected');
+    }
+
+    // ── Straight back to the extension: one hop, id-specific URL ──
+    {
+      const { FCM, calls } = build({
+        redirect: (url) => 'https://abcd.chromiumapp.org/?code=CODE&state='
+          + encodeURIComponent(new URL(url).searchParams.get('state')),
+      });
+      await FCM.auth.connect('kick', { kickRedirect: 'extension' });
+      const authUrl = new URL(calls.find((c) => c.authUrl).authUrl);
+      eq(authUrl.searchParams.get('redirect_uri'), 'https://abcd.chromiumapp.org/',
+        'kickredirect: the extension is the redirect by default');
+      ok(!authUrl.searchParams.get('state').includes('~'),
+        'kickredirect: no forwarding target is needed in state');
+      const exchange = JSON.parse(calls.find((c) => c.url && c.url.includes('/kick-token')).body);
+      eq(exchange.redirect_uri, 'https://abcd.chromiumapp.org/',
+        'kickredirect: the exchange repeats the same redirect, as Kick requires');
+    }
+
+    // ── Via the worker: one fixed URL registered with Kick, forever ──
+    {
+      const { FCM, calls } = build({
+        redirect: (url) => 'https://abcd.chromiumapp.org/?code=CODE&state='
+          + encodeURIComponent(new URL(url).searchParams.get('state')),
+      });
+      await FCM.auth.connect('kick', {
+        kickRedirect: 'proxy',
+        kickProxyUrl: 'https://proxy.example',
+      });
+      const authUrl = new URL(calls.find((c) => c.authUrl).authUrl);
+      eq(authUrl.searchParams.get('redirect_uri'), 'https://proxy.example/kick-callback',
+        'kickredirect: Kick is told to return to the worker');
+
+      // The worker learns where to forward from state, so it has to be in there.
+      const state = authUrl.searchParams.get('state');
+      ok(state.includes('~'), 'kickredirect: state carries the forwarding target');
+      const encoded = state.slice(state.indexOf('~') + 1);
+      const padded = encoded.replace(/-/g, '+').replace(/_/g, '/');
+      const decoded = Buffer.from(padded + '='.repeat((4 - (padded.length % 4)) % 4), 'base64').toString();
+      eq(decoded, 'https://abcd.chromiumapp.org/',
+        'kickredirect: and it decodes back to the extension');
+      ok(/^https:\/\/[a-z]+\.chromiumapp\.org\/?$/.test(decoded),
+        'kickredirect: the target is a chromiumapp.org URL, which is all the worker will forward to');
+
+      const exchange = JSON.parse(calls.find((c) => c.url && c.url.includes('/kick-token')).body);
+      eq(exchange.redirect_uri, 'https://proxy.example/kick-callback',
+        'kickredirect: the exchange uses the worker URL too, or Kick rejects it');
+    }
+
+    // ── The worker's hint about what to fix is passed on ──
+    {
+      const { FCM } = build({
+        redirect: (url) => 'https://abcd.chromiumapp.org/?code=CODE&state='
+          + encodeURIComponent(new URL(url).searchParams.get('state')),
+        tokenResponse: { error: 'invalid_request', hint: 'redirect_uri did not match' },
+      });
+      let threw = '';
+      try { await FCM.auth.connect('kick', { kickRedirect: 'extension' }); } catch (e) { threw = e.message; }
+      contains(threw, 'invalid_request', 'kickredirect: the failure names what Kick said');
+      contains(threw, 'redirect_uri did not match',
+        "kickredirect: and carries the worker's hint about what to fix");
+    }
+
+    // ── usable(): a live token passes straight through ──
+    {
+      const { FCM } = build({});
+      await FCM.auth.set('twitch', { accessToken: 'T', expiresAt: Date.now() + 600000 });
+      const rec = await FCM.auth.usable('twitch', {});
+      eq(rec.accessToken, 'T', 'auth: a live token is handed back');
+    }
+
+    // ── usable(): an expired Twitch token cannot be refreshed, so it is dropped ──
+    {
+      const { FCM } = build({});
+      await FCM.auth.set('twitch', { accessToken: 'T', expiresAt: Date.now() - 1000 });
+      const rec = await FCM.auth.usable('twitch', {});
+      eq(rec, null, 'auth: an expired implicit token is discarded');
+      eq((await FCM.auth.summary()).twitch.connected, false,
+        'auth: and the UI stops claiming a connection');
+    }
+
+    // ── usable(): an expiring Kick token refreshes silently ──
+    {
+      const { FCM } = build({ tokenResponse: { access_token: 'KA2', refresh_token: 'KR2', expires_in: 3600 } });
+      await FCM.auth.set('kick', { accessToken: 'old', refreshToken: 'KR', expiresAt: Date.now() - 1000 });
+      const rec = await FCM.auth.usable('kick', {});
+      eq(rec.accessToken, 'KA2', 'auth: kick refreshes rather than logging the user out');
+      eq(rec.refreshToken, 'KR2', 'auth: the rotated refresh token is kept');
+    }
+
+    // ── usable(): a refresh that fails logs out cleanly ──
+    {
+      const { FCM } = build({ tokenResponse: { error: 'invalid_grant' } });
+      await FCM.auth.set('kick', { accessToken: 'old', refreshToken: 'KR', expiresAt: Date.now() - 1000 });
+      eq(await FCM.auth.usable('kick', {}), null, 'auth: an unrefreshable token is cleared');
+    }
+
+    // ── A token with no expiry at all is treated as live ──
+    {
+      const { FCM } = build({});
+      await FCM.auth.set('twitch', { accessToken: 'T', expiresAt: 0 });
+      ok(await FCM.auth.usable('twitch', {}), 'auth: a token with no stated expiry still works');
+    }
+
+    // ── Failures are explained in terms of what to do about them ──
+    {
+      const { FCM } = build({});
+      const tw = FCM.explainAuthFailure('twitch', 'Authorization page could not be loaded.');
+      eq(tw.needsRedirectSetup, true,
+        'auth: Twitch refusing to render the page is read as an unregistered redirect');
+      contains(tw.message, 'redirect URL', 'auth: and the message says so plainly');
+      contains(tw.redirectUri, '.chromiumapp.org/',
+        'auth: the exact URL to register comes with it');
+
+      contains(tw.message, 'redirect_mismatch',
+        'auth: the message names the symptom the user would actually have seen');
+
+      const kick = FCM.explainAuthFailure('kick', 'invalid redirect uri');
+      eq(kick.needsRedirectSetup, true, 'auth: Kick naming the redirect is read the same way');
+      contains(kick.message, 'Kick', 'auth: and names the platform');
+
+      const cancelled = FCM.explainAuthFailure('twitch', 'The sign-in window was closed before it finished.');
+      eq(cancelled.needsRedirectSetup, false, 'auth: a cancelled sign-in is not a setup problem');
+      contains(cancelled.message, 'cancelled', 'auth: and says it was cancelled');
+
+      const other = FCM.explainAuthFailure('twitch', 'something else entirely');
+      eq(other.needsRedirectSetup, false, 'auth: an unrecognised failure is not blamed on the redirect');
+      contains(other.message, 'something else entirely', 'auth: but still reports what happened');
+    }
+
+    // ── Disconnecting removes only that platform ──
+    {
+      const { FCM } = build({});
+      await FCM.auth.set('twitch', { accessToken: 'T' });
+      await FCM.auth.set('kick', { accessToken: 'K' });
+      await FCM.auth.clear('twitch');
+      const summary = await FCM.auth.summary();
+      eq(summary.twitch.connected, false, 'auth: the disconnected platform is gone');
+      eq(summary.kick.connected, true, 'auth: the other platform is untouched');
+    }
+  })();
+};
+
+suites.send = function () {
+  function build(responder) {
+    const calls = [];
+    const cleared = [];
+    const sandbox = makeSandbox({
+      chrome: { storage: { local: { get: async () => ({}), set: async () => {} } } },
+      fetch: async (url, init) => {
+        calls.push({ url: String(url), method: init.method, body: init.body, headers: init.headers });
+        return responder ? responder(String(url), init) : { ok: true, json: async () => ({}) };
+      },
+    });
+    const FCM = load(sandbox, ...SHARED, 'src/background/send.js');
+    FCM.auth = {
+      usable: async (p) => ({
+        accessToken: p === 'twitch' ? 'TW' : 'KK',
+        clientId: 'cid',
+        userId: p === 'twitch' ? '55' : '66',
+      }),
+      clear: async (p) => { cleared.push(p); },
+    };
+    return { FCM, calls, cleared };
+  }
+
+  return (async () => {
+    // ── Twitch ──
+    {
+      const { FCM, calls } = build(() => ({ ok: true, json: async () => ({ data: [{ is_sent: true }] }) }));
+      const r = await FCM.sendMessage('twitch', 'hello there', { roomId: '4242' }, {});
+      eq(r.ok, true, 'send: twitch accepts');
+      const call = calls[0];
+      ok(call.url.endsWith('/chat/messages'), 'send: twitch uses the chat messages endpoint');
+      eq(call.method, 'POST', 'send: as a POST');
+      const body = JSON.parse(call.body);
+      eq(body.broadcaster_id, '4242', 'send: addressed to the joined channel');
+      eq(body.sender_id, '55', 'send: sent as the connected account');
+      eq(body.message, 'hello there', 'send: the text is passed through unchanged');
+      eq(call.headers['Client-Id'], 'cid', 'send: the client id that owns the token is used');
+    }
+
+    // Twitch accepting the request but dropping the message is not success.
+    {
+      const { FCM } = build(() => ({
+        ok: true,
+        json: async () => ({ data: [{ is_sent: false, drop_reason: { message: 'blocked term' } }] }),
+      }));
+      const r = await FCM.sendMessage('twitch', 'x', { roomId: '1' }, {});
+      eq(r.ok, false, 'send: a dropped message is not reported as sent');
+      eq(r.reason, 'dropped', 'send: and is labelled as dropped');
+      contains(r.detail, 'blocked term', 'send: with the reason Twitch gave');
+    }
+
+    // A dead token is cleared so the UI stops offering it.
+    {
+      const { FCM, cleared } = build(() => ({ ok: false, status: 401, json: async () => ({}) }));
+      const r = await FCM.sendMessage('twitch', 'x', { roomId: '1' }, {});
+      eq(r.reason, 'expired', 'send: a 401 is reported as an expired sign-in');
+      eq(cleared, ['twitch'], 'send: and the dead token is discarded');
+    }
+
+    // A refusal carries the platform's own words.
+    {
+      const { FCM } = build(() => ({ ok: false, status: 400, json: async () => ({ message: 'slow mode' }) }));
+      const r = await FCM.sendMessage('twitch', 'x', { roomId: '1' }, {});
+      eq(r.reason, 'rejected', 'send: a refusal is reported');
+      contains(r.detail, 'slow mode', 'send: with the platform message');
+    }
+
+    // The network being down is its own case.
+    {
+      const sandbox = makeSandbox({
+        chrome: { storage: { local: { get: async () => ({}), set: async () => {} } } },
+        fetch: async () => { throw new Error('offline'); },
+      });
+      const FCM = load(sandbox, ...SHARED, 'src/background/send.js');
+      FCM.auth = { usable: async () => ({ accessToken: 'T', clientId: 'c', userId: '1' }), clear: async () => {} };
+      const r = await FCM.sendMessage('twitch', 'x', { roomId: '1' }, {});
+      eq(r.reason, 'network', 'send: a network failure is distinguished from a refusal');
+    }
+
+    // ── Kick ──
+    {
+      const { FCM, calls } = build(() => ({ ok: true, json: async () => ({ data: { is_sent: true } }) }));
+      const r = await FCM.sendMessage('kick', 'hey', { roomId: '77' }, {});
+      eq(r.ok, true, 'send: kick accepts');
+      const body = JSON.parse(calls[0].body);
+      eq(body.type, 'user', 'send: kick messages are sent as the user');
+      eq(body.content, 'hey', 'send: the text is passed through');
+      eq(body.broadcaster_user_id, 77, 'send: kick wants the broadcaster id as a number');
+    }
+
+    // ── Guards ──
+    {
+      const { FCM, calls } = build();
+      eq((await FCM.sendMessage('twitch', 'x', { roomId: null }, {})).reason, 'no-channel',
+        'send: nothing is sent without a joined channel');
+      eq(calls.length, 0, 'send: and no request is made');
+      eq((await FCM.sendMessage('youtube', 'x', { roomId: '1' }, {})).reason, 'unsupported',
+        'send: an unknown platform is refused');
+    }
+
+    // A missing account is refused before any request.
+    {
+      const { FCM, calls } = build();
+      FCM.auth.usable = async () => null;
+      eq((await FCM.sendMessage('twitch', 'x', { roomId: '1' }, {})).reason, 'not-connected',
+        'send: no account means no send');
+      eq(calls.length, 0, 'send: and no request is made');
+    }
+  })();
+};
+
+// Everything the extension renders arrives from somewhere it does not control:
+// chat text, display names, emote payloads, badge lists, API responses. This
+// suite feeds each of those the shapes that break naive parsers.
+suites.resilience = function () {
+  const sandbox = makeSandbox({
+    chrome: { storage: { sync: { get: async () => ({}) } } },
+    document: stubDocument(),
+  });
+  const FCM = load(sandbox, ...SHARED, 'src/content/render.js');
+  FCM.setViewSettings(FCM.DEFAULT_SETTINGS);
+
+  // ── Malformed IRC must never throw ──────────────────────────────────────────
+  const brokenLines = [
+    '', ' ', '@', '@;;;', '@=', ':', '::', '@a=b', '@a=b :', '@a=b :nick',
+    'PRIVMSG', ':nick PRIVMSG', ':nick PRIVMSG #chan',
+    '@badges= :n!n@n PRIVMSG #c :',
+    '@emotes=notanumber:0-4 :n!n@n PRIVMSG #c :hi',
+    '@emotes=25:x-y :n!n@n PRIVMSG #c :hi',
+    '@emotes=25: :n!n@n PRIVMSG #c :hi',
+    '@emotes=25:5-1 :n!n@n PRIVMSG #c :hi',
+    '@tmi-sent-ts=notanumber :n!n@n PRIVMSG #c :hi',
+    ':tmi.twitch.tv CLEARCHAT',
+    ':tmi.twitch.tv CLEARMSG #c',
+    '@a=' + 'x'.repeat(5000) + ' :n!n@n PRIVMSG #c :hi',
+  ];
+  let threw = null;
+  brokenLines.forEach((line) => {
+    try {
+      const parsed = FCM.parseIrcLine(line);
+      FCM.parseTwitchEmoteMap(parsed.tags.emotes);
+      FCM.twitchBadgeClass(parsed.tags.badges || '', parsed.tags);
+      FCM.twitchUserNoticeSummary(parsed.tags, parsed.params[1] || '');
+    } catch (e) {
+      threw = line + ' -> ' + e.message;
+    }
+  });
+  eq(threw, null, 'resilience: no malformed IRC line throws');
+
+  // An out-of-order emote range must not produce a broken token stream.
+  const backwards = FCM.renderMessageBody('twitch', 'hello world', {
+    emoteMap: { 5: { id: '1', end: 1 } },
+  });
+  ok(typeof backwards.html === 'string', 'resilience: a backwards emote range still renders');
+
+  // A range past the end of the string must not run away.
+  const past = FCM.renderMessageBody('twitch', 'hi', { emoteMap: { 0: { id: '1', end: 999 } } });
+  ok(typeof past.html === 'string', 'resilience: an emote range past the end terminates');
+
+  // ── Malformed Kick payloads ────────────────────────────────────────────────
+  const badEmoteSets = [
+    null, undefined, 0, '', 'string', [], {}, [null], [{}], [{ emotes: null }],
+    [{ emotes: [null, undefined, 0, 'x'] }],
+    [{ emotes: [{ id: null, name: 'x' }, { id: 1, name: null }] }],
+    { data: null }, { data: 'nope' }, { emotes: 5 },
+  ];
+  threw = null;
+  badEmoteSets.forEach((payload) => {
+    try { FCM.parseKickEmotePayload(payload); } catch (e) { threw = JSON.stringify(payload) + ' -> ' + e.message; }
+  });
+  eq(threw, null, 'resilience: no emote payload shape throws');
+
+  threw = null;
+  [null, undefined, 'x', 5, {}, [null], [{}], [{ name: 'x' }], [{ id: 1 }]].forEach((meta) => {
+    try { FCM.normalizeKickEmoteMeta(meta); } catch (e) { threw = String(e.message); }
+  });
+  eq(threw, null, 'resilience: no emote metadata shape throws');
+
+  threw = null;
+  [null, undefined, 'x', 5, {}, [], [null], [{ type: null }], [{ type: {} }]].forEach((badges) => {
+    try { FCM.kickBadgeClass(badges); FCM.renderBadges('kick', badges); } catch (e) { threw = String(e.message); }
+  });
+  eq(threw, null, 'resilience: no badge shape throws');
+
+  threw = null;
+  ['', 'x', 'a/', '/1', 'a/1/2', ',,,', 'a/1,,b/2'].forEach((tag) => {
+    try { FCM.renderBadges('twitch', tag); } catch (e) { threw = tag + ' -> ' + e.message; }
+  });
+  eq(threw, null, 'resilience: no twitch badge tag throws');
+
+  threw = null;
+  ['App\\Events\\X', '', null, undefined, 'pusher:ping'].forEach((name) => {
+    [null, undefined, {}, { user: 5 }, { recipients: 'x' }, { gifted_usernames: {} }].forEach((p) => {
+      try { FCM.formatKickEventSummary(name, p); } catch (e) { threw = name + ' -> ' + e.message; }
+    });
+  });
+  eq(threw, null, 'resilience: no kick event shape throws');
+
+  // ── Hostile content must render as text, never as markup ───────────────────
+  const attacks = [
+    '<img src=x onerror=alert(1)>',
+    '"><script>alert(1)</script>',
+    "'><svg/onload=alert(1)>",
+    '</span><span class="fcm-author">impostor',
+    'javascript:alert(1)',
+    '<iframe src="javascript:alert(1)">',
+    '&lt;already escaped&gt;',
+    ' [31m',
+  ];
+  // Tags the renderer is allowed to emit. Anything else in the output came
+  // from the content, which is exactly what must never happen.
+  const ALLOWED_TAGS = ['span', '/span', 'img', 'a', '/a', 'div', '/div', 'b', '/b'];
+  function onlyExpectedTags(html) {
+    const tags = String(html).match(/<\/?[a-zA-Z][^\s>]*/g) || [];
+    return tags.every((t) => ALLOWED_TAGS.includes(t.slice(1).toLowerCase()));
+  }
+
+  attacks.forEach((attack) => {
+    const body = FCM.renderMessageBody('twitch', attack, {});
+    ok(onlyExpectedTags(body.html),
+      `resilience: a hostile message body produces no unexpected element (${attack})`);
+    missing(body.html, '<img src=x', 'resilience: markup in a message body is inert');
+    missing(body.html, '<script', 'resilience: script tags in a body are inert');
+    missing(body.html, '<svg', 'resilience: svg in a body is inert');
+    missing(body.html, '<iframe', 'resilience: iframes in a body are inert');
+  });
+
+  // The same content in a display name, which lands inside an attribute.
+  attacks.forEach((attack) => {
+    const el = FCM.buildMessageEl({
+      platform: 'twitch', author: attack, text: 'hi', badgesRaw: '', messageId: attack,
+    }, new Set(['twitch']));
+    // The strongest statement available without a parser: every tag in the
+    // output is one the renderer itself emits. An injected element of any kind
+    // would show up here.
+    ok(onlyExpectedTags(el.innerHTML),
+      `resilience: a hostile username produces no unexpected element (${attack})`);
+    missing(el.innerHTML, '" onerror=', 'resilience: a username cannot open a new attribute');
+  });
+
+  // And in an emote name and url, which land in src/alt/title.
+  FCM.setEmotes('twitch', 'thirdparty', {
+    'evil"onerror="alert(1)': { url: 'https://cdn/x.png', source: '7TV' },
+    safe: { url: 'https://cdn/x.png" onerror="alert(1)', source: '"><b>' },
+  });
+  const emoteHtml = FCM.renderMessageBody('twitch', 'evil"onerror="alert(1) safe', {});
+  missing(emoteHtml.html, '"onerror="', 'resilience: an emote name cannot break out of its attribute');
+  missing(emoteHtml.html, '" onerror="', 'resilience: an emote url cannot break out of its attribute');
+  missing(emoteHtml.html, '"><b>', 'resilience: an emote source cannot break out of its attribute');
+  contains(emoteHtml.html, '&quot;', 'resilience: quotes in emote fields are escaped');
+
+  // A malicious badge image url lands in src.
+  const badgeHtml = FCM.renderBadges('kick', [{ type: 'mod', image_url: 'x" onerror="alert(1)' }]);
+  missing(badgeHtml, '" onerror="', 'resilience: a badge url cannot break out of its attribute');
+  contains(badgeHtml, '&quot;', 'resilience: quotes in a badge url are escaped');
+
+  // A link whose text is hostile.
+  const linky = FCM.renderMessageBody('twitch', 'https://x.test/"><script>alert(1)</script>', {});
+  missing(linky.html, '<script', 'resilience: a hostile url is escaped inside the anchor');
+
+  // ── Size and unicode ───────────────────────────────────────────────────────
+  const huge = 'a'.repeat(50000);
+  const t0 = Date.now();
+  const hugeBody = FCM.renderMessageBody('twitch', huge, {});
+  ok(Date.now() - t0 < 500, 'resilience: a 50k-character message renders quickly');
+  ok(hugeBody.html.length >= huge.length, 'resilience: and renders in full');
+
+  const manyWords = new Array(5000).fill('word').join(' ');
+  const t1 = Date.now();
+  FCM.renderMessageBody('twitch', manyWords, {});
+  ok(Date.now() - t1 < 500, 'resilience: a 5000-word message renders quickly');
+
+  const unicode = [
+    '\u{1F600}\u{1F1FA}\u{1F1F8}\u{1F468}‍\u{1F469}‍\u{1F467}',
+    '‮reversed text‬',
+    ' null ',
+    'ź́́́́',
+    '\uD83D',
+  ];
+  threw = null;
+  unicode.forEach((text) => {
+    try {
+      FCM.renderMessageBody('twitch', text, { emoteMap: { 0: { id: '1', end: 1 } } });
+      FCM.renderMessageBody('kick', text, { emotes: [] });
+    } catch (e) { threw = e.message; }
+  });
+  eq(threw, null, 'resilience: unusual unicode does not throw');
+
+  // Emoji before an emote must not shift it, since Twitch counts codepoints.
+  const shifted = FCM.renderMessageBody('twitch', '\u{1F600}\u{1F600} Kappa', {
+    emoteMap: { 3: { id: '25', end: 7 } },
+  });
+  contains(shifted.html, 'alt="Kappa"', 'resilience: astral emoji do not shift emote positions');
+
+  // ── A mention pattern must not be breakable by regex metacharacters ────────
+  FCM.setViewSettings({ ...FCM.DEFAULT_SETTINGS, highlightNames: 'a.b*c, (paren, [brack' });
+  threw = null;
+  try {
+    const m = FCM.renderMessageBody('twitch', 'hello a.b*c and (paren', {});
+    ok(typeof m.html === 'string', 'resilience: regex characters in a highlight name are escaped');
+  } catch (e) { threw = e.message; }
+  eq(threw, null, 'resilience: a hostile highlight name does not throw');
+  FCM.setViewSettings(FCM.DEFAULT_SETTINGS);
+
+  // ── System message formatting on odd input ────────────────────────────────
+  threw = null;
+  [null, undefined, '', '[', '[]', '[unclosed', ':', 'Twitch:', 'x'.repeat(10000)].forEach((txt) => {
+    try { FCM.formatSystemMessage(txt); FCM.buildSysEl(txt); } catch (e) { threw = String(txt) + ' -> ' + e.message; }
+  });
+  eq(threw, null, 'resilience: no status text shape throws');
+
+  // ── URL parsing on rubbish ────────────────────────────────────────────────
+  threw = null;
+  ['', 'x', '//', 'http://', 'https://[', 'kick.com', null, undefined, 123].forEach((u) => {
+    try { FCM.slugFromUrl && FCM.slugFromUrl(u, 'kick'); } catch (e) { threw = String(u) + ' -> ' + e.message; }
+  });
+  eq(threw, null, 'resilience: no url shape throws the slug parser');
+};
+
+// The background worker facing platforms that are down, slow, or lying.
+suites.errors = function () {
+  const { bootWorker, wait } = require('./background.js');
+
+  return (async () => {
+    // ── Every request failing must not stop chat from connecting ──
+    {
+      const w = bootWorker({ fetchImpl: async () => { throw new Error('offline'); } });
+      try {
+        w.connect();
+        w.send({ cmd: 'hello', site: 'twitch', channel: 'somechannel', hints: [] });
+        await wait(80);
+        ok(w.last('ready'), 'errors: the tab is still answered when every lookup fails');
+        eq(w.last('counterpart').counterpart, null, 'errors: no counterpart is claimed');
+
+        w.send({ cmd: 'join', platform: 'twitch', channel: 'somechannel' });
+        await wait(40);
+        ok(w.socketFor('irc-ws'), 'errors: chat still connects with the network flaky');
+      } finally { w.teardown(); }
+    }
+
+    // ── Malformed JSON from the platforms ──
+    {
+      const w = bootWorker({
+        fetchImpl: async () => ({ ok: true, json: async () => { throw new Error('bad json'); } }),
+      });
+      try {
+        w.connect();
+        w.send({ cmd: 'hello', site: 'kick', channel: 'somechannel', hints: [] });
+        await wait(80);
+        ok(w.last('ready'), 'errors: unparseable responses do not wedge the worker');
+      } finally { w.teardown(); }
+    }
+
+    // ── Kick returning a channel with no chatroom ──
+    {
+      const w = bootWorker({
+        fetchImpl: async (url) => {
+          if (String(url).includes('/channels/')) {
+            return { ok: true, json: async () => ({ id: 1, slug: 'x' }) };
+          }
+          return { ok: false, status: 404, json: async () => ({}) };
+        },
+      });
+      try {
+        w.connect();
+        w.send({ cmd: 'hello', site: 'kick', channel: 'somechannel', hints: [] });
+        await wait(60);
+        w.clear();
+        w.send({ cmd: 'join', platform: 'kick', channel: 'somechannel' });
+        await wait(80);
+        ok(w.of('sys').some((s) => /could not find|could not load/i.test(s.text)),
+          'errors: a channel with no chatroom is reported, not left hanging');
+        eq(w.last('status').state, 'error', 'errors: and the status says error');
+      } finally { w.teardown(); }
+    }
+
+    // ── Garbage arriving on the sockets ──
+    {
+      const w = bootWorker();
+      try {
+        w.connect();
+        w.send({ cmd: 'hello', site: 'twitch', channel: 'somechannel', hints: [] });
+        await wait(60);
+        w.send({ cmd: 'join', platform: 'twitch', channel: 'somechannel' });
+        w.send({ cmd: 'join', platform: 'kick', channel: 'somechannel' });
+        await wait(120);
+
+        const irc = w.socketFor('irc-ws');
+        const pusher = w.socketFor('pusher.com');
+        pusher.push(JSON.stringify({ event: 'pusher:connection_established', data: '{}' }));
+        await wait(40);
+        w.clear();
+
+        let broke = null;
+        try {
+          ['', '\r\n', 'garbage', '@@@@', ':::', ' '].forEach((junk) => irc.push(junk));
+          [
+            '', 'not json', '{', '[]', 'null', '{"event":null}', '{"event":123}',
+            '{"event":"App\\\\Events\\\\ChatMessageEvent"}',
+            '{"event":"App\\\\Events\\\\ChatMessageEvent","data":"not json"}',
+            '{"event":"App\\\\Events\\\\ChatMessageEvent","data":"{}"}',
+            '{"event":"App\\\\Events\\\\ChatMessageEvent","data":"{\\"content\\":null}"}',
+            '{"event":"App\\\\Events\\\\MessageDeletedEvent","data":"{}"}',
+            '{"event":"App\\\\Events\\\\UserBannedEvent","data":"{}"}',
+          ].forEach((junk) => pusher.push(junk));
+        } catch (e) { broke = e.message; }
+        eq(broke, null, 'errors: junk on either socket never throws');
+        eq(w.of('chat').length, 0, 'errors: and produces no bogus messages');
+
+        // The sockets still work afterwards.
+        irc.push('@display-name=Real;id=r1 :n!n@n PRIVMSG #somechannel :still working\r\n');
+        eq(w.last('chat').msg.author, 'Real', 'errors: a real message after the junk still arrives');
+      } finally { w.teardown(); }
+    }
+
+    // ── A command for a platform that was never joined ──
+    {
+      const w = bootWorker();
+      try {
+        w.connect();
+        w.send({ cmd: 'hello', site: 'twitch', channel: 'somechannel', hints: [] });
+        await wait(60);
+        w.clear();
+        w.send({ cmd: 'send', id: 's1', text: 'hi', targets: ['twitch', 'kick'] });
+        await wait(60);
+        const res = w.last('sendResult');
+        eq(res.results.twitch.reason, 'no-channel', 'errors: sending to an unjoined channel is refused');
+        eq(res.results.kick.reason, 'no-channel', 'errors: for both platforms');
+      } finally { w.teardown(); }
+    }
+
+    // ── Nonsense commands must be ignored, not crash the worker ──
+    {
+      const w = bootWorker();
+      try {
+        w.connect();
+        let broke = null;
+        try {
+          [
+            null, undefined, {}, { cmd: null }, { cmd: 'nope' },
+            { cmd: 'join' }, { cmd: 'join', platform: 'nope', channel: 'x' },
+            { cmd: 'leave' }, { cmd: 'moderate' }, { cmd: 'send' },
+            { cmd: 'hello' }, { cmd: 'hints', hints: 'notanarray' },
+          ].forEach((msg) => w.send(msg));
+          await wait(60);
+        } catch (e) { broke = e.message; }
+        eq(broke, null, 'errors: malformed commands are ignored without throwing');
+
+        // Still alive.
+        w.send({ cmd: 'hello', site: 'twitch', channel: 'aftergarbage', hints: [] });
+        await wait(60);
+        eq(w.last('ready').channel, 'aftergarbage', 'errors: the worker still works afterwards');
+      } finally { w.teardown(); }
+    }
+  })();
+};
+
+// The feed is what has to stay bounded and accurate while a busy channel pours
+// into it, so its queue, dedupe and trim are driven directly here.
+suites.feed = function () {
+  function fakeNode(tag) {
+    const node = {
+      tagName: tag || 'DIV',
+      children: [],
+      dataset: {},
+      style: {},
+      innerHTML: '',
+      scrollTop: 0,
+      scrollHeight: 0,
+      clientHeight: 100,
+      appendChild(child) {
+        if (child.__fragment) {
+          child.children.forEach((c) => { c.parentNode = this; this.children.push(c); });
+          child.children = [];
+          return child;
+        }
+        child.parentNode = this;
+        this.children.push(child);
+        return child;
+      },
+      removeChild(child) {
+        const i = this.children.indexOf(child);
+        if (i >= 0) this.children.splice(i, 1);
+        return child;
+      },
+      replaceChildren() { this.children = []; },
+      remove() {
+        if (this.parentNode) this.parentNode.removeChild(this);
+      },
+      querySelector(sel) { return this.querySelectorAll(sel)[0] || null; },
+      querySelectorAll(sel) {
+        // Only the shapes feed.js actually uses.
+        const platform = (/data-platform="([^"]+)"/.exec(sel) || [])[1];
+        const msgId = (/data-msg-id="([^"]+)"/.exec(sel) || [])[1];
+        const wantsMsg = sel.includes('.fcm-msg');
+        const wantsEmpty = sel.includes('.fcm-empty');
+        return this.children.filter((c) => {
+          if (wantsEmpty) return c.className === 'fcm-empty';
+          if (wantsMsg && !String(c.className).includes('fcm-msg')) return false;
+          if (platform && c.dataset.platform !== platform) return false;
+          if (msgId && c.dataset.msgId !== msgId) return false;
+          return true;
+        });
+      },
+    };
+    Object.defineProperty(node, 'childElementCount', { get: () => node.children.length });
+    Object.defineProperty(node, 'firstElementChild', { get: () => node.children[0] || null });
+    const classes = new Set();
+    node.classList = {
+      add: (c) => classes.add(c),
+      remove: (c) => classes.delete(c),
+      contains: (c) => classes.has(c),
+      toggle: (c, f) => (f ? classes.add(c) : classes.delete(c)),
+    };
+    Object.defineProperty(node, 'className', {
+      get: () => [...classes].join(' '),
+      set: (v) => { classes.clear(); String(v).split(/\s+/).filter(Boolean).forEach((c) => classes.add(c)); },
+    });
+    return node;
+  }
+
+  function build(settings) {
+    const feedEl = fakeNode();
+    const frames = [];
+    const sandbox = makeSandbox({
+      chrome: { storage: { sync: { get: async () => ({}) } } },
+      document: {
+        hidden: false,
+        createElement: (t) => fakeNode(t),
+        createDocumentFragment: () => {
+          const f = fakeNode();
+          f.__fragment = true;
+          return f;
+        },
+      },
+      window: { requestAnimationFrame: (fn) => { frames.push(fn); return frames.length; } },
+    });
+    const FCM = load(sandbox, ...SHARED, 'src/content/render.js', 'src/content/feed.js');
+    FCM.setViewSettings(FCM.DEFAULT_SETTINGS);
+    const current = { ...FCM.DEFAULT_SETTINGS, ...(settings || {}) };
+    const feed = FCM.createFeed(feedEl, () => current);
+    return {
+      FCM, feed, feedEl, current,
+      flush() { const pending = frames.splice(0); pending.forEach((fn) => fn()); },
+    };
+  }
+
+  const filter = new Set(['twitch', 'kick']);
+  const FCM_MIN_MESSAGES = build().FCM.MAX_MESSAGES_MIN;
+
+  // ── Duplicates are dropped, and only real duplicates ──
+  {
+    const t = build();
+    const first = t.feed.addMessage({ platform: 'twitch', author: 'a', text: 'x', messageId: 'm1' }, filter);
+    const again = t.feed.addMessage({ platform: 'twitch', author: 'a', text: 'x', messageId: 'm1' }, filter);
+    ok(first, 'feed: the first copy is accepted');
+    eq(again, null, 'feed: the same id twice is dropped');
+    eq(t.feed.count, 1, 'feed: and is not counted');
+
+    // The same id on the other platform is a different message.
+    ok(t.feed.addMessage({ platform: 'kick', author: 'a', text: 'x', messageId: 'm1' }, filter),
+      'feed: the same id on another platform is kept');
+
+    // Messages with no id at all cannot be deduped and must all be kept.
+    ok(t.feed.addMessage({ platform: 'twitch', author: 'a', text: 'y' }, filter), 'feed: an id-less message is kept');
+    ok(t.feed.addMessage({ platform: 'twitch', author: 'a', text: 'y' }, filter), 'feed: and so is the next one');
+    eq(t.feed.count, 4, 'feed: the count reflects what was accepted');
+  }
+
+  // ── The queue is bounded even before it reaches the DOM ──
+  {
+    const t = build({ maxMessages: 100 });
+    for (let i = 0; i < 500; i++) {
+      t.feed.addMessage({ platform: 'twitch', author: 'a', text: 'x', messageId: 'q' + i }, filter);
+    }
+    // Nothing has been flushed yet — a hidden tab does exactly this.
+    t.flush();
+    eq(t.feedEl.childElementCount, 100, 'feed: a burst larger than the cap lands at the cap');
+    eq(t.feed.count, 500, 'feed: but every message is still counted');
+  }
+
+  // ── Trim keeps the newest. 100 is the floor the setting clamps to, so that
+  //    is what a "small" feed actually means. ──
+  {
+    const t = build({ maxMessages: 100 });
+    for (let i = 0; i < 250; i++) {
+      t.feed.addMessage({ platform: 'twitch', author: 'a', text: 'msg' + i, messageId: 't' + i }, filter);
+      t.flush();
+    }
+    eq(t.feedEl.childElementCount, 100, 'feed: the cap holds across many flushes');
+    const last = t.feedEl.children[t.feedEl.children.length - 1];
+    eq(last.dataset.msgId, 't249', 'feed: the newest message is the one kept');
+    eq(t.feedEl.children[0].dataset.msgId, 't150', 'feed: the oldest beyond the cap are dropped');
+  }
+
+  // ── Lowering the cap trims immediately ──
+  {
+    const t = build({ maxMessages: 500 });
+    for (let i = 0; i < 500; i++) {
+      t.feed.addMessage({ platform: 'twitch', author: 'a', text: 'x', messageId: 'c' + i }, filter);
+    }
+    t.flush();
+    eq(t.feedEl.childElementCount, 500, 'feed: filled to the cap');
+    t.current.maxMessages = 100;
+    t.feed.trim();
+    eq(t.feedEl.childElementCount, 100, 'feed: lowering the cap trims what is already there');
+  }
+
+  // ── A cap below the allowed floor is raised, not honoured ──
+  {
+    const t = build({ maxMessages: 5 });
+    for (let i = 0; i < 150; i++) {
+      t.feed.addMessage({ platform: 'twitch', author: 'a', text: 'x', messageId: 'lo' + i }, filter);
+    }
+    t.flush();
+    eq(t.feedEl.childElementCount, FCM_MIN_MESSAGES,
+      'feed: a cap under the floor is clamped up rather than starving the feed');
+  }
+
+  // ── An out-of-range cap falls back rather than emptying the feed ──
+  {
+    const t = build({ maxMessages: 'nonsense' });
+    for (let i = 0; i < 20; i++) {
+      t.feed.addMessage({ platform: 'twitch', author: 'a', text: 'x', messageId: 'n' + i }, filter);
+    }
+    t.flush();
+    eq(t.feedEl.childElementCount, 20, 'feed: a nonsense cap does not throw messages away');
+  }
+
+  // ── Filtering hides rather than deletes ──
+  {
+    const t = build();
+    t.feed.addMessage({ platform: 'twitch', author: 'a', text: 'x', messageId: 'f1' }, filter);
+    t.feed.addMessage({ platform: 'kick', author: 'b', text: 'y', messageId: 'f2' }, filter);
+    t.flush();
+    t.feed.applyFilter(new Set(['twitch']));
+    const kickRow = t.feedEl.children.find((c) => c.dataset.platform === 'kick');
+    const twitchRow = t.feedEl.children.find((c) => c.dataset.platform === 'twitch');
+    ok(kickRow.classList.contains('fcm-hide'), 'feed: the filtered platform is hidden');
+    ok(!twitchRow.classList.contains('fcm-hide'), 'feed: the kept platform stays visible');
+    eq(t.feedEl.childElementCount, 2, 'feed: filtering removes nothing');
+
+    t.feed.applyFilter(new Set(['twitch', 'kick']));
+    ok(!kickRow.classList.contains('fcm-hide'), 'feed: unfiltering brings it back');
+  }
+
+  // ── Leaving a platform drops its rows and forgets its ids ──
+  {
+    const t = build();
+    t.feed.addMessage({ platform: 'twitch', author: 'a', text: 'x', messageId: 'd1' }, filter);
+    t.feed.addMessage({ platform: 'kick', author: 'b', text: 'y', messageId: 'd2' }, filter);
+    t.flush();
+    t.feed.dropPlatform('kick');
+    eq(t.feedEl.childElementCount, 1, 'feed: only that platform is dropped');
+    eq(t.feedEl.children[0].dataset.platform, 'twitch', 'feed: the other platform survives');
+
+    // Rejoining replays history, which must not be swallowed as already seen.
+    ok(t.feed.addMessage({ platform: 'kick', author: 'b', text: 'y', messageId: 'd2' }, filter),
+      'feed: a replayed message is accepted after leaving');
+    // The other platform is still deduped.
+    eq(t.feed.addMessage({ platform: 'twitch', author: 'a', text: 'x', messageId: 'd1' }, filter), null,
+      'feed: the platform that stayed is still deduped');
+  }
+
+  // ── Moderation marks ──
+  {
+    const t = build();
+    t.feed.addMessage({ platform: 'twitch', author: 'Bad', text: 'x', messageId: 'x1' }, filter);
+    t.feed.addMessage({ platform: 'twitch', author: 'Bad', text: 'y', messageId: 'x2' }, filter);
+    t.feed.addMessage({ platform: 'twitch', author: 'Good', text: 'z', messageId: 'x3' }, filter);
+    t.feed.addMessage({ platform: 'kick', author: 'Bad', text: 'w', messageId: 'x4' }, filter);
+    t.flush();
+
+    t.feed.markUserDeleted('twitch', 'BAD');
+    const deleted = t.feedEl.children.filter((c) => c.classList.contains('fcm-deleted'));
+    eq(deleted.length, 2, 'feed: every message from that user is struck, case-insensitively');
+    ok(deleted.every((c) => c.dataset.platform === 'twitch'),
+      'feed: and only on the platform they were timed out on');
+
+    t.feed.markMessageDeleted('twitch', 'x3');
+    ok(t.feedEl.children.find((c) => c.dataset.msgId === 'x3').classList.contains('fcm-deleted'),
+      'feed: a single message can be struck by id');
+
+    // A hostile id must not break the lookup.
+    let threw = null;
+    try {
+      t.feed.markMessageDeleted('twitch', 'a"]');
+      t.feed.markUserDeleted('twitch', '');
+      t.feed.markUserDeleted('twitch', null);
+    } catch (e) { threw = e.message; }
+    eq(threw, null, 'feed: an odd id or name does not throw');
+  }
+
+  // ── The dedupe set stays bounded over a long session ──
+  {
+    const t = build({ maxMessages: 100 });
+    const limit = t.FCM.SEEN_MESSAGE_LIMIT;
+    for (let i = 0; i < limit + 500; i++) {
+      t.feed.addMessage({ platform: 'twitch', author: 'a', text: 'x', messageId: 's' + i }, filter);
+    }
+    t.flush();
+    // The oldest ids have been forgotten, which is the intended trade: bounded
+    // memory in exchange for a duplicate only if one arrives thousands late.
+    ok(t.feed.addMessage({ platform: 'twitch', author: 'a', text: 'x', messageId: 's0' }, filter),
+      'feed: very old ids are eventually forgotten, keeping the set bounded');
+    eq(t.feed.addMessage({ platform: 'twitch', author: 'a', text: 'x', messageId: 's' + (limit + 499) }, filter),
+      null, 'feed: recent ids are still deduped');
+  }
+
+  // ── Clearing resets everything ──
+  {
+    const t = build();
+    t.feed.addMessage({ platform: 'twitch', author: 'a', text: 'x', messageId: 'z1' }, filter);
+    t.flush();
+    t.feed.clear();
+    eq(t.feedEl.childElementCount, 0, 'feed: clearing empties the feed');
+    eq(t.feed.count, 0, 'feed: and resets the count');
+    ok(t.feed.addMessage({ platform: 'twitch', author: 'a', text: 'x', messageId: 'z1' }, filter),
+      'feed: and forgets what it had seen');
+  }
+
+  // ── A hidden tab still drains, because rAF does not run there ──
+  {
+    const feedEl = fakeNode();
+    const timeouts = [];
+    const sandbox = makeSandbox({
+      chrome: { storage: { sync: { get: async () => ({}) } } },
+      document: {
+        hidden: true,
+        createElement: (t) => fakeNode(t),
+        createDocumentFragment: () => { const f = fakeNode(); f.__fragment = true; return f; },
+      },
+      window: { requestAnimationFrame: () => { throw new Error('rAF must not be used while hidden'); } },
+    });
+    sandbox.setTimeout = (fn) => { timeouts.push(fn); return timeouts.length; };
+    const FCM = load(sandbox, ...SHARED, 'src/content/render.js', 'src/content/feed.js');
+    FCM.setViewSettings(FCM.DEFAULT_SETTINGS);
+    const feed = FCM.createFeed(feedEl, () => FCM.DEFAULT_SETTINGS);
+    let threw = null;
+    try {
+      feed.addMessage({ platform: 'twitch', author: 'a', text: 'x', messageId: 'h1' }, filter);
+    } catch (e) { threw = e.message; }
+    eq(threw, null, 'feed: a hidden tab does not reach for requestAnimationFrame');
+    ok(timeouts.length > 0, 'feed: it falls back to a timer instead');
+    timeouts.forEach((fn) => fn());
+    eq(feedEl.childElementCount, 1, 'feed: and the message still lands');
+  }
+};
+
+suites.moderation = function () {
+  function build() {
+    const calls = [];
+    const auth = {
+      twitch: { accessToken: 'TW', clientId: 'cid', userId: '100', login: 'modperson' },
+      kick: { accessToken: 'KK', userId: '200', login: 'modperson' },
+    };
+    const sandbox = makeSandbox({
+      chrome: {
+        storage: {
+          local: { get: async () => ({}), set: async () => {} },
+          sync: { get: async () => ({}), set: async () => {} },
+        },
+      },
+      fetch: async (url, init = {}) => {
+        const u = String(url);
+        calls.push({ url: u, method: init.method || 'GET', body: init.body, headers: init.headers });
+        if (u.includes('/helix/users?login=')) {
+          return { ok: true, json: async () => ({ data: [{ id: '999' }] }) };
+        }
+        if (/kick\.com\/api\/v\d\/channels\//.test(u)) {
+          return { ok: true, json: async () => ({ id: 1, user_id: 888, slug: 'target', chatroom: { id: 2 } }) };
+        }
+        return { ok: true, status: 200, json: async () => ({}) };
+      },
+    });
+    const FCM = load(sandbox, ...SHARED, 'src/background/discovery.js', 'src/background/moderation.js');
+    // Stand in for the real token store.
+    FCM.auth = { usable: async (p) => auth[p] };
+    return { FCM, calls, auth };
+  }
+
+  return (async () => {
+    // ── Twitch ──
+    {
+      const { FCM, calls } = build();
+      const conn = { roomId: '4242' };
+
+      const timeout = await FCM.moderate('twitch', 'timeout',
+        { username: 'baduser', userId: '999', seconds: 600 }, conn, {});
+      eq(timeout.ok, true, 'mod: twitch timeout succeeds');
+      const call = calls[calls.length - 1];
+      ok(call.url.includes('/moderation/bans'), 'mod: twitch timeout hits the bans endpoint');
+      ok(call.url.includes('broadcaster_id=4242'), 'mod: the broadcaster is the joined channel');
+      ok(call.url.includes('moderator_id=100'), 'mod: the moderator is the connected account');
+      eq(JSON.parse(call.body).data, { user_id: '999', duration: 600 },
+        'mod: duration in seconds is what makes it a timeout');
+
+      calls.length = 0;
+      await FCM.moderate('twitch', 'ban', { username: 'baduser', userId: '999' }, conn, {});
+      eq(JSON.parse(calls[calls.length - 1].body).data, { user_id: '999' },
+        'mod: a ban is the same call without a duration');
+
+      calls.length = 0;
+      await FCM.moderate('twitch', 'unban', { username: 'baduser', userId: '999' }, conn, {});
+      eq(calls[calls.length - 1].method, 'DELETE', 'mod: unban is a DELETE');
+      ok(calls[calls.length - 1].url.includes('user_id=999'), 'mod: unban names the user');
+
+      calls.length = 0;
+      await FCM.moderate('twitch', 'delete', { username: 'baduser', messageId: 'abc-1' }, conn, {});
+      const del = calls[calls.length - 1];
+      eq(del.method, 'DELETE', 'mod: delete is a DELETE');
+      ok(del.url.includes('/moderation/chat'), 'mod: delete hits the chat endpoint');
+      ok(del.url.includes('message_id=abc-1'), 'mod: delete names the message');
+
+      // Without a message id there is nothing to delete, and no call is made.
+      calls.length = 0;
+      const noMsg = await FCM.moderate('twitch', 'delete', { username: 'x' }, conn, {});
+      eq(noMsg.reason, 'no-message', 'mod: delete without an id is refused');
+      eq(calls.length, 0, 'mod: and makes no request');
+
+      // A username with no id still resolves before acting.
+      calls.length = 0;
+      await FCM.moderate('twitch', 'ban', { username: 'baduser' }, conn, {});
+      ok(calls[0].url.includes('/helix/users?login=baduser'),
+        'mod: an unknown user id is looked up first');
+    }
+
+    // ── Kick ──
+    {
+      const { FCM, calls } = build();
+      const conn = { roomId: '77' };
+
+      await FCM.moderate('kick', 'timeout', { username: 'baduser', userId: '888', seconds: 600 }, conn, {});
+      const call = calls[calls.length - 1];
+      ok(call.url.includes('/moderation/bans'), 'mod: kick timeout hits the bans endpoint');
+      const body = JSON.parse(call.body);
+      eq(body.broadcaster_user_id, 77, 'mod: kick names the broadcaster numerically');
+      eq(body.user_id, 888, 'mod: kick names the target numerically');
+      // Kick counts timeouts in minutes, not seconds — passing 600 straight
+      // through would be a ten-hour timeout instead of ten minutes.
+      eq(body.duration, 10, 'mod: kick durations are converted to whole minutes');
+
+      calls.length = 0;
+      await FCM.moderate('kick', 'timeout', { username: 'u', userId: '1', seconds: 30 }, conn, {});
+      eq(JSON.parse(calls[calls.length - 1].body).duration, 1,
+        'mod: a sub-minute timeout rounds up to one minute rather than to zero');
+
+      calls.length = 0;
+      await FCM.moderate('kick', 'unban', { username: 'u', userId: '1' }, conn, {});
+      eq(calls[calls.length - 1].method, 'DELETE', 'mod: kick unban is a DELETE');
+      eq(JSON.parse(calls[calls.length - 1].body).duration, undefined,
+        'mod: an unban carries no duration');
+
+      calls.length = 0;
+      await FCM.moderate('kick', 'delete', { username: 'u', messageId: 'k-9' }, conn, {});
+      ok(calls[calls.length - 1].url.endsWith('/chat/k-9'), 'mod: kick delete names the message');
+      eq(calls[calls.length - 1].method, 'DELETE', 'mod: kick delete is a DELETE');
+
+      calls.length = 0;
+      await FCM.moderate('kick', 'ban', { username: 'target' }, conn, {});
+      ok(calls[0].url.includes('/channels/target'), 'mod: kick resolves a username to its id');
+      eq(JSON.parse(calls[calls.length - 1].body).user_id, 888, 'mod: and uses the resolved id');
+    }
+
+    // ── Guards ──
+    {
+      const { FCM } = build();
+      eq((await FCM.moderate('twitch', 'ban', { username: 'x' }, { roomId: null }, {})).reason,
+        'no-channel', 'mod: nothing happens without a joined channel');
+      eq((await FCM.moderate('youtube', 'ban', {}, { roomId: '1' }, {})).reason,
+        'unsupported', 'mod: an unknown platform is refused');
+    }
+
+    // ── Wording ──
+    {
+      const { FCM } = build();
+      eq(FCM.describeModeration('twitch', { ok: true, action: 'timeout', target: 'bob', seconds: 600 }),
+        'Twitch: timed bob out for 10m', 'mod: a timeout reads in minutes');
+      eq(FCM.describeModeration('kick', { ok: true, action: 'timeout', target: 'bob', seconds: 3600 }),
+        'Kick: timed bob out for 1h', 'mod: an hour reads as hours');
+      eq(FCM.describeModeration('twitch', { ok: true, action: 'ban', target: 'bob' }),
+        'Twitch: banned bob', 'mod: a ban says so plainly');
+      eq(FCM.describeModeration('twitch', { ok: false, reason: 'refused', detail: 'nope' }),
+        'Twitch: nope', 'mod: a refusal repeats what the platform said');
+      eq(FCM.describeModeration('kick', { ok: false, reason: 'not-connected' }),
+        'Kick: connect a Kick account to moderate', 'mod: a missing account is explained');
+    }
+  })();
+};
+
+// Several streams open at once is the normal case for anyone watching more
+// than one person, so the worker has to keep every tab's sockets, channels and
+// counterpart state strictly apart.
+suites.multitab = function () {
+  const { bootWorker, wait } = require('./background.js');
+
+  return (async () => {
+    const w = bootWorker();
+    try {
+      const a = w.makeTab(1).connect();
+      const b = w.makeTab(2).connect();
+      const c = w.makeTab(3).connect();
+
+      a.send({ cmd: 'hello', site: 'twitch', channel: 'alpha', hints: [] });
+      b.send({ cmd: 'hello', site: 'twitch', channel: 'bravo', hints: [] });
+      c.send({ cmd: 'hello', site: 'kick', channel: 'charlie', hints: [] });
+      await wait(80);
+
+      eq(a.last('ready').channel, 'alpha', 'multitab: tab 1 adopted its own channel');
+      eq(b.last('ready').channel, 'bravo', 'multitab: tab 2 adopted its own channel');
+      eq(c.last('ready').channel, 'charlie', 'multitab: tab 3 adopted its own channel');
+      eq(c.last('ready').site, 'kick', 'multitab: a Kick tab and a Twitch tab coexist');
+
+      // Each tab only ever hears about its own channel.
+      ok(a.of('ready').every((m) => m.channel === 'alpha'), 'multitab: tab 1 hears only alpha');
+      ok(b.of('ready').every((m) => m.channel === 'bravo'), 'multitab: tab 2 hears only bravo');
+
+      // ── each tab gets its own socket ──
+      a.send({ cmd: 'join', platform: 'twitch', channel: 'alpha' });
+      b.send({ cmd: 'join', platform: 'twitch', channel: 'bravo' });
+      await wait(60);
+      const ircs = w.socketsFor('irc-ws');
+      eq(ircs.length, 2, 'multitab: two tabs mean two independent IRC sockets');
+      ok(ircs[0].sent.includes('JOIN #alpha'), 'multitab: the first socket joined alpha');
+      ok(ircs[1].sent.includes('JOIN #bravo'), 'multitab: the second socket joined bravo');
+
+      // ── a message on one socket reaches only that tab ──
+      a.clear(); b.clear();
+      ircs[0].push('@display-name=AlphaViewer;id=a1 :x!x@x.tmi.twitch.tv PRIVMSG #alpha :hi from alpha\r\n');
+      ircs[1].push('@display-name=BravoViewer;id=b1 :y!y@y.tmi.twitch.tv PRIVMSG #bravo :hi from bravo\r\n');
+      await wait(20);
+
+      eq(a.of('chat').length, 1, 'multitab: tab 1 received exactly one message');
+      eq(b.of('chat').length, 1, 'multitab: tab 2 received exactly one message');
+      eq(a.last('chat').msg.author, 'AlphaViewer', 'multitab: and it was its own');
+      eq(b.last('chat').msg.author, 'BravoViewer', 'multitab: and it was its own');
+      ok(!a.inbox.some((m) => JSON.stringify(m).includes('bravo')),
+        'multitab: nothing from the other tab leaked into tab 1');
+      ok(!b.inbox.some((m) => JSON.stringify(m).includes('alpha')),
+        'multitab: nothing from the other tab leaked into tab 2');
+
+      // ── two tabs on the same channel each keep their own connection ──
+      const d = w.makeTab(4).connect();
+      d.send({ cmd: 'hello', site: 'twitch', channel: 'alpha', hints: [] });
+      await wait(60);
+      d.send({ cmd: 'join', platform: 'twitch', channel: 'alpha' });
+      await wait(60);
+      eq(w.socketsFor('irc-ws').length, 3,
+        'multitab: the same channel in two tabs does not share one socket');
+
+      a.clear(); d.clear();
+      const alphaSockets = w.socketsFor('irc-ws').filter((s) => s.sent.includes('JOIN #alpha'));
+      eq(alphaSockets.length, 2, 'multitab: both alpha tabs joined independently');
+
+      // ── closing one tab leaves the others untouched ──
+      a.clear(); b.clear(); d.clear();
+      w.listeners.tabRemoved(1);
+      await wait(30);
+      ok(alphaSockets[0].closed, 'multitab: the closed tab dropped its socket');
+      ok(!ircs[1].closed, 'multitab: the other tab kept its socket');
+
+      b.clear();
+      ircs[1].push('@display-name=StillHere;id=b2 :y!y@y.tmi.twitch.tv PRIVMSG #bravo :still going\r\n');
+      await wait(20);
+      eq(b.last('chat').msg.author, 'StillHere', 'multitab: the surviving tab still receives chat');
+
+      // The tab that is gone hears nothing more.
+      eq(a.of('chat').length, 0, 'multitab: the closed tab receives nothing');
+
+      // ── the popup asks per tab, and gets that tab's answer ──
+      let snapA; let snapB;
+      w.listeners.message({ cmd: 'status', tabId: 1 }, {}, (r) => { snapA = r; });
+      w.listeners.message({ cmd: 'status', tabId: 2 }, {}, (r) => { snapB = r; });
+      eq(snapA, null, 'multitab: the closed tab has no session');
+      eq(snapB.channel, 'bravo', 'multitab: the open tab reports its own channel');
+
+      // ── a port dropping and coming back does not orphan the others ──
+      b.disconnect();
+      await wait(30);
+      const stillOpen = w.socketsFor('irc-ws').filter((s) => !s.closed).length;
+      ok(stillOpen >= 1, 'multitab: a dropped port keeps its sockets during the grace period');
+      // Reconnecting within the grace period keeps the session alive.
+      b.connect();
+      b.send({ cmd: 'hello', site: 'twitch', channel: 'bravo', hints: [] });
+      await wait(60);
+      eq(b.last('ready').connections.twitch.channel, 'bravo',
+        'multitab: a reconnecting tab is handed its session back');
+    } finally {
+      w.teardown();
+    }
+  })();
+};
+
+suites.background = function () {
+  const { bootWorker, wait } = require('./background.js');
+
+  return (async () => {
+    const w = bootWorker();
+    try {
+      w.connect();
+
+      // ── hello: the worker adopts the channel and answers with its state ──
+      w.send({ cmd: 'hello', site: 'twitch', channel: 'SomeChannel', hints: [] });
+      await wait(60);
+      const ready = w.last('ready');
+      ok(ready, 'bg: hello is answered with ready');
+      eq(ready.channel, 'somechannel', 'bg: the channel is normalised');
+      eq(ready.connections.twitch.channel, null, 'bg: nothing is joined yet');
+
+      // The counterpart lookup runs on adoption.
+      const cp = w.last('counterpart');
+      ok(cp, 'bg: the counterpart is resolved on hello');
+      eq(cp.counterpart.platform, 'kick', 'bg: the counterpart is the other platform');
+      eq(cp.counterpart.live, true, 'bg: its live state is reported');
+
+      // ── join twitch: the IRC handshake goes out in the right order ──
+      w.clear();
+      w.send({ cmd: 'join', platform: 'twitch', channel: 'somechannel' });
+      await wait(30);
+      const irc = w.socketFor('irc-ws.chat.twitch.tv');
+      ok(irc, 'bg: a Twitch IRC socket is opened');
+      ok(irc.sent[0].startsWith('CAP REQ'),
+        'bg: capabilities are requested before anything else, or messages arrive untagged');
+      ok(/^PASS oauth:justinfan\d+$/.test(irc.sent[1]), 'bg: anonymous PASS');
+      ok(/^NICK justinfan\d+$/.test(irc.sent[2]), 'bg: anonymous NICK matching the PASS');
+      eq(irc.sent[3], 'JOIN #somechannel', 'bg: joins the requested channel');
+
+      // ── a PING must be answered or Twitch drops the connection ──
+      irc.push('PING :tmi.twitch.tv\r\n');
+      ok(irc.sent.includes('PONG :tmi.twitch.tv'), 'bg: server PING is answered with PONG');
+
+      // ── a real tagged message becomes a normalised chat row ──
+      irc.push('@badges=moderator/1;color=#FF0000;display-name=ModPerson;emotes=25:0-4;'
+        + 'id=msg-1;room-id=4242;tmi-sent-ts=1700000000000;user-id=9 '
+        + ':modperson!modperson@modperson.tmi.twitch.tv PRIVMSG #somechannel :Kappa hello\r\n');
+      const chat = w.last('chat');
+      ok(chat, 'bg: a PRIVMSG becomes a chat message');
+      eq(chat.msg.author, 'ModPerson', 'bg: display name is used');
+      eq(chat.msg.platform, 'twitch', 'bg: tagged with its platform');
+      eq(chat.msg.badgeClass, 'mod', 'bg: role derived from badges');
+      eq(chat.msg.color, '#FF0000', 'bg: the name colour survives');
+      eq(chat.msg.messageId, 'msg-1', 'bg: message id kept for dedupe and deletion');
+      eq(chat.msg.emoteMap[0].id, '25', 'bg: emote positions parsed');
+      eq(chat.msg.timestamp, 1700000000000, 'bg: the original send time is kept');
+
+      // Messages for a channel are not filtered by room, but ROOMSTATE gives us
+      // the broadcaster id every third-party emote provider is keyed by.
+      irc.push('@room-id=4242 :tmi.twitch.tv ROOMSTATE #somechannel\r\n');
+
+      // ── moderation events dim the right rows ──
+      irc.push('@ban-duration=60 :tmi.twitch.tv CLEARCHAT #somechannel :baduser\r\n');
+      eq(w.last('deleteUser').username, 'baduser', 'bg: a timeout marks that user deleted');
+      ok(w.of('event').some((e) => /timed out for 60s/.test(e.text)), 'bg: the timeout is announced');
+
+      irc.push('@target-msg-id=msg-1 :tmi.twitch.tv CLEARMSG #somechannel :hello\r\n');
+      eq(w.last('deleteMsg').messageId, 'msg-1', 'bg: a single deleted message is marked');
+
+      irc.push(':tmi.twitch.tv CLEARCHAT #somechannel\r\n');
+      ok(w.of('event').some((e) => /cleared by a moderator/.test(e.text)), 'bg: a full clear is announced');
+
+      // ── end of NAMES marks the join complete ──
+      w.clear();
+      irc.push(':tmi.twitch.tv 366 justinfan1 #somechannel :End of /NAMES list\r\n');
+      await wait(60);
+      ok(w.of('status').some((s) => s.state === 'connected'), 'bg: the join is reported as connected');
+      ok(w.of('sys').some((s) => /Connected to Twitch/.test(s.text)), 'bg: and said so in the feed');
+
+      // ── join kick from a twitch tab: cross-origin, which is why it lives here ──
+      w.clear();
+      w.send({ cmd: 'join', platform: 'kick', channel: 'somechannel' });
+      await wait(80);
+      const pusher = w.socketFor('ws-us2.pusher.com');
+      ok(pusher, 'bg: a Kick Pusher socket is opened from a Twitch tab');
+
+      pusher.push(JSON.stringify({ event: 'pusher:connection_established', data: '{}' }));
+      await wait(40);
+      const subs = pusher.sent.map((s) => JSON.parse(s)).filter((m) => m.event === 'pusher:subscribe');
+      eq(subs.length, 2, 'bg: subscribes to both the chatroom and the channel');
+      eq(subs[0].data.channel, 'chatrooms.55.v2', 'bg: chatroom subscription uses the chatroom id');
+      eq(subs[1].data.channel, 'channel.9', 'bg: channel subscription uses the channel id');
+
+      // Pusher pings must be ponged or the socket is dropped as idle.
+      pusher.push(JSON.stringify({ event: 'pusher:ping', data: '{}' }));
+      ok(pusher.sent.some((s) => JSON.parse(s).event === 'pusher:pong'), 'bg: Pusher ping is ponged');
+
+      w.clear();
+      pusher.push(JSON.stringify({
+        event: 'App\\Events\\ChatMessageEvent',
+        data: JSON.stringify({
+          id: 'k-1', content: 'hi [emote:42:kekw]', created_at: '2026-01-01T00:00:00Z',
+          sender: { id: 7, username: 'KickPerson', identity: { color: '#00FF00', badges: [{ type: 'vip' }] } },
+          emotes: [{ id: 42, name: 'kekw' }],
+        }),
+      }));
+      const kmsg = w.last('chat');
+      eq(kmsg.msg.platform, 'kick', 'bg: kick messages are tagged kick');
+      eq(kmsg.msg.author, 'KickPerson', 'bg: kick sender name');
+      eq(kmsg.msg.badgeClass, 'vip', 'bg: kick role derived from badges');
+      eq(kmsg.msg.messageId, 'k-1', 'bg: kick message id');
+      const learned = w.last('emotes');
+      eq(learned.store.kekw.url, 'https://files.kick.com/emotes/42/fullsize',
+        'bg: emotes seen in a live message are learned');
+
+      // Housekeeping events are dropped rather than spamming the feed.
+      w.clear();
+      pusher.push(JSON.stringify({ event: 'App\\Events\\LivestreamUpdated', data: '{}' }));
+      eq(w.of('event').length, 0, 'bg: housekeeping events produce no row');
+
+      // ── both platforms are live in one session ──
+      w.clear();
+      w.send({ cmd: 'hello', site: 'twitch', channel: 'somechannel', hints: [] });
+      await wait(40);
+      const state = w.last('ready');
+      eq(state.connections.twitch.channel, 'somechannel', 'bg: twitch stays joined across a re-hello');
+      eq(state.connections.kick.channel, 'somechannel', 'bg: kick stays joined across a re-hello');
+
+      // ── leaving drops the socket and reports idle ──
+      w.clear();
+      w.send({ cmd: 'leave', platform: 'kick' });
+      await wait(30);
+      ok(pusher.closed, 'bg: leaving closes the socket');
+      eq(w.last('status').state, 'idle', 'bg: leaving reports idle');
+
+      // ── an unexpected drop schedules a reconnect; a deliberate one does not ──
+      w.clear();
+      irc.drop();
+      await wait(30);
+      ok(w.of('sys').some((s) => /reconnecting in/.test(s.text)),
+        'bg: an unexpected drop schedules a reconnect');
+
+      w.clear();
+      w.send({ cmd: 'leave', platform: 'twitch' });
+      await wait(30);
+      const before = w.sockets.length;
+      await wait(120);
+      eq(w.sockets.length, before, 'bg: a deliberate leave does not reconnect');
+
+      // ── switching channel tears the old session down ──
+      w.clear();
+      w.send({ cmd: 'hello', site: 'twitch', channel: 'otherchannel', hints: [] });
+      await wait(60);
+      eq(w.last('ready').channel, 'otherchannel', 'bg: a new channel is adopted');
+
+      // ── closing the tab cleans everything up ──
+      w.listeners.tabRemoved(1);
+      eq(w.timers.intervals.size >= 0, true, 'bg: tab removal runs teardown without throwing');
+
+      // ── moderation is refused unless the platform said this viewer is a mod ──
+      w.clear();
+      w.send({ cmd: 'hello', site: 'twitch', channel: 'somechannel', hints: [] });
+      await wait(40);
+      w.send({ cmd: 'join', platform: 'twitch', channel: 'somechannel' });
+      await wait(40);
+      w.clear();
+      w.send({
+        cmd: 'moderate', id: 'm1', platform: 'twitch', action: 'ban',
+        opts: { username: 'someone' },
+      });
+      await wait(60);
+      const refused = w.last('modResult');
+      ok(refused, 'bg: a moderation attempt is answered');
+      eq(refused.result.ok, false, 'bg: moderation is refused without the badge');
+      contains(refused.text, 'not a moderator',
+        'bg: and says why, rather than failing silently');
+
+      // USERSTATE is what grants it, so the overlay is told the moment it lands.
+      const irc2 = w.sockets.filter((s) => s.url.includes('irc-ws')).slice(-1)[0];
+      w.clear();
+      const userstate = '@badges=moderator/1;mod=1 :tmi.twitch.tv USERSTATE #somechannel\r\n';
+      irc2.push(userstate);
+      eq(w.last('moderator').canModerate, true, 'bg: USERSTATE grants moderator tools');
+      const grants = w.of('moderator').length;
+      irc2.push(userstate);
+      eq(w.of('moderator').length, grants, 'bg: an unchanged status is not re-announced');
+
+      // Leaving takes the tools away again.
+      w.clear();
+      w.send({ cmd: 'leave', platform: 'twitch' });
+      await wait(30);
+      eq(w.last('moderator').canModerate, false, 'bg: leaving revokes the tools');
+
+      // ── the popup can read a snapshot without holding a port ──
+      let snapshot;
+      w.listeners.message({ cmd: 'status', tabId: 1 }, {}, (r) => { snapshot = r; });
+      eq(snapshot, null, 'bg: a closed tab has no session left');
+    } finally {
+      w.teardown();
+    }
+  })();
+};
+
+// ── Runner ────────────────────────────────────────────────────────────────────
+
+(async function main() {
+  const only = process.argv[2];
+  const names = only ? [only] : Object.keys(suites);
+
+  for (const name of names) {
+    if (!suites[name]) {
+      console.error(`Unknown suite: ${name}. Available: ${Object.keys(suites).join(', ')}`);
+      process.exit(2);
+    }
+    const before = failed;
+    try {
+      await suites[name]();
+    } catch (e) {
+      failed++;
+      failures.push(`${name}: threw ${e.stack}`);
+    }
+    const mark = failed === before ? 'pass' : 'FAIL';
+    console.log(`  ${mark}  ${name}`);
+  }
+
+  console.log('');
+  if (failures.length) {
+    console.log('Failures:');
+    failures.forEach((f) => console.log(`  - ${f}`));
+    console.log('');
+  }
+  console.log(`${passed} passed, ${failed} failed`);
+  process.exit(failed ? 1 : 0);
+})();

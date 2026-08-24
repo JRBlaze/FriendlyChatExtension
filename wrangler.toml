@@ -1,0 +1,17 @@
+name               = "friendly-chat-kick-proxy"
+main               = "cloudflare-worker.js"
+compatibility_date = "2024-09-23"
+workers_dev        = true
+
+# Deploying from this folder replaces the worker already running at
+#   https://friendly-chat-kick-proxy.jrblaze.workers.dev
+# under the same name, so the URL does not change and the extension needs no
+# reconfiguring.
+#
+# Secrets live outside the code and survive a redeploy. They only need setting
+# if they have never been set, or if the Kick application changes:
+#   wrangler secret put KICK_CLIENT_ID
+#   wrangler secret put KICK_CLIENT_SECRET
+#
+# Then:
+#   wrangler deploy

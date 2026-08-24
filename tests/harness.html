@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Friendly Chat Merge — overlay harness</title>
+<!--
+  Renders the overlay against a mock channel page with the chrome.* APIs
+  stubbed, so the UI can be eyeballed without loading the unpacked extension.
+
+  Serve the project root over http (fetching overlay.css does not work from
+  file://) and open /tests/harness.html:
+
+      python -m http.server 8123
+-->
+<style>
+  body { margin: 0; background: #0e0e10; color: #efeff1; font-family: system-ui, sans-serif; height: 100vh; display: flex; flex-direction: column; }
+  .topbar { height: 50px; background: #18181b; border-bottom: 1px solid #2a2a2d; display: flex; align-items: center; padding: 0 16px; gap: 12px; font-size: 13px; }
+  .topbar .dot { width: 9px; height: 9px; border-radius: 50%; background: #eb0400; }
+  .layout { flex: 1; display: flex; min-height: 0; }
+  .stage { flex: 1; display: flex; flex-direction: column; }
+  .player { flex: 1; background: linear-gradient(160deg, #1f1f23 0%, #0e0e10 100%); display: flex; align-items: center; justify-content: center; color: #46464b; font-size: 13px; }
+  .meta { padding: 14px 18px; border-top: 1px solid #2a2a2d; }
+  .meta h2 { font-size: 15px; margin: 0 0 4px; }
+  .meta p { margin: 0; color: #adadb8; font-size: 12.5px; }
+  .meta a { color: #bf94ff; font-size: 12px; }
+  /* Stands in for Twitch's chat column, matching the selector the adapter uses. */
+  .chatcol { width: 340px; border-left: 1px solid #2a2a2d; background: #18181b; display: flex; flex-direction: column; }
+  .chatcol header { height: 44px; border-bottom: 1px solid #2a2a2d; display: flex; align-items: center; justify-content: center; font-size: 12px; color: #adadb8; }
+  .chatcol .msgs { flex: 1; padding: 10px; font-size: 12px; color: #6a6a75; }
+  .chatcol .box { border-top: 1px solid #2a2a2d; padding: 10px; }
+  .chatcol .box div[contenteditable] { min-height: 34px; background: #0e0e10; border: 1px solid #3a3a3d; border-radius: 4px; padding: 8px; font-size: 12px; }
+  .chatcol .box button { margin-top: 8px; background: #9146ff; color: #fff; border: 0; border-radius: 4px; padding: 6px 12px; font-size: 12px; cursor: pointer; }
+  .chatcol .box button:disabled { opacity: .4; cursor: not-allowed; }
+  .chatcol .sentlog { margin-top: 8px; font-size: 11px; color: #6a6a75; word-break: break-word; }
+  .devbar { position: fixed; left: 12px; bottom: 12px; z-index: 2147483600; display: flex; gap: 6px; flex-wrap: wrap; max-width: 46vw; }
+  .devbar button { background: #26262e; color: #e8e8f0; border: 1px solid #3a3a45; border-radius: 6px; padding: 5px 9px; font-size: 11px; cursor: pointer; font-family: ui-monospace, monospace; }
+  .devbar button:hover { background: #33333d; }
+</style>
+</head>
+<body>
+  <div class="topbar"><span class="dot"></span> twitch.tv/examplestreamer — harness</div>
+  <div class="layout">
+    <div class="stage">
+      <div class="player">[ player ]</div>
+      <div class="meta">
+        <h2>ExampleStreamer</h2>
+        <p>Playing Just Chatting · 12,043 viewers</p>
+        <!-- The kind of about-panel link the hint scraper looks for. -->
+        <p><a href="https://kick.com/examplestreamer-kick">kick.com/examplestreamer-kick</a></p>
+      </div>
+    </div>
+    <div class="chatcol" data-a-target="right-column-chat-bar">
+      <section data-test-selector="chat-room-component-layout">
+        <header>STREAM CHAT (native)</header>
+        <div class="msgs" data-test-selector="chat-scrollable-area__message-container">
+          the site's own chat sits underneath the overlay
+        </div>
+        <div class="box">
+          <div id="native-composer" contenteditable="true" role="textbox" data-a-target="chat-input"></div>
+          <button id="native-send" data-a-target="chat-send-button" disabled>Chat</button>
+          <div class="sentlog">last sent: <span id="sent-log">(none)</span></div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div class="devbar">
+    <button data-act="twitch">+ twitch msg</button>
+    <button data-act="kick">+ kick msg</button>
+    <button data-act="burst">+ 40 burst</button>
+    <button data-act="event">+ event</button>
+    <button data-act="sys">+ status</button>
+    <button data-act="prompt">show live prompt</button>
+    <button data-act="connect-kick">connect kick</button>
+    <button data-act="theme">toggle theme</button>
+    <button data-act="narrow">chat 260px</button>
+    <button data-act="wide">chat 460px</button>
+    <button data-act="short">chat 60% tall</button>
+    <button data-act="reset-size">chat default</button>
+    <button data-act="drop-selectors">drop column selectors</button>
+    <button data-act="auth-both">fake: both accounts</button>
+    <button data-act="auth-none">fake: no accounts</button>
+    <button data-act="long">+ long message</button>
+    <button data-act="toggle-badges">toggle badges</button>
+    <button data-act="toggle-times">toggle timestamps</button>
+  </div>
+
+<script>
+// ── Mock native composer ──────────────────────────────────────────────────────
+// Twitch's composer is Slate and Kick's is Lexical. Both hold their own model of
+// the text and reconcile the DOM back to it, so writing to the DOM directly does
+// nothing they will read. This stands in for that, with a switch for which input
+// route the editor honours, so the send path can be tested against each.
+window.composerMode = 'paste-only';
+(function () {
+  const box = document.getElementById('native-composer');
+  const send = document.getElementById('native-send');
+  const log = document.getElementById('sent-log');
+  let model = '';
+  let rendering = false;
+
+  function render() {
+    rendering = true;
+    box.textContent = model;
+    rendering = false;
+    send.disabled = !model.trim();
+  }
+
+  // Reconciliation: anything that edits the DOM behind the editor's back is
+  // reverted, exactly as a controlled editor would.
+  new MutationObserver(() => {
+    if (rendering || window.composerMode === 'plain') return;
+    if (box.textContent !== model) render();
+  }).observe(box, { childList: true, characterData: true, subtree: true });
+
+  function accept(text) {
+    if (window.composerMode === 'readonly') return;
+    model = text;
+    render();
+  }
+
+  box.addEventListener('paste', (e) => {
+    // 'no-submit' accepts the text like a normal editor and then refuses to
+    // send it, which is what a slow-mode or follower-only rejection looks like.
+    if (window.composerMode !== 'paste-only' && window.composerMode !== 'no-submit') return;
+    e.preventDefault();
+    accept(e.clipboardData.getData('text/plain'));
+  });
+
+  box.addEventListener('beforeinput', (e) => {
+    if (window.composerMode !== 'beforeinput') return;
+    if (e.inputType !== 'insertText' || !e.data) return;
+    e.preventDefault();
+    accept(e.data);
+  });
+
+  box.addEventListener('input', () => {
+    if (window.composerMode !== 'plain') return;
+    model = box.textContent;
+    send.disabled = !model.trim();
+  });
+
+  function submit() {
+    if (!model.trim()) return;
+    if (window.composerMode === 'no-submit') return;
+    log.textContent = model;
+    console.log('[native composer] sent:', model);
+    model = '';
+    render();
+  }
+
+  send.addEventListener('click', submit);
+  box.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
+  render();
+})();
+</script>
+
+<script>
+// ── chrome.* stubs ────────────────────────────────────────────────────────────
+const mem = { sync: {}, local: {} };
+function area(name) {
+  return {
+    get: async (key) => (typeof key === 'string' ? { [key]: mem[name][key] } : { ...mem[name] }),
+    set: async (obj) => { Object.assign(mem[name], obj); },
+  };
+}
+window.chrome = {
+  runtime: {
+    getURL: (p) => `/${p}?t=${Date.now()}`,
+    connect: () => ({ postMessage() {}, onMessage: { addListener() {} }, onDisconnect: { addListener() {} } }),
+    getManifest: () => ({ version: '1.0.0' }),
+    onMessage: { addListener() {} },
+  },
+  storage: { sync: area('sync'), local: area('local'), onChanged: { addListener() {} } },
+  identity: { getRedirectURL: () => 'https://abcdefghijklmnop.chromiumapp.org/' },
+};
+</script>
+
+<script>
+// Loaded dynamically with a cache buster: a plain <script src> gets served from
+// the browser cache while you are editing these files, which silently hides
+// your own changes.
+const SOURCES = [
+  '/src/shared/namespace.js',
+  '/src/shared/constants.js',
+  '/src/shared/util.js',
+  '/src/shared/irc.js',
+  '/src/shared/emote-parsers.js',
+  '/src/shared/kick-events.js',
+  '/src/content/render.js',
+  '/src/content/feed.js',
+  '/src/content/compose.js',
+  '/src/content/overlay.js',
+  '/src/content/sites.js',
+];
+function loadSources(bust) {
+  return SOURCES.reduce((chain, src) => chain.then(() => new Promise((resolve, reject) => {
+    const el = document.createElement('script');
+    el.src = `${src}?t=${bust}`;
+    el.onload = resolve;
+    el.onerror = () => reject(new Error(`failed to load ${src}`));
+    document.head.appendChild(el);
+  })), Promise.resolve());
+}
+</script>
+
+<script>
+(async function () {
+  await loadSources(Date.now());
+  const FCM = window.FCM;
+  let overlay = FCM.createOverlay({
+    site: FCM.SITES.twitch,
+    channel: 'examplestreamer',
+    // Commands normally go to the background worker over a port. Here they are
+    // captured, and a send can be answered with a canned result so the whole
+    // send-to-both-platforms path is testable offline.
+    onCommand: (c) => {
+      console.log('command ->', c);
+      (window.commands = window.commands || []).push(c);
+      if (c.cmd === 'send' && window.autoSendResult) {
+        setTimeout(() => overlay.sendResult(c.id, window.autoSendResult), 40);
+      }
+    },
+  });
+  await overlay.mount();
+  window.overlay = overlay;
+
+  // Emote and badge sets the background worker would normally deliver.
+  overlay.setEmotes('twitch', 'thirdparty', {
+    PogU:   { url: 'https://cdn.7tv.app/emote/60aeab8df6a2c3b332d21139/2x.webp', source: '7TV' },
+    catJAM: { url: 'https://cdn.betterttv.net/emote/5f1b0186cf6d2144653d2970/2x', source: 'BTTV' },
+  });
+  overlay.setEmotes('kick', 'thirdparty', {
+    KEKW: { url: 'https://cdn.7tv.app/emote/01F6MZGCNG0002DND34H6VDZ9J/2x.webp', source: '7TV' },
+  });
+  overlay.setBadges('twitch', {
+    global: {
+      moderator:  { 1: { image_url_1x: 'https://static-cdn.jtvnw.net/badges/v1/3267646d-33f0-4b17-b3df-f923a41db1d0/1' } },
+      broadcaster:{ 1: { image_url_1x: 'https://static-cdn.jtvnw.net/badges/v1/5527c58c-fb7d-422d-b71b-f309dcb85cc1/1' } },
+      premium:    { 1: { image_url_1x: 'https://static-cdn.jtvnw.net/badges/v1/bbbe0db0-a598-423e-86d0-f9fb98ca1933/1' } },
+    },
+    channel: {
+      subscriber: { 12: { image_url_1x: 'https://static-cdn.jtvnw.net/badges/v1/5d9f2208-5dd8-11e7-8513-2ff4adfae661/1' } },
+    },
+  });
+
+  overlay.setStatus('twitch', 'connected', 'examplestreamer');
+
+  const TWITCH_LINES = [
+    ['Nightbot',   'welcome to the stream, rules in !discord', { badgesRaw: 'moderator/1', badgeClass: 'mod', color: '#00ADA8' }],
+    ['ChatterOne', 'Kappa that clutch was insane', { badgesRaw: 'subscriber/12,premium/1', badgeClass: 'sub', color: '#1E90FF', emoteMap: { 0: { id: '25', end: 4 } } }],
+    ['PogChamper', 'PogU PogU PogU', { badgesRaw: 'premium/1', color: '#FF69B4' }],
+    ['LinkPoster', 'clip here https://clips.twitch.tv/SomeClipName?filter=x&range=7d', { color: '#5CD65C' }],
+    ['ExampleStreamer', 'thanks for the raid everyone', { badgesRaw: 'broadcaster/1', badgeClass: 'mod', color: '#FF4500' }],
+    // Split so the literal does not close this script tag.
+    ['EscapeTest', '<scr' + 'ipt>alert(1)</scr' + 'ipt> & "quotes" render as text', { color: '#B8860B' }],
+  ];
+  const KICK_LINES = [
+    ['kickviewer',   'first time here, this is sick [emote:37226:emojiKEK]', { badgesRaw: [{ type: 'subscriber' }], badgeClass: 'sub' }],
+    ['greenmod',     'keep it civil in here please', { badgesRaw: [{ type: 'moderator' }, { type: 'og' }], badgeClass: 'mod' }],
+    ['kekwenjoyer',  'KEKW that was rough', { badgesRaw: [] }],
+    ['vipperson',    'love the new layout', { badgesRaw: [{ type: 'vip' }], badgeClass: 'vip' }],
+  ];
+
+  let n = 0;
+  function push(platform) {
+    const src = platform === 'twitch' ? TWITCH_LINES : KICK_LINES;
+    const [author, text, opts] = src[n++ % src.length];
+    overlay.chat({
+      platform, author, text,
+      messageId: `${platform}-${Date.now()}-${Math.random()}`,
+      timestamp: Date.now(),
+      ...opts,
+    });
+  }
+
+  const acts = {
+    twitch: () => push('twitch'),
+    kick:   () => push('kick'),
+    burst:  () => { for (let i = 0; i < 40; i++) push(i % 2 ? 'kick' : 'twitch'); },
+    event:  () => overlay.event('twitch', 'BigDonor is raiding with 4,120 viewers.'),
+    sys:    () => overlay.sys('Kick: disconnected'),
+    prompt: () => overlay.setCounterpart({
+      platform: 'kick', channel: 'examplestreamer-kick', exists: true, live: true,
+      displayName: 'ExampleStreamer', avatar: '', title: 'same stream, second platform',
+      viewers: 3184, category: 'Just Chatting', match: 'page-link',
+      url: 'https://kick.com/examplestreamer-kick',
+    }, false),
+    'connect-kick': () => overlay.setStatus('kick', 'connected', 'examplestreamer-kick'),
+    narrow: () => { document.querySelector('.chatcol').style.width = '260px'; },
+    wide:   () => { document.querySelector('.chatcol').style.width = '460px'; },
+    short:  () => { document.querySelector('.layout').style.height = '60%'; },
+    'reset-size': () => {
+      document.querySelector('.chatcol').style.width = '';
+      document.querySelector('.layout').style.height = '';
+    },
+    // Simulates the site renaming its chat-column markup: the overlay then has
+    // to find the message list and climb back up to the column on its own.
+    'auth-both': () => overlay.setAccounts({
+      twitch: { connected: true, login: 'MyTwitchName' },
+      kick: { connected: true, login: 'MyKickName' },
+    }),
+    'auth-none': () => overlay.setAccounts({
+      twitch: { connected: false }, kick: { connected: false },
+    }),
+    long: () => overlay.chat({
+      platform: 'twitch', author: 'VeryLongWindedViewer',
+      text: 'this is a deliberately long message written to check that the text wraps '
+        + 'back underneath the username instead of being squeezed into a narrow column '
+        + 'beside it, which is what the flex layout used to do',
+      badgesRaw: '', messageId: 'long-' + Date.now(), timestamp: Date.now(),
+    }),
+    'toggle-badges': async () => {
+      const cur = await FCM.loadSettings();
+      overlay.applyStoredSettings(await FCM.saveSettings({ showBadges: !cur.showBadges }));
+    },
+    'toggle-times': async () => {
+      const cur = await FCM.loadSettings();
+      overlay.applyStoredSettings(await FCM.saveSettings({ timestamps: !cur.timestamps }));
+    },
+    'drop-selectors': () => {
+      document.querySelector('[data-a-target="right-column-chat-bar"]')
+        ?.removeAttribute('data-a-target');
+      document.querySelector('[data-test-selector="chat-room-component-layout"]')
+        ?.removeAttribute('data-test-selector');
+    },
+    theme: async () => {
+      const s = await FCM.loadSettings();
+      await FCM.saveSettings({ theme: s.theme === 'dark' ? 'light' : 'dark' });
+      location.reload();
+    },
+  };
+  document.querySelectorAll('.devbar button').forEach((b) => {
+    b.addEventListener('click', () => acts[b.dataset.act]());
+  });
+
+  // ── Stress harness ────────────────────────────────────────────────────────
+  // Drives the real render/feed path at volumes a busy channel actually
+  // produces, so slow paths show up here rather than on someone's stream.
+  const WORDS = ('hello chat this is a message with some words in it PogU catJAM '
+    + 'KEKW nice one lets go what a play absolutely insane no way LULW kappa').split(' ');
+  function randomText(n) {
+    let out = [];
+    for (let i = 0; i < n; i++) out.push(WORDS[(Math.random() * WORDS.length) | 0]);
+    return out.join(' ');
+  }
+
+  window.perf = {
+    // Flips the mock page between dark and light the way the real sites do.
+    setSiteTheme(mode) {
+      document.documentElement.className = mode === 'light' ? 'tw-root--theme-light' : 'tw-root--theme-dark';
+      document.body.style.background = mode === 'light' ? '#efeff1' : '#0e0e10';
+      document.body.style.color = mode === 'light' ? '#0e0e10' : '#efeff1';
+    },
+    overlayTheme() {
+      const sr = document.getElementById('friendly-chat-merge-host').shadowRoot;
+      return sr.querySelector('.fcm-root').dataset.theme;
+    },
+
+    // Mount/unmount churn, standing in for moving between channels all evening.
+    async churn(times) {
+      const before = document.querySelectorAll('*').length;
+      for (let i = 0; i < times; i++) {
+        overlay.destroy();
+        overlay = FCM.createOverlay({
+          site: FCM.SITES.twitch,
+          channel: `channel${i}`,
+          onCommand: () => {},
+        });
+        await overlay.mount();
+        window.overlay = overlay;
+      }
+      await new Promise((r) => setTimeout(r, 400));
+      return {
+        times,
+        hostsLeftBehind: document.querySelectorAll('#friendly-chat-merge-host').length,
+        pageNodesBefore: before,
+        pageNodesAfter: document.querySelectorAll('*').length,
+      };
+    },
+
+    // Pushes `count` messages as fast as the feed will take them.
+    async flood(count, platform) {
+      const t0 = performance.now();
+      for (let i = 0; i < count; i++) {
+        overlay.chat({
+          platform: platform || (i % 2 ? 'kick' : 'twitch'),
+          author: `viewer${i % 250}`,
+          text: randomText(4 + (i % 12)),
+          badgesRaw: i % 3 === 0 ? (i % 2 ? 'subscriber/12' : [{ type: 'subscriber' }]) : '',
+          badgeClass: i % 3 === 0 ? 'sub' : null,
+          messageId: `p-${platform || 'mix'}-${i}-${Math.random()}`,
+          timestamp: Date.now(),
+          color: '#1E90FF',
+        });
+      }
+      const queued = performance.now() - t0;
+      await new Promise((r) => setTimeout(r, 600));
+      const sr = document.getElementById('friendly-chat-merge-host').shadowRoot;
+      return {
+        count,
+        queueMs: Math.round(queued),
+        perMessageUs: Math.round((queued / count) * 1000),
+        domRows: sr.querySelector('.fcm-feed').childElementCount,
+      };
+    },
+
+    // Loads a realistic third-party emote set: 7TV global alone is ~1500.
+    loadEmotes(n) {
+      const store = {};
+      for (let i = 0; i < n; i++) store[`emote${i}`] = { url: `https://cdn/e${i}.webp`, source: '7TV' };
+      const t0 = performance.now();
+      overlay.setEmotes('twitch', 'thirdparty', store);
+      return { loaded: n, ms: Math.round(performance.now() - t0) };
+    },
+
+    // Time one autocomplete keystroke against whatever is loaded.
+    typeahead(query, reps) {
+      const sr = document.getElementById('friendly-chat-merge-host').shadowRoot;
+      const input = sr.querySelector('.fcm-input');
+      const t0 = performance.now();
+      for (let i = 0; i < reps; i++) {
+        input.value = query;
+        input.setSelectionRange(query.length, query.length);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      const total = performance.now() - t0;
+      return {
+        reps,
+        totalMs: Math.round(total),
+        perKeystrokeMs: Math.round((total / reps) * 100) / 100,
+        suggestions: sr.querySelectorAll('.fcm-ac-item').length,
+      };
+    },
+
+    openPicker() {
+      const sr = document.getElementById('friendly-chat-merge-host').shadowRoot;
+      const t0 = performance.now();
+      sr.querySelector('.fcm-emote-btn').click();
+      const ms = performance.now() - t0;
+      const cells = sr.querySelectorAll('.fcm-emote-cell').length;
+      sr.querySelector('.fcm-emote-btn').click();
+      return { ms: Math.round(ms), cells };
+    },
+
+    counts() {
+      const sr = document.getElementById('friendly-chat-merge-host').shadowRoot;
+      return {
+        domRows: sr.querySelector('.fcm-feed').childElementCount,
+        totalNodes: sr.querySelectorAll('*').length,
+        pageNodes: document.querySelectorAll('*').length,
+      };
+    },
+  };
+
+  // Seed the feed so the harness shows something immediately.
+  TWITCH_LINES.forEach(() => push('twitch'));
+  KICK_LINES.forEach(() => push('kick'));
+  overlay.event('twitch', 'Someone gifted 5 subs to the community.');
+})();
+</script>
+</body>
+</html>

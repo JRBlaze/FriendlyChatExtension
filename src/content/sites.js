@@ -1,0 +1,501 @@
+// Per-site adapters: where the channel name lives in the URL, where the native
+// chat column is on screen, where the streamer's own links to the other
+// platform are, and how to type into the site's own composer.
+(function (FCM) {
+  'use strict';
+
+  function firstMatch(selectors) {
+    for (const sel of selectors) {
+      const el = document.querySelector(sel);
+      if (el) return el;
+    }
+    return null;
+  }
+
+  // An element only counts as the chat if it is actually laid out and on screen.
+  // A display:none or zero-size match would otherwise drag the overlay into a
+  // sliver in the corner.
+  function isLaidOut(el) {
+    if (!el || !el.getBoundingClientRect) return false;
+    const r = el.getBoundingClientRect();
+    return r.width >= 120 && r.height >= 80;
+  }
+
+  function firstLaidOut(selectors) {
+    for (const sel of selectors) {
+      // Several nodes can match once a site keeps an offscreen copy around, so
+      // every match is checked rather than only the first.
+      const nodes = document.querySelectorAll(sel);
+      for (const el of nodes) {
+        if (isLaidOut(el)) return el;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Climbs from the message list to the outermost element that is still the
+   * same column, which is the chat panel as the site draws it: header, messages
+   * and composer, and nothing of the page around it.
+   *
+   * Width is the signal. Going up through the chat's own wrappers keeps the
+   * width identical; the moment a parent gets materially wider, that parent is
+   * the page row holding the player as well, so we stop.
+   */
+  function expandToChatColumn(start) {
+    let best = start;
+    let node = start;
+    for (let depth = 0; depth < 8; depth++) {
+      const parent = node.parentElement;
+      if (!parent || parent === document.body || parent === document.documentElement) break;
+      const pr = parent.getBoundingClientRect();
+      const br = best.getBoundingClientRect();
+      if (pr.width - br.width > Math.max(16, br.width * 0.1)) break;
+      if (pr.height < br.height) break;
+      best = parent;
+      node = parent;
+    }
+    return best;
+  }
+
+  // Resolves the box the overlay should cover: a known chat-column selector if
+  // the site still uses one, otherwise the message list expanded up to its column.
+  function resolveChatBox(columnSelectors, messageSelectors) {
+    const column = firstLaidOut(columnSelectors);
+    if (column) return column;
+    const messages = firstLaidOut(messageSelectors);
+    return messages ? expandToChatColumn(messages) : null;
+  }
+
+  // Looks inside the chat column first. Both sites have other contenteditable
+  // and textbox elements on the page (search, the whisper composer, moderation
+  // views), and the broadest selectors here would otherwise pick one of those.
+  function findComposer(site, selectors) {
+    const scope = site.chatContainer();
+    for (const root of [scope, document]) {
+      if (!root) continue;
+      for (const sel of selectors) {
+        for (const el of root.querySelectorAll(sel)) {
+          const r = el.getBoundingClientRect();
+          // The real composer is on screen and has some height to it.
+          if (r.height >= 12 && r.width >= 60) return el;
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Works out whether the host page is currently in dark or light mode.
+   *
+   * Class and attribute names are checked first because they are exact, but
+   * both sites rename them from time to time, so the reliable fallback is to
+   * measure what the page is actually painted: walk up from the chat until an
+   * element has a real background colour and judge its brightness.
+   *
+   * @returns {'dark'|'light'}
+   */
+  function detectTheme(chatEl) {
+    const root = document.documentElement;
+    const marks = `${root.className} ${root.dataset.theme || ''} `
+      + `${root.getAttribute('data-a-theme') || ''} ${document.body ? document.body.className : ''}`;
+    if (/(^|[\s-])dark($|[\s-])|theme-dark|--theme-dark/i.test(marks)) return 'dark';
+    if (/(^|[\s-])light($|[\s-])|theme-light|--theme-light/i.test(marks)) return 'light';
+
+    for (let el = chatEl || document.body; el; el = el.parentElement) {
+      const bg = getComputedStyle(el).backgroundColor;
+      const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/.exec(bg || '');
+      if (!m) continue;
+      // Fully transparent means this element paints nothing; keep climbing.
+      if (m[4] !== undefined && Number(m[4]) === 0) continue;
+      // Rec. 601 luma, which tracks perceived brightness closely enough here.
+      const luma = (0.299 * +m[1] + 0.587 * +m[2] + 0.114 * +m[3]) / 255;
+      return luma < 0.5 ? 'dark' : 'light';
+    }
+    // Nothing said otherwise, so follow the browser.
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches
+      ? 'light' : 'dark';
+  }
+
+  FCM.detectSiteTheme = detectTheme;
+
+  /**
+   * Calls back whenever the host page's theme changes. Both sites toggle a
+   * class or attribute on <html>, so that is what is watched; the callback
+   * re-runs the full detection rather than trusting the mutation itself.
+   */
+  FCM.watchSiteTheme = function (chatElFn, onChange) {
+    let current = detectTheme(chatElFn());
+    const check = () => {
+      const next = detectTheme(chatElFn());
+      if (next === current) return;
+      current = next;
+      onChange(next);
+    };
+    const observer = new MutationObserver(check);
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['class', 'data-theme', 'data-a-theme', 'style'],
+    });
+    if (document.body) {
+      observer.observe(document.body, { attributes: true, attributeFilter: ['class', 'data-theme'] });
+    }
+    const media = window.matchMedia ? window.matchMedia('(prefers-color-scheme: light)') : null;
+    if (media && media.addEventListener) media.addEventListener('change', check);
+
+    return {
+      current: () => current,
+      stop() {
+        observer.disconnect();
+        if (media && media.removeEventListener) media.removeEventListener('change', check);
+      },
+    };
+  };
+
+  // Scrapes links to the other platform out of the channel page. A link the
+  // streamer put in their own about panel is the most reliable way to know
+  // which account on the other platform is theirs.
+  function scrapeHints(otherHostPattern) {
+    const out = [];
+    document.querySelectorAll('a[href]').forEach((a) => {
+      const href = a.getAttribute('href') || '';
+      if (otherHostPattern.test(href)) out.push(href);
+    });
+    return Array.from(new Set(out)).slice(0, 40);
+  }
+
+  const twitch = {
+    id: 'twitch',
+    matches: () => /(^|\.)twitch\.tv$/.test(location.hostname),
+
+    channelFromUrl() {
+      const parts = location.pathname.split('/').filter(Boolean);
+      if (!parts.length) return null;
+      // /popout/<channel>/chat and /moderator/<channel> are still channel pages.
+      let slug = parts[0].toLowerCase();
+      if ((slug === 'popout' || slug === 'moderator' || slug === 'embed') && parts[1]) {
+        slug = parts[1].toLowerCase();
+      } else if (FCM.TWITCH_RESERVED.has(slug)) {
+        return null;
+      }
+      if (FCM.TWITCH_RESERVED.has(slug)) return null;
+      return /^[a-z0-9_]{2,30}$/.test(slug) ? slug : null;
+    },
+
+    chatContainer() {
+      return resolveChatBox(
+        [
+          'div[data-a-target="right-column-chat-bar"]',
+          'section[data-test-selector="chat-room-component-layout"]',
+          'div[data-test-selector="chat-room-component-layout"]',
+          '.channel-root__right-column',
+          '.right-column',
+        ],
+        [
+          'div[data-test-selector="chat-scrollable-area__message-container"]',
+          'div[data-a-target="chat-scroller"]',
+          '.chat-scrollable-area__message-container',
+          '.chat-list--default',
+        ]
+      );
+    },
+
+    // The element that, when hidden, removes the site's own chat without
+    // collapsing the layout around it.
+    nativeChatBody() {
+      return firstMatch([
+        'section[data-test-selector="chat-room-component-layout"]',
+        'div[data-test-selector="chat-room-component-layout"]',
+        'div[data-a-target="right-column-chat-bar"] > div',
+      ]);
+    },
+
+    hints() {
+      return scrapeHints(/kick\.com/i);
+    },
+
+    composer() {
+      return findComposer(this, [
+        'div[data-a-target="chat-input"][contenteditable="true"]',
+        'div[data-a-target="chat-input"] [contenteditable="true"]',
+        'textarea[data-a-target="chat-input"]',
+        '[data-a-target="chat-input"]',
+        'div[role="textbox"][contenteditable="true"]',
+        '.chat-wysiwyg-input__editor',
+      ]);
+    },
+
+    sendButton() {
+      return firstMatch([
+        'button[data-a-target="chat-send-button"]',
+        'button[data-test-selector="chat-send-button"]',
+      ]);
+    },
+  };
+
+  const kick = {
+    id: 'kick',
+    matches: () => /(^|\.)kick\.com$/.test(location.hostname),
+
+    channelFromUrl() {
+      const parts = location.pathname.split('/').filter(Boolean);
+      if (!parts.length) return null;
+      let slug = parts[0].toLowerCase();
+      if (slug === 'popout' && parts[1]) slug = parts[1].toLowerCase();
+      if (FCM.KICK_RESERVED.has(slug)) return null;
+      return /^[a-z0-9_-]{2,30}$/.test(slug) ? slug : null;
+    },
+
+    chatContainer() {
+      return resolveChatBox(
+        [
+          '#chatroom',
+          '#channel-chatroom',
+          '[data-testid="chat-container"]',
+          'aside[class*="chatroom"]',
+          'div[class*="chatroom"]',
+        ],
+        [
+          '#chatroom-messages',
+          '[data-testid="chat-message-list"]',
+          '[data-chat-entry]',
+          'div[class*="chat-message-list"]',
+        ]
+      );
+    },
+
+    nativeChatBody() {
+      return firstMatch([
+        '#chatroom-messages',
+        '#chatroom',
+        '[data-testid="chat-container"]',
+      ]);
+    },
+
+    hints() {
+      return scrapeHints(/twitch\.tv/i);
+    },
+
+    composer() {
+      return findComposer(this, [
+        '#message-input',
+        'div[data-testid="chat-input"][contenteditable="true"]',
+        'div[data-testid="chat-input"] [contenteditable="true"]',
+        'div[contenteditable="true"][data-input="true"]',
+        'div.editor-input[contenteditable="true"]',
+        'div[role="textbox"][contenteditable="true"]',
+        'textarea[placeholder*="message" i]',
+        'div[contenteditable="true"]',
+      ]);
+    },
+
+    sendButton() {
+      return firstMatch([
+        'button[data-testid="chat-send-button"]',
+        'button[aria-label*="send" i]',
+        'button[title*="send" i]',
+      ]);
+    },
+  };
+
+  FCM.SITES = { twitch, kick };
+
+  FCM.currentSite = function () {
+    if (twitch.matches()) return twitch;
+    if (kick.matches()) return kick;
+    return null;
+  };
+
+  const tick = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  function readComposer(box) {
+    if (box.tagName === 'TEXTAREA' || box.tagName === 'INPUT') return box.value || '';
+    return box.innerText || box.textContent || '';
+  }
+
+  function landed(box, message) {
+    // Editors normalise whitespace and can add a trailing newline, so compare
+    // on collapsed whitespace rather than demanding an exact string.
+    const got = readComposer(box).replace(/\s+/g, ' ').trim();
+    return got.includes(message.replace(/\s+/g, ' ').trim());
+  }
+
+  function selectAllIn(box) {
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(box);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
+  // Insertion strategies, cheapest and most faithful first. Each returns after
+  // attempting; the caller checks whether the text actually landed, because a
+  // React-controlled editor will happily swallow an event and change nothing.
+  const INSERT_STRATEGIES = [
+    // A real paste is what Slate and Lexical both handle most reliably, and it
+    // goes through the editor's own model rather than touching the DOM.
+    function paste(box, message) {
+      selectAllIn(box);
+      const data = new DataTransfer();
+      data.setData('text/plain', message);
+      box.dispatchEvent(new ClipboardEvent('paste', {
+        bubbles: true, cancelable: true, clipboardData: data,
+      }));
+    },
+    // execCommand still drives contenteditable in Chrome and produces the full
+    // beforeinput/input pair the editors listen for.
+    function exec(box, message) {
+      selectAllIn(box);
+      document.execCommand('insertText', false, message);
+    },
+    function inputEvents(box, message) {
+      selectAllIn(box);
+      box.dispatchEvent(new InputEvent('beforeinput', {
+        bubbles: true, cancelable: true, inputType: 'insertText', data: message,
+      }));
+      box.dispatchEvent(new InputEvent('input', {
+        bubbles: true, inputType: 'insertText', data: message,
+      }));
+    },
+    // Last resort for a plain, uncontrolled contenteditable.
+    function directWrite(box, message) {
+      box.textContent = message;
+      box.dispatchEvent(new InputEvent('input', {
+        bubbles: true, inputType: 'insertText', data: message,
+      }));
+    },
+  ];
+
+  function setNativeValue(box, message) {
+    const proto = box.tagName === 'TEXTAREA'
+      ? window.HTMLTextAreaElement.prototype
+      : window.HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+    setter.call(box, message);
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    box.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  // Driving the site's composer means moving focus into it, so where focus was
+  // has to be remembered and put back. Without that, the caret is left in the
+  // page's own chat box — which the overlay is sitting on top of — and the next
+  // thing the user types goes somewhere they cannot see.
+  function captureFocus() {
+    let active = document.activeElement;
+    // The overlay's input lives in a shadow root, so document.activeElement
+    // reports the host element; the real one is a level further in.
+    while (active && active.shadowRoot && active.shadowRoot.activeElement) {
+      active = active.shadowRoot.activeElement;
+    }
+    return active;
+  }
+
+  function restoreFocus(el) {
+    if (!el || typeof el.focus !== 'function') return;
+    if (captureFocus() === el) return;
+    try {
+      el.focus({ preventScroll: true });
+      // Put the caret back at the end rather than selecting the whole value.
+      if (typeof el.setSelectionRange === 'function' && typeof el.value === 'string') {
+        el.setSelectionRange(el.value.length, el.value.length);
+      }
+    } catch (e) { /* the element was removed while we were sending */ }
+  }
+
+  function pressEnter(box) {
+    ['keydown', 'keypress', 'keyup'].forEach((type) => {
+      box.dispatchEvent(new KeyboardEvent(type, {
+        bubbles: true, cancelable: true, composed: true,
+        key: 'Enter', code: 'Enter', keyCode: 13, which: 13, charCode: type === 'keypress' ? 13 : 0,
+      }));
+    });
+  }
+
+  /**
+   * Types into the host site's own composer and submits it.
+   *
+   * The overlay never holds a platform token, so this is how a message gets
+   * sent: it drives the page's real, already-signed-in chat box, and the
+   * message goes out as the account signed in there.
+   *
+   * Neither site uses a plain input. Twitch's composer is Slate and Kick's is
+   * Lexical, and both keep their own model of the text: assigning to the DOM
+   * changes nothing they will read back. So each insertion strategy is tried in
+   * turn and the box is read back afterwards to see whether it took.
+   *
+   * @returns {Promise<{ok: boolean, reason: string}>}
+   */
+  FCM.sendViaNativeComposer = async function (site, text) {
+    const message = String(text || '').trim();
+    if (!message) return { ok: false, reason: 'empty' };
+
+    const box = site.composer();
+    if (!box) return { ok: false, reason: 'no-composer' };
+
+    const previousFocus = captureFocus();
+
+    // The composer is unusable while hidden, and the "hide the site's own chat"
+    // setting hides exactly the subtree it lives in — so un-hide it for the
+    // duration of the send and put it back afterwards.
+    const unhidden = [];
+    for (let el = box; el && el !== document.body; el = el.parentElement) {
+      if (el.style && el.style.visibility === 'hidden') {
+        unhidden.push(el);
+        el.style.visibility = 'visible';
+      }
+    }
+
+    try {
+      if (box.isContentEditable === false && box.disabled) {
+        return { ok: false, reason: 'composer-disabled' };
+      }
+
+      box.focus();
+      if (document.activeElement !== box && !box.contains(document.activeElement)) {
+        // Some editors only accept input once their wrapper has been clicked.
+        box.click();
+        box.focus();
+      }
+
+      if (box.tagName === 'TEXTAREA' || box.tagName === 'INPUT') {
+        setNativeValue(box, message);
+      } else {
+        let ok = false;
+        for (const strategy of INSERT_STRATEGIES) {
+          try { strategy(box, message); } catch (e) { /* try the next one */ }
+          await tick(20);
+          if (landed(box, message)) { ok = true; break; }
+        }
+        if (!ok) return { ok: false, reason: 'insert-failed' };
+      }
+
+      // The send button is re-enabled by a React render, so give it a frame.
+      await tick(60);
+
+      const button = site.sendButton();
+      if (button && !button.disabled) button.click();
+      else pressEnter(box);
+
+      // Hand focus back as soon as the message is away, so the checks below do
+      // not keep the caret in the page's chat box any longer than necessary.
+      restoreFocus(previousFocus);
+
+      await tick(140);
+      // A composer that emptied itself is the site telling us it accepted the
+      // message. Anything still sitting there means it did not go out.
+      if (readComposer(box).trim()) {
+        pressEnter(box);
+        await tick(160);
+        if (readComposer(box).trim()) return { ok: false, reason: 'not-submitted' };
+      }
+      return { ok: true, reason: 'sent' };
+    } catch (e) {
+      return { ok: false, reason: 'error' };
+    } finally {
+      unhidden.forEach((el) => { el.style.visibility = 'hidden'; });
+      // Backstop: every early return above lands here too, so focus is restored
+      // even when the send failed part-way through.
+      restoreFocus(previousFocus);
+    }
+  };
+})(self.FCM);

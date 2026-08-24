@@ -1,0 +1,86 @@
+{
+  "manifest_version": 3,
+  "name": "Friendly Chat Merge",
+  "version": "1.0.0",
+  "description": "Overlays a merged Twitch + Kick chat on the channel you are watching, and offers to connect the other platform when the streamer is live on both.",
+  "minimum_chrome_version": "116",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0vdefhQX2a3wYoBWqcRPP5DrXABtsBjLzSDmZrqnG3T4vpBLOsgUGShsxCHkMB9DRJFujPYi/aizVVVIcvtFEcpVDmtnavLpIw8iBAoOhiAesi8Kt1OAvXps0CvmVJN3KCNWDf27uWqHxqChDZHPaZXKaqmy/fyZSAb79W+2OPXCs51IBzE8uUUEiv7t1Qg8RMdeXSIWBFBCqHagebuKXf4HlkzdsGXJ0jmMewK3TktyCRu8Js85oU66nsdkxUkdh43e/98s1QZAJpzlQ/CHkEGZFZAFTBbGDSdqvx/O/SEnseyMsR40dO9is6SK5OY3MpFKUBemnnvt4g1Xa1F0sQIDAQAB",
+  "permissions": [
+    "storage",
+    "alarms",
+    "identity"
+  ],
+  "host_permissions": [
+    "*://*.twitch.tv/*",
+    "*://*.kick.com/*",
+    "https://gql.twitch.tv/*",
+    "https://api.twitch.tv/*",
+    "https://id.twitch.tv/*",
+    "https://api.kick.com/*",
+    "http://localhost:8080/*",
+    "https://*.workers.dev/*",
+    "https://7tv.io/*",
+    "https://api.betterttv.net/*",
+    "https://api.frankerfacez.com/*",
+    "https://recent-messages.robotty.de/*"
+  ],
+  "background": {
+    "service_worker": "src/background/service-worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.twitch.tv/*",
+        "*://*.kick.com/*"
+      ],
+      "js": [
+        "src/shared/namespace.js",
+        "src/shared/constants.js",
+        "src/shared/util.js",
+        "src/shared/irc.js",
+        "src/shared/emote-parsers.js",
+        "src/shared/kick-events.js",
+        "src/content/render.js",
+        "src/content/feed.js",
+        "src/content/compose.js",
+        "src/content/overlay.js",
+        "src/content/sites.js",
+        "src/content/boot.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "action": {
+    "default_title": "Friendly Chat Merge",
+    "default_popup": "src/popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "options_ui": {
+    "page": "src/options/options.html",
+    "open_in_tab": true
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "src/content/overlay.css",
+        "icons/*"
+      ],
+      "matches": [
+        "*://*.twitch.tv/*",
+        "*://*.kick.com/*"
+      ]
+    }
+  ]
+}

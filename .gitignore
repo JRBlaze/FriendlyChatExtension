@@ -1,0 +1,15 @@
+# Claude Code's local, machine-specific settings
+.claude/
+
+# The extension's signing key, if one is ever kept alongside the source.
+# manifest.json carries only the public half, which is what pins the ID.
+*.pem
+
+node_modules/
+dist/
+*.zip
+*.crx
+
+# OS noise
+.DS_Store
+Thumbs.db

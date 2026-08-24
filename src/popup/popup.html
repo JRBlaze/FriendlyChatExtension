@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Friendly Chat Merge</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <span class="mark"></span>
+    <div>
+      <strong>Friendly Chat Merge</strong>
+      <small id="context">Checking this tab…</small>
+    </div>
+  </header>
+
+  <section id="status" class="card hidden">
+    <div class="row">
+      <span class="label">Watching</span>
+      <span id="host-channel" class="value">—</span>
+    </div>
+    <div class="row">
+      <span class="label">Twitch chat</span>
+      <span id="state-twitch" class="value">—</span>
+    </div>
+    <div class="row">
+      <span class="label">Kick chat</span>
+      <span id="state-kick" class="value">—</span>
+    </div>
+    <div class="row">
+      <span class="label">Other platform</span>
+      <span id="counterpart" class="value">—</span>
+    </div>
+  </section>
+
+  <section id="idle" class="card">
+    <p class="muted">Open a Twitch or Kick channel and the merged chat overlay appears over that site's own chat.</p>
+  </section>
+
+  <section class="card">
+    <label class="toggle">
+      <input type="checkbox" id="autoOpen">
+      <span>Open the overlay automatically</span>
+    </label>
+    <label class="toggle">
+      <input type="checkbox" id="autoConnectHost">
+      <span>Join this site's chat on open</span>
+    </label>
+    <label class="field">
+      <span>When they are live on the other platform</span>
+      <select id="crossPromptMode">
+        <option value="ask">Ask me</option>
+        <option value="always">Connect automatically</option>
+        <option value="never">Do nothing</option>
+      </select>
+    </label>
+  </section>
+
+  <footer>
+    <a id="open-options" href="#">All settings</a>
+    <span id="version"></span>
+  </footer>
+
+  <script src="../shared/namespace.js"></script>
+  <script src="../shared/constants.js"></script>
+  <script src="../shared/util.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

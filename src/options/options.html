@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Friendly Chat Merge — Settings</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+<main>
+  <header>
+    <span class="mark"></span>
+    <div>
+      <h1>Friendly Chat Merge</h1>
+      <p>A merged Twitch + Kick chat overlay, laid over the chat of whichever site you are on.</p>
+    </div>
+    <span class="version" id="version"></span>
+  </header>
+
+  <section>
+    <h2>Cross-platform</h2>
+    <div class="field">
+      <div class="field-text">
+        <label for="crossPromptMode">When the streamer is also live on the other platform</label>
+        <small>Watching Twitch and they are live on Kick as well (or the other way round).</small>
+      </div>
+      <select id="crossPromptMode">
+        <option value="ask">Ask me each time</option>
+        <option value="always">Connect the other chat automatically</option>
+        <option value="never">Do nothing</option>
+      </select>
+    </div>
+  </section>
+
+  <section>
+    <h2>Overlay</h2>
+    <div class="field">
+      <div class="field-text">
+        <label for="autoOpen">Open automatically on a channel page</label>
+        <small>Off means the overlay waits behind a small launcher button.</small>
+      </div>
+      <input type="checkbox" id="autoOpen">
+    </div>
+    <div class="field">
+      <div class="field-text">
+        <label for="autoConnectHost">Join the current site's chat on open</label>
+      </div>
+      <input type="checkbox" id="autoConnectHost">
+    </div>
+    <div class="field">
+      <div class="field-text">
+        <label for="startCollapsed">Start collapsed</label>
+      </div>
+      <input type="checkbox" id="startCollapsed">
+    </div>
+    <div class="field">
+      <div class="field-text">
+        <label for="hideNativeChat">Hide the site's own chat while merged</label>
+        <small>The overlay covers it either way; hiding it saves the page some work.</small>
+      </div>
+      <input type="checkbox" id="hideNativeChat">
+    </div>
+    <div class="field">
+      <div class="field-text">
+        <label for="theme">Theme</label>
+        <small>Matching the site follows Twitch's and Kick's own dark/light setting.</small>
+      </div>
+      <select id="theme">
+        <option value="auto">Match this site</option>
+        <option value="dark">Always dark</option>
+        <option value="light">Always light</option>
+      </select>
+    </div>
+    <div class="field">
+      <div class="field-text"><label for="opacity">Opacity</label></div>
+      <span class="with-value"><input type="range" id="opacity" min="50" max="100" step="1"><output id="opacity-out"></output></span>
+    </div>
+    <div class="field">
+      <div class="field-text"><label for="fontSize">Text size</label></div>
+      <span class="with-value"><input type="range" id="fontSize" min="10" max="22" step="1"><output id="fontSize-out"></output></span>
+    </div>
+  </section>
+
+  <section>
+    <h2>Feed</h2>
+    <div class="field">
+      <div class="field-text">
+        <label for="maxMessages">Messages kept in the feed</label>
+        <small>Older messages are dropped so a stream left open all day stays responsive.</small>
+      </div>
+      <span class="with-value"><input type="range" id="maxMessages" min="100" max="3000" step="50"><output id="maxMessages-out"></output></span>
+    </div>
+    <div class="field">
+      <div class="field-text">
+        <label for="showHistory">Load recent history when joining</label>
+        <small>Twitch history comes from recent-messages.robotty.de; Kick's from its own API.</small>
+      </div>
+      <input type="checkbox" id="showHistory">
+    </div>
+    <div class="field">
+      <div class="field-text"><label for="showEvents">Show subs, raids, gifts and other events</label></div>
+      <input type="checkbox" id="showEvents">
+    </div>
+    <div class="field">
+      <div class="field-text">
+        <label for="thirdPartyEmotes">Third-party emotes</label>
+        <small>7TV, BetterTTV and FrankerFaceZ, global and per channel.</small>
+      </div>
+      <input type="checkbox" id="thirdPartyEmotes">
+    </div>
+    <div class="field">
+      <div class="field-text">
+        <label for="timestamps">Timestamps</label>
+        <small>The time beside each message and status row.</small>
+      </div>
+      <input type="checkbox" id="timestamps">
+    </div>
+    <div class="field">
+      <div class="field-text">
+        <label for="showBadges">Username badges</label>
+        <small>Moderator, subscriber, VIP and channel badges beside each name.</small>
+      </div>
+      <input type="checkbox" id="showBadges">
+    </div>
+    <div class="field">
+      <div class="field-text">
+        <label for="animations">Fade in new messages</label>
+        <small>Turn off for the smoothest scrolling on very busy channels.</small>
+      </div>
+      <input type="checkbox" id="animations">
+    </div>
+    <div class="field field-col">
+      <div class="field-text">
+        <label for="highlightNames">Highlight these names</label>
+        <small>Comma separated. Messages containing them are highlighted in the feed.</small>
+      </div>
+      <input type="text" id="highlightNames" placeholder="yourname, your_other_name">
+    </div>
+  </section>
+
+  <section>
+    <h2>Kick sign-in</h2>
+    <div class="field">
+      <div class="field-text">
+        <label for="kickRedirect">Where Kick returns after sign-in</label>
+        <small>The default reuses the redirect the Friendly Chat desktop app already registers
+          with the same Kick application, so nothing needs setting up — no local server has to be
+          running either. The other two are tidier but each needs a URL registered with Kick
+          first; the overlay shows which.</small>
+      </div>
+      <select id="kickRedirect">
+        <option value="shared">Reuse the desktop app's URL (no setup)</option>
+        <option value="extension">Straight back to the extension</option>
+        <option value="proxy">Via the proxy worker</option>
+      </select>
+    </div>
+  </section>
+
+  <section>
+    <h2>Channel links</h2>
+    <p class="section-note">
+      How each channel was matched to its counterpart on the other platform. Links found
+      automatically expire after six hours; ones you set by hand are kept until you remove them.
+    </p>
+    <div id="links"></div>
+    <div class="field-actions">
+      <button id="clear-links" class="btn btn-ghost">Forget all automatic matches</button>
+    </div>
+  </section>
+
+  <footer>
+    <p>Chat is read anonymously — no sign-in is needed to watch. Connecting an account is
+       optional, and only buys you sending: without one, a typed message is handed to the chat
+       box of the site you are on and goes out as whoever is signed in there. Account tokens are
+       kept in this browser's local storage and are never synced across devices. Connect or
+       disconnect an account from the overlay's own settings panel.</p>
+  </footer>
+</main>
+
+<script src="../shared/namespace.js"></script>
+<script src="../shared/constants.js"></script>
+<script src="../shared/util.js"></script>
+<script src="options.js"></script>
+</body>
+</html>
