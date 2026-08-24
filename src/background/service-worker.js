@@ -438,6 +438,9 @@ chrome.runtime.onConnect.addListener((port) => {
   }
 
   port.onDisconnect.addListener(() => {
+    // A tab that reconnects opens a new port before the old one reports its
+    // disconnect, so this must not clear a port that has already been replaced.
+    if (session.port !== port) return;
     // Navigating within the SPA reconnects almost immediately; give the tab a
     // moment before dropping its sockets so a soft nav does not restart chat.
     session.port = null;

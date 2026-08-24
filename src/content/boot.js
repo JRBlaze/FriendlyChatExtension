@@ -24,36 +24,65 @@
   let port = null;
   let keepaliveTimer = null;
   let reconnectTimer = null;
+  let hintTimers = [];
+  // Bumped on every channel change. Anything still in flight from before the
+  // change carries an older epoch and is ignored, which is what stops a
+  // previous channel's messages being applied to the new overlay.
+  let navEpoch = 0;
   // Re-issued after a service-worker restart, which drops every socket.
   const activeJoins = new Map();
 
   // ── Port ────────────────────────────────────────────────────────────────────
 
+  // Closes the current port so nothing more arrives on it. Leaving an old port
+  // open was what let a previous channel's messages reach the new overlay.
+  function disconnectPort() {
+    clearInterval(keepaliveTimer);
+    clearTimeout(reconnectTimer);
+    if (!port) return;
+    try { port.disconnect(); } catch (e) { /* already gone */ }
+    port = null;
+  }
+
   function connectPort() {
+    disconnectPort();
+
+    let myPort;
     try {
-      port = chrome.runtime.connect({ name: 'fcm' });
+      myPort = chrome.runtime.connect({ name: 'fcm' });
     } catch (e) {
       // The extension was reloaded or disabled; stop trying.
       port = null;
       return;
     }
+    port = myPort;
+    const epoch = navEpoch;
 
-    port.onMessage.addListener(handleMessage);
-    port.onDisconnect.addListener(() => {
+    // Both handlers check they are still the live port. A listener cannot be
+    // removed once its port is gone, so they have to bow out on their own.
+    myPort.onMessage.addListener((msg) => {
+      if (port !== myPort || epoch !== navEpoch) return;
+      handleMessage(msg);
+    });
+
+    myPort.onDisconnect.addListener(() => {
+      if (port !== myPort || epoch !== navEpoch) return;
       port = null;
       clearInterval(keepaliveTimer);
       // The worker sleeps aggressively; reconnecting revives it and replays the
       // joins that were live before it went away.
-      if (currentChannel) {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = setTimeout(() => {
-          connectPort();
-          if (port) {
-            sendHello();
-            activeJoins.forEach((chan, platform) => post({ cmd: 'join', platform, channel: chan }));
-          }
-        }, 1200);
-      }
+      if (!currentChannel) return;
+      clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(() => {
+        if (epoch !== navEpoch) return;
+        connectPort();
+        if (!port) return;
+        sendHello();
+        // Only replay joins for the channel actually on screen.
+        activeJoins.forEach((chan, platform) => {
+          post({ cmd: 'join', platform, channel: chan });
+        });
+      }, 1200);
     });
 
     clearInterval(keepaliveTimer);
@@ -152,14 +181,20 @@
   // The about/social panels render well after the chat does, so the page is
   // re-scanned a few times before giving up on finding a link to the other
   // platform.
-  function scheduleHintScans() {
-    [1500, 4000, 9000].forEach((delay) => {
-      setTimeout(() => {
-        if (!currentChannel || !overlay) return;
-        const hints = site.hints();
-        if (hints.length) post({ cmd: 'hints', hints });
-      }, delay);
-    });
+  function cancelHintScans() {
+    hintTimers.forEach((t) => clearTimeout(t));
+    hintTimers = [];
+  }
+
+  function scheduleHintScans(epoch) {
+    cancelHintScans();
+    hintTimers = [1500, 4000, 9000].map((delay) => setTimeout(() => {
+      // A scan scheduled for the previous channel would otherwise report that
+      // channel's links against this one.
+      if (epoch !== navEpoch || !currentChannel || !overlay) return;
+      const hints = site.hints();
+      if (hints.length) post({ cmd: 'hints', hints });
+    }, delay));
   }
 
   // ── Mounting ────────────────────────────────────────────────────────────────
@@ -187,22 +222,37 @@
 
   async function evaluate() {
     const channel = site.channelFromUrl();
-
     if (channel === currentChannel) return;
 
+    const epoch = ++navEpoch;
     currentChannel = channel;
+
+    // Order matters. The port is closed first so nothing from the channel being
+    // left can arrive while the new one is being set up — that was what made
+    // the overlay flip back to the previous channel.
+    cancelHintScans();
+    if (!channel) {
+      // Left the channel page (directory, settings, a clip). Tell the worker to
+      // drop its sockets before closing the port.
+      if (port) post({ cmd: 'hello', site: site.id, channel: '', hints: [] });
+      disconnectPort();
+      unmount();
+      return;
+    }
+    disconnectPort();
     unmount();
 
-    if (!channel) {
-      // Left the channel page (directory, settings, a clip). Drop the sockets.
-      if (port) post({ cmd: 'hello', site: site.id, channel: '', hints: [] });
+    await mountFor(channel);
+    // A faster navigation may have overtaken this one while the overlay was
+    // being built; if so, that one owns the page now.
+    if (epoch !== navEpoch) {
+      if (overlay) { overlay.destroy(); overlay = null; }
       return;
     }
 
-    await mountFor(channel);
     connectPort();
     sendHello();
-    scheduleHintScans();
+    scheduleHintScans(epoch);
   }
 
   // Twitch and Kick are both single-page apps, and neither fires an event the

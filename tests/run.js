@@ -2042,6 +2042,203 @@ suites.feed = function () {
   }
 };
 
+// Moving between channels on the same site. Twitch and Kick are single-page
+// apps, so this is a URL change rather than a page load, and everything from
+// the channel being left has to stop before the new one starts.
+suites.navigation = function () {
+  function boot(startPath) {
+    const ports = [];
+    const timers = { intervals: [], timeouts: [] };
+    const location = {
+      hostname: 'www.twitch.tv',
+      pathname: startPath,
+      get href() { return 'https://www.twitch.tv' + this.pathname; },
+    };
+
+    const sandbox = makeSandbox({
+      location,
+      window: { addEventListener() {}, matchMedia: () => ({ matches: false, addEventListener() {} }) },
+      document: {
+        documentElement: { appendChild() {}, className: '', dataset: {}, getAttribute: () => null },
+        body: { className: '' },
+        querySelector: () => null,
+        querySelectorAll: () => [],
+        createElement: () => ({ dataset: {}, style: {}, classList: { add() {}, remove() {}, contains: () => false, toggle() {} }, appendChild() {}, addEventListener() {} }),
+      },
+      chrome: {
+        runtime: {
+          connect() {
+            const p = {
+              id: ports.length + 1,
+              sent: [],
+              disconnected: false,
+              postMessage(m) { if (!this.disconnected) this.sent.push(m); },
+              disconnect() { this.disconnected = true; },
+              onMessage: { addListener: (fn) => { p._recv = fn; } },
+              onDisconnect: { addListener: (fn) => { p._gone = fn; } },
+            };
+            ports.push(p);
+            return p;
+          },
+        },
+        storage: {
+          sync: { get: async () => ({}), set: async () => {} },
+          local: { get: async () => ({}), set: async () => {} },
+          onChanged: { addListener() {} },
+        },
+      },
+    });
+    sandbox.setInterval = (fn, ms) => { timers.intervals.push({ fn, ms }); return timers.intervals.length; };
+    sandbox.clearInterval = () => {};
+    sandbox.setTimeout = (fn, ms) => { timers.timeouts.push({ fn, ms, cancelled: false }); return timers.timeouts.length; };
+    sandbox.clearTimeout = (id) => { if (timers.timeouts[id - 1]) timers.timeouts[id - 1].cancelled = true; };
+
+    const FCM = load(sandbox, ...SHARED, 'src/content/sites.js');
+
+    // A stand-in overlay: boot only needs it to mount, take messages and go away.
+    const overlays = [];
+    FCM.createOverlay = (opts) => {
+      const o = {
+        channel: opts.channel,
+        destroyed: false,
+        statuses: [],
+        mount: async () => o,
+        destroy() { o.destroyed = true; },
+        sys() {}, event() {}, chat() {}, batch() {}, setEmotes() {}, setBadges() {},
+        deleteMessage() {}, deleteUser() {}, setCounterpart() {}, setAccounts() {},
+        setModerator() {}, modResult() {}, sendResult() {}, applyStoredSettings() {}, toast() {},
+        setStatus(platform, state, channel) { o.statuses.push({ platform, state, channel }); },
+      };
+      overlays.push(o);
+      return o;
+    };
+
+    vm.runInContext(fs.readFileSync(path.join(ROOT, 'src/content/boot.js'), 'utf8'),
+      sandbox, { filename: 'boot.js' });
+
+    const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
+
+    return {
+      FCM, ports, overlays, timers, location, flush,
+      // The SPA nav poll boot installs.
+      async navigateTo(pathname) {
+        location.pathname = pathname;
+        timers.intervals.filter((t) => t.ms === 600).forEach((t) => t.fn());
+        await flush();
+      },
+      live() { return ports.filter((p) => !p.disconnected); },
+      joinsFor(port) { return port.sent.filter((m) => m.cmd === 'join').map((m) => m.channel); },
+      allJoins() { return ports.flatMap((p) => p.sent.filter((m) => m.cmd === 'join').map((m) => m.channel)); },
+      hellos() { return ports.flatMap((p) => p.sent.filter((m) => m.cmd === 'hello').map((m) => m.channel)); },
+      runTimersOfLength(ms) {
+        timers.timeouts.filter((t) => t.ms === ms && !t.cancelled).forEach((t) => t.fn());
+      },
+    };
+  }
+
+  return (async () => {
+    // ── The reported bug: switching channels must not go back to the old one ──
+    {
+      const t = boot('/alpha');
+      await t.flush();
+      // Pretend the worker confirmed the join, as it does in practice.
+      t.ports[0]._recv({ type: 'ready', site: 'twitch', channel: 'alpha', connections: {} });
+      await t.flush();
+      t.ports[0]._recv({ type: 'status', platform: 'twitch', state: 'connected', channel: 'alpha' });
+      await t.flush();
+      eq(t.hellos(), ['alpha'], 'nav: the first channel is announced once');
+
+      const firstPort = t.ports[0];
+      await t.navigateTo('/bravo');
+
+      ok(firstPort.disconnected,
+        'nav: the port carrying the old channel is closed, not left listening');
+      eq(t.live().length, 1, 'nav: exactly one port is live afterwards');
+      eq(t.hellos().filter((c) => c === 'bravo').length, 1, 'nav: the new channel is announced');
+
+      // The heart of it: anything still arriving from the old channel must be
+      // ignored rather than applied to the new overlay.
+      firstPort._recv({ type: 'status', platform: 'twitch', state: 'connected', channel: 'alpha' });
+      firstPort._recv({ type: 'ready', site: 'twitch', channel: 'alpha', connections: { twitch: { channel: 'alpha', state: 'connected' } } });
+      await t.flush();
+
+      const newPort = t.live()[0];
+      eq(t.joinsFor(newPort).filter((c) => c === 'alpha').length, 0,
+        'nav: no join for the old channel is ever issued on the new port');
+
+      // And the worker confirming the new channel joins that one, not the old.
+      newPort._recv({ type: 'ready', site: 'twitch', channel: 'bravo', connections: {} });
+      await t.flush();
+      eq(t.joinsFor(newPort), ['bravo'], 'nav: only the new channel is joined');
+    }
+
+    // ── The old overlay is torn down, exactly one is left ──
+    {
+      const t = boot('/alpha');
+      await t.flush();
+      await t.navigateTo('/bravo');
+      eq(t.overlays.length, 2, 'nav: a fresh overlay is built for the new channel');
+      eq(t.overlays[0].destroyed, true, 'nav: the old overlay is destroyed');
+      eq(t.overlays[1].destroyed, false, 'nav: the new one is live');
+      eq(t.overlays[1].channel, 'bravo', 'nav: and it is for the new channel');
+    }
+
+    // ── Hopping quickly through several channels settles on the last ──
+    {
+      const t = boot('/alpha');
+      await t.flush();
+      await t.navigateTo('/bravo');
+      await t.navigateTo('/charlie');
+      await t.navigateTo('/delta');
+
+      eq(t.live().length, 1, 'nav: rapid hops leave a single live port');
+      const last = t.live()[0];
+      last._recv({ type: 'ready', site: 'twitch', channel: 'delta', connections: {} });
+      await t.flush();
+      eq(t.joinsFor(last), ['delta'], 'nav: only the channel actually on screen is joined');
+      eq(t.overlays.filter((o) => !o.destroyed).length, 1, 'nav: one overlay survives');
+      eq(t.overlays.filter((o) => !o.destroyed)[0].channel, 'delta', 'nav: and it is the last one');
+    }
+
+    // ── A stale hint scan must not report the old channel's links ──
+    {
+      const t = boot('/alpha');
+      await t.flush();
+      await t.navigateTo('/bravo');
+      // Fire every hint scan that was scheduled, including alpha's.
+      [1500, 4000, 9000].forEach((ms) => t.runTimersOfLength(ms));
+      await t.flush();
+      const stale = t.ports[0].sent.filter((m) => m.cmd === 'hints');
+      eq(stale.length, 0, 'nav: the old channel\'s hint scans do not fire on its dead port');
+    }
+
+    // ── Leaving for a non-channel page drops everything ──
+    {
+      const t = boot('/alpha');
+      await t.flush();
+      await t.navigateTo('/directory/following');
+      eq(t.hellos().slice(-1)[0], '', 'nav: the worker is told there is no channel');
+      ok(t.ports[0].disconnected, 'nav: and the port is closed');
+      eq(t.overlays.filter((o) => !o.destroyed).length, 0, 'nav: no overlay is left behind');
+
+      // Coming back to a channel starts cleanly.
+      await t.navigateTo('/echo');
+      eq(t.live().length, 1, 'nav: returning to a channel opens one port');
+      eq(t.hellos().slice(-1)[0], 'echo', 'nav: and announces that channel');
+    }
+
+    // ── Navigating to the same channel again is a no-op ──
+    {
+      const t = boot('/alpha');
+      await t.flush();
+      const before = t.ports.length;
+      await t.navigateTo('/alpha');
+      eq(t.ports.length, before, 'nav: re-entering the same channel does not reconnect');
+      eq(t.overlays.length, 1, 'nav: nor rebuild the overlay');
+    }
+  })();
+};
+
 suites.moderation = function () {
   function build() {
     const calls = [];

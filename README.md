@@ -454,7 +454,7 @@ DOM, so nothing in the page's layout or stacking contexts has to be fought with.
 node tests/run.js
 ```
 
-565 assertions, no network. It drives the real parsers with real payload shapes: IRC lines with
+587 assertions, no network. It drives the real parsers with real payload shapes: IRC lines with
 tags and emote positions, Kick Pusher events, emote sets from every provider, and the
 counterpart matcher against stubbed platform APIs — including the cases that matter most, like a
 manual mapping beating a same-name guess and a failing emote provider not taking the others down.
@@ -499,6 +499,15 @@ per-platform result, which is how the partial-failure and expired-token paths ge
 the send path.
 
 ## Bugs this testing found
+
+- **Switching channels flipped back to the previous one.** Each channel change opened a new port
+  to the background worker without closing the old one, so the channel being left kept delivering
+  messages — and those messages repopulated the record of what was joined. The worker's
+  confirmation for the *new* channel then saw a join already registered and skipped it, leaving
+  the overlay on the old channel. The port is now closed before the new one opens, every message
+  and timer carries the navigation it belongs to and stale ones bow out, and the worker refuses to
+  let a disconnecting port clear one that has already replaced it. The `navigation` suite
+  reproduces the original symptom exactly: with the old code, the new channel is never joined.
 
 - **The overlay mounted on the platforms' own sign-in pages.** `twitch.tv/login` was not on the
   reserved-path list, so the extension treated `login` as a channel name: it mounted a chat panel
