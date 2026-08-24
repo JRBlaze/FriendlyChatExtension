@@ -45,6 +45,10 @@
      plus a panel centred on the window, neither carrying a role, and the panel
      nowhere near the chat column. Only the backdrop covers the overlay. */
   .fakebackdrop { position: fixed; inset: 0; z-index: 1999; background: rgba(0,0,0,.75); }
+  /* Kick's gift shop and rewards panels are anchored inside the chat column
+     rather than portalled to <body>, carry no role, and announce themselves
+     only with data-state. */
+  .fakepanel { position: absolute; left: 6px; right: 6px; bottom: 4px; height: 300px; z-index: 30; background: #1f1f23; border: 1px solid #3a3a3d; border-radius: 8px; padding: 14px; font-size: 12px; }
   .fakemodal { position: fixed; z-index: 2000; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 418px; height: 400px; background: #1f1f23; border: 1px solid #3a3a3d; border-radius: 8px; padding: 16px; font-size: 12px; }
   /* Kick's chat column, mirroring the real nesting: a header outside the body,
      an in-flow card slot above the message wrapper (the gifter leaderboard),
@@ -136,13 +140,15 @@
             </div>
             <div id="chatroom-footer">
               <div class="editor-input" data-testid="chat-input" contenteditable="true" role="textbox"></div>
-              <!-- The two controls a signed-in Kick footer actually carries,
-                   with the names and text taken from a real channel: channel
-                   points show a balance, Kicks shows no number at all. -->
+              <!-- The balance row a signed-in Kick footer carries, with the
+                   names, nesting and text taken from a real channel. Points are
+                   a button whose own text is the balance; Kicks is a *div*
+                   inside a button, which is why clicking the thing that shows
+                   the number did nothing at all. -->
               <div class="kick-btns">
                 <button id="kick-emote"><svg data-ds-icon="Smile" width="12" height="12"></svg></button>
-                <button id="kick-balance" data-testid="channel-points-button"><svg data-ds-icon="Bubbles" width="12" height="12"></svg>4.6K</button>
-                <button id="kick-kicks" data-testid="get-kicks">Get KICKs</button>
+                <button id="kick-points" data-testid="channel-points-button"><svg data-ds-icon="Bubbles" width="12" height="12"></svg>4.6K</button>
+                <button id="kick-kicks"><span data-testid="kicks-balance" aria-label="Kicks balance"><svg data-ds-icon="Kicks" width="12" height="12"></svg>0</span></button>
                 <button id="send-message-button">Chat</button>
               </div>
             </div>
@@ -274,6 +280,8 @@ mockComposer(document.querySelector('.kickcol .editor-input'), document.getEleme
   function outside(e) {
     if (!menu) return;
     const inside = nodes.some((n) => n.contains(e.target));
+    const onTrigger = !!e.target.closest && !!e.target.closest('#kick-points,#kick-kicks,#kick-emote,#native-balances,#native-cheer');
+    if (onTrigger) return;
     if (!inside || e.target.classList.contains('fakebackdrop')) close();
   }
   // `labelled` mirrors the difference between the two sites: Twitch marks its
@@ -319,10 +327,32 @@ mockComposer(document.querySelector('.kickcol .editor-input'), document.getEleme
   document.getElementById('native-claim').addEventListener('click', (e) => {
     e.currentTarget.hidden = true;
   });
-  document.getElementById('kick-balance').addEventListener('click',
-    () => open('Channel points', 'Kick draws its own rewards panel here.', false));
-  document.getElementById('kick-kicks').addEventListener('click',
-    () => open('Kicks', 'Kick draws its own Kicks panel here.', false));
+  /**
+   * Kick's own panels: drawn inside the chat column, announced with data-state
+   * and nothing else, and — the part that broke it — opened on pointerdown
+   * rather than on click, which is what Radix does.
+   */
+  function openKickPanel(title, body) {
+    close();
+    nodes = [];
+    const host = document.querySelector('.kickcol .kick-body');
+    menu = document.createElement('div');
+    menu.className = 'fakepanel';
+    menu.setAttribute('data-state', 'open');
+    menu.innerHTML = `<h3>${title}</h3><p>${body}</p><button>Close</button>`;
+    nodes.push(menu);
+    host.appendChild(menu);
+    menu.querySelector('button').addEventListener('click', close);
+    setTimeout(() => document.addEventListener('mousedown', outside, true), 0);
+  }
+  document.getElementById('kick-points').addEventListener('pointerdown',
+    () => openKickPanel('Channel points', 'Kick draws its own rewards panel here.'));
+  document.getElementById('kick-kicks').addEventListener('pointerdown',
+    () => openKickPanel('Gift shop', 'Kick draws its own Kicks panel here.'));
+  // The emote picker stays a portalled modal, which is the other shape Kick
+  // uses and the one the earlier fix was built against.
+  document.getElementById('kick-emote').addEventListener('click',
+    () => open('Emotes', 'Kick draws its emote picker as a centred modal.', false));
 })();
 </script>
 

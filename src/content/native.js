@@ -34,6 +34,10 @@
   // Menus are portalled to the end of <body> by both sites, so a positioned
   // child of the body is a candidate even when it carries no role at all.
   const PORTAL_POSITIONS = ['fixed', 'absolute'];
+  // Kick builds its menus with Radix, which writes the open state onto the
+  // element itself. It is the most precise signal either site gives, and it
+  // finds a panel wherever it is drawn rather than only at the end of <body>.
+  const OPEN_STATE_SELECTOR = '[data-state="open"]';
 
   /**
    * Splits the message list's own siblings into what sits above it and what
@@ -123,6 +127,31 @@
     const found = /(\d[\d.,]*\s*[KMB]?)/i.exec(`${text} ${label}`);
     return found ? found[1].replace(/\s+/g, '') : '';
   };
+
+  /**
+   * Presses a control the way a mouse does.
+   *
+   * `el.click()` alone is not enough. It raises a click and nothing else, and
+   * plenty of menu triggers — Radix's among them, which is what Kick builds
+   * with — open on pointerdown rather than on click. Kick's Kicks button did
+   * nothing at all for exactly that reason. The full sequence is harmless to a
+   * control that only listens for the click at the end of it.
+   */
+  function press(el) {
+    // The sequence is best-effort: the click at the end is the part that must
+    // happen, so nothing above it is allowed to prevent it.
+    try {
+      const opts = { bubbles: true, cancelable: true, composed: true, button: 0 };
+      const Pointer = window.PointerEvent || window.MouseEvent;
+      if (el.dispatchEvent && window.MouseEvent) {
+        el.dispatchEvent(new Pointer('pointerdown', { ...opts, buttons: 1, pointerId: 1, isPrimary: true }));
+        el.dispatchEvent(new window.MouseEvent('mousedown', { ...opts, buttons: 1 }));
+        el.dispatchEvent(new Pointer('pointerup', { ...opts, buttons: 0, pointerId: 1, isPrimary: true }));
+        el.dispatchEvent(new window.MouseEvent('mouseup', { ...opts, buttons: 0 }));
+      }
+    } catch (e) { /* no pointer events here; the click below still stands */ }
+    el.click();
+  }
 
   function onScreen(el) {
     if (!el) return false;
@@ -234,9 +263,26 @@
     // element, so nothing is added the second time and every time after.
     const wasOpen = new WeakSet();
 
+    /**
+     * Whether an element is genuinely on screen right now.
+     *
+     * A rectangle is not enough on its own. Kick leaves its menus mounted when
+     * they are closed, and a closed one still measures — the page has several
+     * body children sized 300x150 and 1280x1 that are `visibility: hidden`.
+     * Counting those as open made them furniture on the first look, so the menu
+     * that mattered could never be seen opening later.
+     *
+     * Where the site says so outright, that is believed over the geometry.
+     */
     function isOpen(el) {
+      const state = el.getAttribute && el.getAttribute('data-state');
+      if (state === 'closed') return false;
+      // Geometry first: it is several times cheaper than a computed style, and
+      // most of what gets here measures nothing at all.
       const r = el.getBoundingClientRect();
-      return r.width > 0 && r.height > 0;
+      if (r.width <= 0 || r.height <= 0) return false;
+      const cs = getComputedStyle(el);
+      return cs.display !== 'none' && cs.visibility !== 'hidden';
     }
 
     /**
@@ -250,11 +296,26 @@
      */
     function menuCandidates() {
       const list = [];
-      document.querySelectorAll(DIALOG_SELECTOR).forEach((el) => list.push(el));
+      const add = (el) => { if (list.indexOf(el) === -1) list.push(el); };
+      document.querySelectorAll(DIALOG_SELECTOR).forEach(add);
+      // Anything that has said it is open, wherever it happens to be drawn.
+      // Kick's rewards panel is anchored to its own button rather than
+      // portalled, so looking only at the end of <body> never found it.
+      document.querySelectorAll(OPEN_STATE_SELECTOR).forEach(add);
       if (document.body) {
         for (const el of document.body.children) {
           if (list.indexOf(el) !== -1) continue;
-          if (PORTAL_POSITIONS.indexOf(getComputedStyle(el).position) !== -1) list.push(el);
+          // Anything last seen open stays a candidate whatever it measures now,
+          // or closing it would never be noticed — and an element that is never
+          // noticed closing can never be seen opening a second time.
+          if (wasOpen.has(el)) { add(el); continue; }
+          // Otherwise geometry first, style second. Kick leaves around 190
+          // children on <body>, nearly all of them spent Radix portals
+          // measuring nothing, and asking each one for its computed style cost
+          // more than every other part of this put together.
+          const r = el.getBoundingClientRect();
+          if (r.width < MIN_DIALOG || r.height < MIN_DIALOG) continue;
+          if (PORTAL_POSITIONS.indexOf(getComputedStyle(el).position) !== -1) add(el);
         }
       }
       return list;
@@ -349,7 +410,7 @@
           : kind === 'bits' ? (c.cheer || c.openBalances)
             : (c.openBalances || c.cheer);
         if (!onScreen(el)) return false;
-        try { el.click(); } catch (e) { return false; }
+        try { press(el); } catch (e) { return false; }
         return true;
       },
 
@@ -373,11 +434,17 @@
           furniture.add(peekTarget);
           peekTarget = null;
         }
+        // Nothing inside the message list is ever a menu. Both sites add rows
+        // there constantly, and a tall one arriving would otherwise read as
+        // something that had just opened over the panel.
+        const messages = site.messageList && site.messageList();
+
         let found = null;
         menuCandidates().forEach((el) => {
           const open = isOpen(el);
           // Open now and not last time: this is the one that just opened.
           if (open && !found && !wasOpen.has(el) && !furniture.has(el)
+            && !(messages && messages.contains(el))
             && coversBox(el.getBoundingClientRect(), box)) {
             found = el;
           }

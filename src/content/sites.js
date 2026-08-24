@@ -109,6 +109,21 @@
     return null;
   }
 
+  /**
+   * The thing to click for a control, which is not always the thing that shows
+   * its value. Kick's Kicks balance is a `<div>`, and clicking a div does
+   * nothing at all — which is exactly what it did.
+   */
+  function clickable(el) {
+    if (!el) return null;
+    const tag = el.tagName;
+    if (tag === 'BUTTON' || tag === 'A' || el.getAttribute('role') === 'button') return el;
+    // Falling back to the element itself matters: plenty of these are a plain
+    // div with a handler bound straight to it, and refusing to click that is no
+    // better than clicking the wrong thing.
+    return (el.closest && el.closest('button,[role="button"],a')) || el;
+  }
+
   // Looks inside the chat column first. Both sites have other contenteditable
   // and textbox elements on the page (search, the whisper composer, moderation
   // views), and the broadest selectors here would otherwise pick one of those.
@@ -453,8 +468,8 @@
       // excluded from the Kicks one: the last resort there is "a button showing
       // a number", which would otherwise happily return the button Rewards had
       // already claimed and put two chips on the same control.
-      // The two exact names Kick uses, confirmed against a signed-in channel,
-      // ahead of the looser matches that stand in if it renames them.
+      // The exact names Kick uses, confirmed against a signed-in channel, ahead
+      // of the looser matches that stand in if it renames them.
       const points = firstIn(footer, [
         '[data-testid="channel-points-button"]',
         '[data-testid*="point" i]',
@@ -463,27 +478,34 @@
         'button[title*="reward" i]',
       ]) || byIcon(/point|reward|trophy|bubble/i);
 
-      // Kick's Kicks control is labelled "Get KICKs" and shows no balance at
-      // all, which is why it is looked for by name rather than by a number.
+      // Kick draws the Kicks balance and the Kicks button as separate things:
+      // `kicks-balance` is a <div> reading "0", and the way in is a button
+      // beside or around it. Clicking the balance does nothing, which is what
+      // it did.
+      const kicksValue = firstIn(footer, [
+        '[data-testid="kicks-balance"]',
+        '[data-testid*="kicks-balance" i]',
+      ]);
       const notPoints = (el) => (el && el !== points ? el : null);
-      const kicks = notPoints(firstIn(footer, [
+      const kicksButton = notPoints(firstIn(footer, [
         '[data-testid="get-kicks"]',
-        '[data-testid*="kicks" i]',
+        'button[data-testid*="kicks" i]',
         'button[aria-label*="kicks" i]',
         'button[title*="kicks" i]',
-      ])) || notPoints(byIcon(/kick|spark|gift/i, points)) || notPoints(byNumber(points));
+      ]))
+        || notPoints(clickable(kicksValue))
+        || notPoints(byIcon(/kick|spark|gift/i, points))
+        || notPoints(byNumber(points));
 
       return {
-        // Kick keeps the number inside the button rather than in a labelled
-        // node of its own, so the button is both the value and the way in.
         pointsValue: points,
-        bitsValue: kicks,
-        openBalances: points || kicks,
-        cheer: kicks,
-        claim: firstIn(footer, [
+        bitsValue: kicksValue || kicksButton,
+        openBalances: clickable(points) || kicksButton,
+        cheer: kicksButton,
+        claim: clickable(firstIn(footer, [
           'button[aria-label*="claim" i]',
           'button[title*="claim" i]',
-        ]),
+        ])),
       };
     },
 

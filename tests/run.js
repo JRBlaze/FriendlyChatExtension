@@ -1016,6 +1016,8 @@ suites.native = function () {
       // read it to tell "still in the page" from "swapped out by a re-render".
       isConnected: true,
       nodeType: 1,
+      events: [],
+      dispatchEvent(e) { node.events.push(e.type); return true; },
       clicks: 0,
       getAttribute: (k) => (k in attrs ? attrs[k] : null),
       // Only ever asked for the media that proves a card has something in it.
@@ -1052,7 +1054,11 @@ suites.native = function () {
 
   function bridgeFor(doc, site) {
     const { body, ...rest } = doc;
-    const sandbox = makeSandbox({ window: {}, ...rest });
+    function FakeEvent(type) { this.type = type; }
+    const sandbox = makeSandbox({
+      ...rest,
+      window: { ...(rest.window || {}), MouseEvent: FakeEvent, PointerEvent: FakeEvent },
+    });
     const FCM = load(sandbox, ...SHARED, 'src/content/native.js');
     return { FCM, bridge: FCM.createNativeBridge(site), body };
   }
@@ -1235,6 +1241,10 @@ suites.native = function () {
 
   ok(cb.activate('points'), 'native: the rewards control is there to click');
   eq(withClaim.open.clicks, 1, 'native: and the click goes to the site’s own button');
+  // Radix, which Kick builds with, opens on pointerdown rather than on click.
+  // A bare click() is why its Kicks button did nothing at all.
+  eq(withClaim.open.events, ['pointerdown', 'mousedown', 'pointerup', 'mouseup'],
+    'native: a control is pressed the way a mouse presses it, not just clicked');
   ok(cb.activate('bits'), 'native: the cheer control is there to click');
   eq(withClaim.cheer.clicks, 1, 'native: and that click goes to the cheer button');
   ok(cb.activate('claim'), 'native: the bonus is there to claim');
