@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "FriendlyChatExtension",
+  "name": "Friendly Chat Extension",
   "version": "1.0.2",
   "description": "Overlays a merged Twitch + Kick chat on the channel you are watching, and offers to connect the other platform when the streamer is live on both.",
   "minimum_chrome_version": "116",
@@ -52,7 +52,7 @@
     }
   ],
   "action": {
-    "default_title": "FriendlyChatExtension",
+    "default_title": "Friendly Chat Extension",
     "default_popup": "src/popup/popup.html",
     "default_icon": {
       "16": "icons/icon16.png",

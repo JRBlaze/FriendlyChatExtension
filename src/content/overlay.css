@@ -1,4 +1,4 @@
-/* FriendlyChatExtension overlay.
+/* Friendly Chat Extension overlay.
    Everything here lives inside a shadow root, so the host page cannot restyle
    it and these rules cannot leak out onto Twitch or Kick. */
 

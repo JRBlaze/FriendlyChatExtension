@@ -1,4 +1,4 @@
-// FriendlyChatExtension — background service worker.
+// Friendly Chat Extension — background service worker.
 //
 // Every network connection lives here rather than in the content script. Two
 // reasons: the host page's connect-src CSP cannot interfere, and a Kick socket

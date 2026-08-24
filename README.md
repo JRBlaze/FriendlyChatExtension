@@ -1,4 +1,4 @@
-# FriendlyChatExtension
+# Friendly Chat Extension
 
 A Chrome extension that puts [Friendly Chat](https://github.com/JRBlaze/FriendlyChat)'s merged
 chat feed directly on the page you are already watching.
@@ -62,12 +62,12 @@ release zip is just the extension.)
 4. **Click "Load unpacked"** — the button appears on the top left once Developer mode is on.
 5. **Choose the `FriendlyChatExtension` folder** and click Select Folder. Pick the folder
    *itself* — the one containing `manifest.json` — not the file, and not a folder above it.
-6. **Check it loaded.** A card titled *FriendlyChatExtension* appears with no red error text.
+6. **Check it loaded.** A card titled *Friendly Chat Extension* appears with no red error text.
 
 That is the whole install. Now open any channel — for example `twitch.tv/somechannel` or
 `kick.com/somechannel` — and the merged chat overlay appears over that site's own chat.
 
-**Worth doing:** click the jigsaw-piece icon in Chrome's toolbar and pin *FriendlyChatExtension*,
+**Worth doing:** click the jigsaw-piece icon in Chrome's toolbar and pin *Friendly Chat Extension*,
 so its button is always visible for quick settings.
 
 ### If something looks wrong
@@ -233,7 +233,7 @@ https://bbjieacidkcngofgddlfipiajcchdaik.chromiumapp.org/
 It does not change when you move the folder, because `manifest.json` pins the extension's ID with
 a `key` field. Register it once and it keeps working.
 
-**On Twitch:** this extension ships with its own application — *FriendlyChatExtension*, client ID
+**On Twitch:** this extension ships with its own application — *Friendly Chat Extension*, client ID
 `4bfkouj78vsa1crhf7juucfkb273nv`, registered as a **Public** client with exactly the redirect URL
 above. If that is the application you are using, there is nothing to do.
 
