@@ -25,7 +25,7 @@
   // OAuth 2.1 with PKCE, and its token exchange requires a client secret, so it
   // goes through the same Cloudflare Worker the desktop app uses — the secret
   // stays there and never reaches the browser.
-  // The "Friendly Chat Merge" Twitch application: a public client whose only
+  // The "FriendlyChatExtension" Twitch application: a public client whose only
   // registered redirect is this extension's chromiumapp.org URL. It is separate
   // from the desktop app's client id, so neither can break the other's sign-in.
   FCM.DEFAULT_TWITCH_CLIENT_ID = '4bfkouj78vsa1crhf7juucfkb273nv';

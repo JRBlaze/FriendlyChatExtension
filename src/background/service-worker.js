@@ -1,4 +1,4 @@
-// Friendly Chat Merge — background service worker.
+// FriendlyChatExtension — background service worker.
 //
 // Every network connection lives here rather than in the content script. Two
 // reasons: the host page's connect-src CSP cannot interfere, and a Kick socket
@@ -149,6 +149,14 @@ async function joinChannel(session, platform, channel) {
   if (conn.channel === norm && conn.ws && conn.state === 'connected') return;
 
   leaveChannel(session, platform, { silent: true });
+
+  // Claimed after leaving, since leaving retires the previous holder. Two
+  // storage reads sit between here and opening the socket, and they take real
+  // milliseconds: clicking through channels quickly starts a second join while
+  // the first is still inside them, and without this the slower one finishes
+  // last and connects to the channel already left.
+  const seq = (conn.joinSeq || 0) + 1;
+  conn.joinSeq = seq;
   conn.attempt = 0;
 
   // Chat reads fine without an account. The token is only used so the platform
@@ -156,6 +164,8 @@ async function joinChannel(session, platform, channel) {
   // own messages come back with their real badges.
   const settings = await FCM.loadSettings();
   const record = await FCM.auth.usable(platform, settings);
+  if (conn.joinSeq !== seq) return;
+
   const auth = record
     ? { token: record.accessToken, login: record.login || '' }
     : null;
@@ -167,6 +177,9 @@ async function joinChannel(session, platform, channel) {
 
 function leaveChannel(session, platform, { silent = false } = {}) {
   const conn = session.conns[platform];
+  // Retires any join still working its way through its awaits, so it cannot
+  // reconnect a channel that has just been left.
+  conn.joinSeq = (conn.joinSeq || 0) + 1;
   if (platform === 'twitch') FCM.twitchSource.disconnect(conn);
   else FCM.kickSource.disconnect(conn);
   const had = conn.channel;

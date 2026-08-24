@@ -28,11 +28,15 @@ function makeFakeSocket(registry) {
   FakeWebSocket.CLOSING = 2;
   FakeWebSocket.CLOSED = 3;
   FakeWebSocket.prototype.send = function (data) { this.sent.push(String(data)); };
+  // close() marks the socket shut straight away but reports it a tick later,
+  // exactly as a real WebSocket does. That gap is where a stale onclose can run
+  // after its replacement has already been created, so the fake has to have it
+  // or the race it causes cannot be reproduced.
   FakeWebSocket.prototype.close = function () {
     if (this.closed) return;
     this.closed = true;
     this.readyState = FakeWebSocket.CLOSED;
-    if (this.onclose) this.onclose();
+    setTimeout(() => { if (this.onclose) this.onclose(); }, 0);
   };
   // Test-side helpers.
   FakeWebSocket.prototype.push = function (data) {

@@ -11,9 +11,19 @@
      *   read of the channel record, so the token is used when there is one.
      */
     async connect(channel, sink, conn, auth) {
+      // See twitch-source for why a shared flag is not enough: close() is
+      // asynchronous, so the previous socket's onclose runs after this call has
+      // reset the flag and would schedule a reconnect to the old channel.
+      // This matters more here, because the channel lookup below is awaited,
+      // leaving a much wider window for a second switch to arrive.
+      const generation = (conn.generation || 0) + 1;
+      conn.generation = generation;
+      const current = () => conn.generation === generation;
+
       if (conn.ws) {
-        try { conn.forceClose = true; conn.ws.close(); } catch (e) { /* already gone */ }
+        try { conn.ws.close(); } catch (e) { /* already gone */ }
       }
+      if (conn.retryTimer) { clearTimeout(conn.retryTimer); conn.retryTimer = null; }
       conn.forceClose = false;
       conn.channel = channel;
       conn.auth = auth || null;
@@ -24,6 +34,8 @@
       const info = await FCM.kickApi.channel(channel, {
         token: conn.auth ? conn.auth.token : null,
       });
+      // The channel may have changed entirely while that was in flight.
+      if (!current()) return;
       if (!info) {
         sink.sys('Kick: could not load channel information');
         sink.status('error');
@@ -38,7 +50,7 @@
       const channelId = info.id || info.channel_id || null;
       conn.chatroomId = chatroomId;
       // A late resolve must not open a socket the caller has already dropped.
-      if (conn.forceClose) return;
+      if (conn.forceClose || !current()) return;
 
       sink.roomId(String(info.user_id || channelId || ''));
 
@@ -65,6 +77,7 @@
       conn.ws = ws;
 
       ws.onmessage = (e) => {
+        if (!current()) return;
         const msg = FCM.safeJsonParse(e.data, null);
         if (!msg || !msg.event) return;
 
@@ -157,11 +170,13 @@
         });
       };
 
-      ws.onerror = () => sink.sys('Kick: connection error');
+      ws.onerror = () => { if (current()) sink.sys('Kick: connection error'); };
 
       ws.onclose = () => {
         if (conn.pingTimer) { clearInterval(conn.pingTimer); conn.pingTimer = null; }
         if (conn.ws === ws) conn.ws = null;
+        // Superseded by a newer socket: say nothing, retry nothing.
+        if (!current()) return;
         if (conn.forceClose) return;
         sink.status('disconnected');
         sink.sys('Kick: disconnected');
@@ -172,7 +187,7 @@
         const delay = FCM.backoffDelay(conn.attempt || 0);
         sink.sys(`Kick: reconnecting in ${Math.round(delay / 1000)}s...`);
         conn.retryTimer = setTimeout(() => {
-          if (conn.forceClose) return;
+          if (!current() || conn.forceClose || conn.channel !== channel) return;
           conn.attempt = (conn.attempt || 0) + 1;
           FCM.kickSource.connect(channel, sink, conn, conn.auth);
         }, delay);
@@ -180,6 +195,9 @@
     },
 
     disconnect(conn) {
+      // Retiring the generation makes every handler still attached to the
+      // outgoing socket inert, whatever order they fire in.
+      conn.generation = (conn.generation || 0) + 1;
       conn.forceClose = true;
       if (conn.retryTimer) { clearTimeout(conn.retryTimer); conn.retryTimer = null; }
       if (conn.pingTimer) { clearInterval(conn.pingTimer); conn.pingTimer = null; }

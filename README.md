@@ -47,7 +47,7 @@ feed. Open a Kick channel and it works the other way round.
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.0.1.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.0.2.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and a folder named `FriendlyChatExtension-main`. The
@@ -62,12 +62,12 @@ release zip is just the extension.)
 4. **Click "Load unpacked"** — the button appears on the top left once Developer mode is on.
 5. **Choose the `FriendlyChatExtension` folder** and click Select Folder. Pick the folder
    *itself* — the one containing `manifest.json` — not the file, and not a folder above it.
-6. **Check it loaded.** A card titled *Friendly Chat Merge* appears with no red error text.
+6. **Check it loaded.** A card titled *FriendlyChatExtension* appears with no red error text.
 
 That is the whole install. Now open any channel — for example `twitch.tv/somechannel` or
 `kick.com/somechannel` — and the merged chat overlay appears over that site's own chat.
 
-**Worth doing:** click the jigsaw-piece icon in Chrome's toolbar and pin *Friendly Chat Merge*,
+**Worth doing:** click the jigsaw-piece icon in Chrome's toolbar and pin *FriendlyChatExtension*,
 so its button is always visible for quick settings.
 
 ### If something looks wrong
@@ -233,7 +233,7 @@ https://bbjieacidkcngofgddlfipiajcchdaik.chromiumapp.org/
 It does not change when you move the folder, because `manifest.json` pins the extension's ID with
 a `key` field. Register it once and it keeps working.
 
-**On Twitch:** this extension ships with its own application — *Friendly Chat Merge*, client ID
+**On Twitch:** this extension ships with its own application — *FriendlyChatExtension*, client ID
 `4bfkouj78vsa1crhf7juucfkb273nv`, registered as a **Public** client with exactly the redirect URL
 above. If that is the application you are using, there is nothing to do.
 
@@ -454,7 +454,7 @@ DOM, so nothing in the page's layout or stacking contexts has to be fought with.
 node tests/run.js
 ```
 
-587 assertions, no network. It drives the real parsers with real payload shapes: IRC lines with
+624 assertions, no network. It drives the real parsers with real payload shapes: IRC lines with
 tags and emote positions, Kick Pusher events, emote sets from every provider, and the
 counterpart matcher against stubbed platform APIs — including the cases that matter most, like a
 manual mapping beating a same-name guess and a failing emote provider not taking the others down.
@@ -499,6 +499,16 @@ per-platform result, which is how the partial-failure and expired-token paths ge
 the send path.
 
 ## Bugs this testing found
+
+- **Switching channels churned between connect and disconnect.** Two races, either of which
+  alone was enough. A socket's `close()` is asynchronous, so the one being replaced reported its
+  close *after* the replacement had already reset the shared "closing on purpose" flag — the drop
+  then read as unexpected and queued a reconnect to the channel just left, which closed the new
+  socket, whose close did the same in reverse. Separately, `joinChannel` awaits two storage reads
+  between leaving one channel and opening the next, so clicking through quickly let a stale join
+  finish last and connect to the wrong channel. Sockets now carry a generation and joins a
+  sequence number; anything superseded stands down. Reverting either fix makes the `endtoend`
+  suite fail on socket count and on a reported drop.
 
 - **Switching channels flipped back to the previous one.** Each channel change opened a new port
   to the background worker without closing the old one, so the channel being left kept delivering

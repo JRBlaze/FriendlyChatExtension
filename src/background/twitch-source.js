@@ -14,9 +14,23 @@
      *   authenticated connection, so the token is used when there is one.
      */
     connect(channel, sink, conn, auth) {
+      // Every socket gets its own number, and every handler below checks it is
+      // still the current one before doing anything.
+      //
+      // A shared "closing on purpose" flag is not enough. close() is
+      // asynchronous, so the previous socket's onclose runs *after* this call
+      // has already reset that flag — at which point the drop looks unexpected
+      // and it schedules a reconnect to the channel it was opened for. That
+      // reconnect closes this socket, whose onclose does the same in reverse,
+      // and the two channels trade places forever.
+      const generation = (conn.generation || 0) + 1;
+      conn.generation = generation;
+      const current = () => conn.generation === generation;
+
       if (conn.ws) {
-        try { conn.forceClose = true; conn.ws.close(); } catch (e) { /* already gone */ }
+        try { conn.ws.close(); } catch (e) { /* already gone */ }
       }
+      if (conn.retryTimer) { clearTimeout(conn.retryTimer); conn.retryTimer = null; }
       conn.forceClose = false;
       conn.channel = channel;
       conn.auth = auth || null;
@@ -33,6 +47,7 @@
       conn.ws = ws;
 
       ws.onopen = () => {
+        if (!current()) { try { ws.close(); } catch (e) { /* fine */ } return; }
         // Tags and commands must be requested before JOIN or PRIVMSG lines
         // arrive without @badges / @emotes / @display-name.
         ws.send('CAP REQ :twitch.tv/tags twitch.tv/commands');
@@ -50,6 +65,7 @@
       };
 
       ws.onmessage = (e) => {
+        if (!current()) return;
         String(e.data).split('\r\n').filter((l) => l.trim()).forEach((raw) => {
           const { tags, prefix, command, params } = FCM.parseIrcLine(raw);
 
@@ -68,11 +84,15 @@
               sink.sys('Twitch: sign-in was rejected — reading chat anonymously');
               sink.authRejected();
               conn.auth = null;
+              // Left set: connect() clears it. Clearing it here would make this
+              // socket's own onclose read as an unexpected drop and queue a
+              // second reconnect alongside the one below.
               conn.forceClose = true;
               try { ws.close(); } catch (e) { /* already closing */ }
-              conn.forceClose = false;
               setTimeout(() => {
-                if (conn.channel === channel) FCM.twitchSource.connect(channel, sink, conn, null);
+                if (current() && conn.channel === channel) {
+                  FCM.twitchSource.connect(channel, sink, conn, null);
+                }
               }, 400);
               return;
             }
@@ -161,10 +181,12 @@
         });
       };
 
-      ws.onerror = () => sink.sys('Twitch: connection error');
+      ws.onerror = () => { if (current()) sink.sys('Twitch: connection error'); };
 
       ws.onclose = () => {
         if (conn.ws === ws) conn.ws = null;
+        // Superseded by a newer socket: say nothing, retry nothing.
+        if (!current()) return;
         if (conn.forceClose) return;
         sink.status('disconnected');
         sink.sys('Twitch: disconnected');
@@ -175,7 +197,8 @@
         const delay = FCM.backoffDelay(conn.attempt || 0);
         sink.sys(`Twitch: reconnecting in ${Math.round(delay / 1000)}s...`);
         conn.retryTimer = setTimeout(() => {
-          if (conn.forceClose) return;
+          // The channel may have changed while this was pending.
+          if (!current() || conn.forceClose || conn.channel !== channel) return;
           conn.attempt = (conn.attempt || 0) + 1;
           FCM.twitchSource.connect(channel, sink, conn, conn.auth);
         }, delay);
@@ -183,6 +206,9 @@
     },
 
     disconnect(conn) {
+      // Retiring the generation makes every handler still attached to the
+      // outgoing socket inert, whatever order they fire in.
+      conn.generation = (conn.generation || 0) + 1;
       conn.forceClose = true;
       if (conn.retryTimer) { clearTimeout(conn.retryTimer); conn.retryTimer = null; }
       if (conn.ws) { try { conn.ws.close(); } catch (e) { /* already gone */ } conn.ws = null; }

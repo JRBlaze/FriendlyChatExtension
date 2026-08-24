@@ -2383,6 +2383,228 @@ suites.moderation = function () {
 // Several streams open at once is the normal case for anyone watching more
 // than one person, so the worker has to keep every tab's sockets, channels and
 // counterpart state strictly apart.
+// Switching channels on the same site. The socket for the channel being left
+// closes asynchronously, so its close handler runs *after* the replacement has
+// been created — which is where a reconnect to the old channel used to be
+// scheduled, and the two channels then traded places forever.
+suites.channelswitch = function () {
+  const { bootWorker, wait } = require('./background.js');
+
+  return (async () => {
+    // ── Twitch ──
+    {
+      const w = bootWorker();
+      try {
+        w.connect();
+        w.send({ cmd: 'hello', site: 'twitch', channel: 'alpha', hints: [] });
+        await wait(60);
+        w.send({ cmd: 'join', platform: 'twitch', channel: 'alpha' });
+        await wait(40);
+        const first = w.socketFor('irc-ws');
+        ok(first.sent.includes('JOIN #alpha'), 'switch: joined the first channel');
+
+        // Navigate. The old socket's close is still in flight at this point.
+        w.clear();
+        w.send({ cmd: 'hello', site: 'twitch', channel: 'bravo', hints: [] });
+        await wait(60);
+        w.send({ cmd: 'join', platform: 'twitch', channel: 'bravo' });
+
+        // Let every pending close and any backoff timer run.
+        await wait(400);
+
+        const ircs = w.socketsFor('irc-ws');
+        const joined = ircs.flatMap((sock) => sock.sent.filter((line) => line.startsWith('JOIN ')));
+        eq(joined.filter((j) => j === 'JOIN #alpha').length, 1,
+          'switch: the old channel is joined once and never re-joined');
+        eq(joined.filter((j) => j === 'JOIN #bravo').length, 1,
+          'switch: the new channel is joined exactly once');
+
+        const live = ircs.filter((sock) => !sock.closed);
+        eq(live.length, 1, 'switch: exactly one socket is left open');
+        ok(live[0].sent.includes('JOIN #bravo'), 'switch: and it is on the new channel');
+
+        // Nothing should be telling the tab it dropped, or counting down to a
+        // reconnect, for a channel it deliberately left.
+        ok(!w.of('sys').some((m) => /reconnecting in/.test(m.text)),
+          'switch: no reconnect is announced for the channel that was left');
+        ok(!w.of('sys').some((m) => /Connected to Twitch: alpha/.test(m.text)),
+          'switch: the old channel never reports connecting again');
+      } finally { w.teardown(); }
+    }
+
+    // ── Kick, where the channel lookup is awaited and the window is wider ──
+    {
+      const w = bootWorker();
+      try {
+        w.connect();
+        w.send({ cmd: 'hello', site: 'kick', channel: 'alpha', hints: [] });
+        await wait(60);
+        w.send({ cmd: 'join', platform: 'kick', channel: 'alpha' });
+        await wait(80);
+        const first = w.socketFor('pusher.com');
+        first.push(JSON.stringify({ event: 'pusher:connection_established', data: '{}' }));
+        await wait(40);
+
+        w.clear();
+        w.send({ cmd: 'hello', site: 'kick', channel: 'bravo', hints: [] });
+        await wait(40);
+        w.send({ cmd: 'join', platform: 'kick', channel: 'bravo' });
+        await wait(400);
+
+        const live = w.socketsFor('pusher.com').filter((sock) => !sock.closed);
+        eq(live.length, 1, 'switch: kick leaves exactly one socket open');
+        ok(!w.of('sys').some((m) => /reconnecting in/.test(m.text)),
+          'switch: kick announces no reconnect for the channel that was left');
+      } finally { w.teardown(); }
+    }
+
+    // ── Hopping quickly through several channels ──
+    {
+      const w = bootWorker();
+      try {
+        w.connect();
+        for (const name of ['alpha', 'bravo', 'charlie', 'delta']) {
+          w.send({ cmd: 'hello', site: 'twitch', channel: name, hints: [] });
+          w.send({ cmd: 'join', platform: 'twitch', channel: name });
+          await wait(30);
+        }
+        await wait(500);
+
+        const ircs = w.socketsFor('irc-ws');
+        const live = ircs.filter((sock) => !sock.closed);
+        eq(live.length, 1, 'switch: four hops leave one socket');
+        ok(live[0].sent.includes('JOIN #delta'), 'switch: on the last channel');
+
+        // Every earlier channel must have been joined exactly once.
+        const joined = ircs.flatMap((s) => s.sent.filter((l) => l.startsWith('JOIN ')));
+        ['alpha', 'bravo', 'charlie', 'delta'].forEach((name) => {
+          eq(joined.filter((j) => j === `JOIN #${name}`).length, 1,
+            `switch: ${name} is joined exactly once across the whole sequence`);
+        });
+      } finally { w.teardown(); }
+    }
+
+    // ── A genuine drop still reconnects, so the guard is not too broad ──
+    {
+      const w = bootWorker();
+      try {
+        w.connect();
+        w.send({ cmd: 'hello', site: 'twitch', channel: 'alpha', hints: [] });
+        await wait(60);
+        w.send({ cmd: 'join', platform: 'twitch', channel: 'alpha' });
+        await wait(40);
+        w.clear();
+        // The network dropping, rather than us closing it.
+        w.socketFor('irc-ws').drop();
+        await wait(40);
+        ok(w.of('sys').some((m) => /reconnecting in/.test(m.text)),
+          'switch: an unexpected drop still schedules a reconnect');
+      } finally { w.teardown(); }
+    }
+  })();
+};
+
+// The real content script driving the real service worker, over a port that
+// delivers asynchronously and storage that takes real milliseconds. Every other
+// suite tests one side against a stub of the other, which is exactly where a
+// bug living in the timing *between* them can hide — as one did.
+suites.endtoend = function () {
+  const { bootPair, wait } = require('./endtoend.js');
+
+  return (async () => {
+    // ── Opening a channel, then moving to another ──
+    {
+      const t = bootPair('/alpha');
+      try {
+        await wait(300);
+        eq(t.joins(), ['JOIN #alpha'], 'e2e: the first channel is joined');
+        eq(t.liveIrc().length, 1, 'e2e: on one socket');
+
+        await t.navigateTo('/bravo');
+        await wait(2000);
+
+        eq(t.joins(), ['JOIN #alpha', 'JOIN #bravo'],
+          'e2e: each channel is joined exactly once, in order');
+        eq(t.liveIrc().length, 1, 'e2e: one socket is left open');
+        ok(t.liveIrc()[0].sent.includes('JOIN #bravo'),
+          'e2e: and it is on the channel now being watched');
+        ok(!t.liveIrc()[0].sent.includes('JOIN #alpha'),
+          'e2e: never back on the channel that was left');
+      } finally { t.teardown(); }
+    }
+
+    // ── Clicking through before the first join has finished ──
+    // This is the case that produced the reported loop: the join for the first
+    // channel was still inside its storage reads when the second began.
+    {
+      const t = bootPair('/alpha');
+      try {
+        await wait(20);
+        await t.navigateTo('/bravo');
+        await wait(2500);
+
+        eq(t.joins(), ['JOIN #bravo'],
+          'e2e: interrupting a join mid-flight joins only the channel landed on');
+        eq(t.ircSockets().length, 1, 'e2e: and opens only one socket');
+        eq(t.liveIrc().length, 1, 'e2e: which stays open');
+
+        // The churn the loop showed up as: connecting, dropping, connecting again.
+        const statuses = t.portLog
+          .filter((e) => e.dir === 'to-tab' && e.msg.type === 'status')
+          .map((e) => e.msg.state);
+        eq(statuses.filter((st) => st === 'disconnected').length, 0,
+          'e2e: nothing ever reports disconnected, so there is no reconnect churn');
+        ok(statuses.filter((st) => st === 'connecting').length <= 2,
+          'e2e: and it does not keep re-announcing a connection attempt');
+      } finally { t.teardown(); }
+    }
+
+    // ── Hopping through several channels quickly ──
+    {
+      const t = bootPair('/alpha');
+      try {
+        await wait(20);
+        await t.navigateTo('/bravo');
+        await t.navigateTo('/charlie');
+        await t.navigateTo('/delta');
+        await wait(2500);
+
+        eq(t.liveIrc().length, 1, 'e2e: four quick hops leave one socket');
+        ok(t.liveIrc()[0].sent.includes('JOIN #delta'), 'e2e: on the last channel');
+
+        const joined = t.joins();
+        ['alpha', 'bravo', 'charlie'].forEach((name) => {
+          ok(!t.liveIrc()[0].sent.includes(`JOIN #${name}`),
+            `e2e: the surviving socket is not on ${name}`);
+        });
+        eq(joined.filter((j) => j === 'JOIN #delta').length, 1,
+          'e2e: the final channel is joined exactly once, not repeatedly');
+
+        const disconnects = t.portLog
+          .filter((e) => e.dir === 'to-tab' && e.msg.type === 'status' && e.msg.state === 'disconnected');
+        eq(disconnects.length, 0, 'e2e: no drop is ever reported across the whole sequence');
+      } finally { t.teardown(); }
+    }
+
+    // ── Going back to a channel already visited ──
+    {
+      const t = bootPair('/alpha');
+      try {
+        await wait(300);
+        await t.navigateTo('/bravo');
+        await wait(400);
+        await t.navigateTo('/alpha');
+        await wait(2000);
+
+        eq(t.liveIrc().length, 1, 'e2e: returning to an earlier channel leaves one socket');
+        const live = t.liveIrc()[0];
+        ok(live.sent.includes('JOIN #alpha'), 'e2e: on the channel returned to');
+        ok(!live.sent.includes('JOIN #bravo'), 'e2e: and not the one left behind');
+      } finally { t.teardown(); }
+    }
+  })();
+};
+
 suites.multitab = function () {
   const { bootWorker, wait } = require('./background.js');
 

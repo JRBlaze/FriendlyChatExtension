@@ -1,4 +1,4 @@
-// Friendly Chat Merge — Cloudflare Worker
+// FriendlyChatExtension — Cloudflare Worker
 //
 // Kick's token endpoint requires a client secret even when PKCE is used
 // (omitting it answers 400, a wrong one answers 401), so the code exchange
