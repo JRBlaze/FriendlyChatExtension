@@ -1038,36 +1038,23 @@ suites.native = function () {
   function page(root, dialogs = []) {
     const body = el({ rect: [0, 900], kids: [root] });
     const html = el({ rect: [0, 900], kids: [body] });
-    const observers = [];
     return {
-      observers,
-      // Hands whatever the page "added" to every live observer, the way the
-      // browser would.
-      addNodes(...nodes) {
-        observers.forEach((o) => { if (o.live) o.cb([{ addedNodes: nodes }]); });
-      },
+      body,
       document: {
         body,
         documentElement: html,
         querySelectorAll: () => dialogs,
       },
-      window: {
-        MutationObserver: function (cb) {
-          const rec = { cb, live: true };
-          observers.push(rec);
-          this.observe = () => {};
-          this.disconnect = () => { rec.live = false; };
-        },
-      },
+      window: {},
       getComputedStyle: (node) => ({ position: node.position || 'static' }),
     };
   }
 
   function bridgeFor(doc, site) {
-    const { observers, addNodes, ...rest } = doc;
+    const { body, ...rest } = doc;
     const sandbox = makeSandbox({ window: {}, ...rest });
     const FCM = load(sandbox, ...SHARED, 'src/content/native.js');
-    return { FCM, bridge: FCM.createNativeBridge(site), addNodes, observers };
+    return { FCM, bridge: FCM.createNativeBridge(site), body };
   }
 
   // ── Splitting the message list's own siblings ───────────────────────────────
@@ -1334,71 +1321,73 @@ suites.native = function () {
   menus.length = 0;
   ok(watcher.dialogOver(box) === null, 'native: closing the menu ends the peek');
 
-  // ── A menu the site gives no role to ───────────────────────────────────────
+  // ── A menu the site gives no role to, and reuses ──────────────────────────
   //
-  // Twitch labels its rewards panel `role="dialog"`. Kick labels almost nothing,
-  // so a menu opened from the overlay has to be recognised by the site drawing
-  // it: for the moment after one of its controls is pressed, added elements are
-  // watched directly. The guards matter as much as the match — this must not
-  // fire on the chat messages a busy channel adds continuously.
+  // Twitch names its rewards panel `role="dialog"`. Kick names nothing and
+  // portals a Radix dialog to the end of <body> — a full-screen backdrop plus a
+  // panel centred on the window, so only the backdrop overlaps the chat column
+  // at all. And Radix leaves a closed dialog mounted and reuses it, so "was it
+  // just added" is a question that can only be answered once. What is asked
+  // instead is whether it just *opened*.
   {
-    const rig = bridgeFor(page(content, []), {});
+    // A backdrop the page keeps mounted and toggles, the way Radix does.
+    const backdrop = el({ rect: [0, 720] });
+    backdrop.position = 'fixed';
+    backdrop.rect = [0, 0];                     // mounted but closed
+    const doc = page(content, []);
+    doc.body.children.push(backdrop);
+    backdrop.parentElement = doc.body;
+    const rig = bridgeFor(doc, {});
     const b = rig.bridge;
-    const menu = el({ rect: [300, 300] });
-    menu.position = 'absolute';
 
-    // Not expecting anything: an element appearing on its own proves nothing.
-    rig.addNodes(menu);
-    ok(b.dialogOver(box) === null, 'native: an unlabelled popup alone does not hide the panel');
+    ok(b.dialogOver(box) === null, 'native: a closed backdrop is not a menu');
 
     b.expectMenu();
-    rig.addNodes(menu);
-    ok(b.dialogOver(box) === menu, 'native: but one drawn after a control was pressed is found');
+    backdrop.rect = [0, 720];                   // opened
+    ok(b.dialogOver(box) === backdrop,
+      'native: an unlabelled backdrop that just opened is found');
     eq(b.dialogStillOpen(), true, 'native: and is then tracked the cheap way');
-    menu.isConnected = false;
-    eq(b.dialogStillOpen(), false, 'native: until the site takes it away again');
+
+    backdrop.rect = [0, 0];                     // closed again, still mounted
+    eq(b.dialogStillOpen(), false, 'native: closing it ends the peek');
+
+    // The reuse that broke this: the same element opening a second time.
+    b.expectMenu();
+    backdrop.rect = [0, 720];
+    ok(b.dialogOver(box) === backdrop,
+      'native: the same element opening again is found again');
   }
 
-  // Everything the fallback must ignore while it is watching.
+  // Something already on screen is the page's own furniture, not a menu.
   {
-    const reject = (label, spec, position) => {
-      const rig = bridgeFor(page(content, []), {});
-      const node = el(spec);
+    const standing = el({ rect: [0, 720] });
+    standing.position = 'fixed';
+    const doc = page(content, []);
+    doc.body.children.push(standing);
+    standing.parentElement = doc.body;
+    const rig = bridgeFor(doc, {});
+    ok(rig.bridge.dialogOver(box) === null,
+      'native: a layer that was already open when the overlay mounted is ignored');
+    rig.bridge.expectMenu();
+    ok(rig.bridge.dialogOver(box) === null, 'native: and stays ignored while it stays open');
+  }
+
+  // Everything a portalled candidate still has to clear.
+  {
+    const reject = (label, rect, position) => {
+      const node = el({ rect: [0, 0] });
       node.position = position;
+      const doc = page(content, []);
+      doc.body.children.push(node);
+      node.parentElement = doc.body;
+      const rig = bridgeFor(doc, {});
       rig.bridge.expectMenu();
-      rig.addNodes(node);
+      node.rect = rect;
       ok(rig.bridge.dialogOver(box) === null, `native: ${label}`);
     };
-    reject('a chat message in normal flow is not a menu', { rect: [300, 300] }, 'static');
-    reject('a popup too small to be a menu is not one', { rect: [300, 30] }, 'absolute');
-    reject('a menu that misses the panel is not one', { rect: [1000, 300] }, 'absolute');
-
-    // A node that never made it into the page.
-    const rig = bridgeFor(page(content, []), {});
-    const detached = el({ rect: [300, 300] });
-    detached.position = 'absolute';
-    detached.isConnected = false;
-    rig.bridge.expectMenu();
-    rig.addNodes(detached);
-    ok(rig.bridge.dialogOver(box) === null, 'native: a node that never landed is not a menu');
-  }
-
-  // Watching a whole channel page is not free, so it stops as soon as it has an
-  // answer and is torn down with the bridge.
-  {
-    const rig = bridgeFor(page(content, []), {});
-    rig.bridge.expectMenu();
-    eq(rig.observers.filter((o) => o.live).length, 1, 'native: asking for a menu starts one watcher');
-    const menu = el({ rect: [300, 300] });
-    menu.position = 'absolute';
-    rig.addNodes(menu);
-    rig.bridge.dialogOver(box);
-    eq(rig.observers.filter((o) => o.live).length, 0, 'native: finding it stops the watcher');
-
-    rig.bridge.expectMenu();
-    eq(rig.observers.filter((o) => o.live).length, 1, 'native: it can be asked again');
-    rig.bridge.release();
-    eq(rig.observers.filter((o) => o.live).length, 0, 'native: and release stops it');
+    reject('a body child in normal flow is not a menu', [0, 720], 'static');
+    reject('a popup too small to be a menu is not one', [300, 30], 'fixed');
+    reject('a menu that misses the panel is not one', [1000, 300], 'fixed');
   }
 
   // The cheap check used while a menu is open, which is what keeps the tick off

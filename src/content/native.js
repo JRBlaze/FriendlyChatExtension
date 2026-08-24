@@ -31,10 +31,9 @@
   // A menu nobody has closed in this long is almost certainly not a menu.
   // Whatever it is, it stops being a reason to keep the overlay invisible.
   const PEEK_MAX_MS = 2 * 60 * 1000;
-  // How long to watch for the site drawing a menu after being asked to open
-  // one, and how many added elements to keep while watching.
-  const MENU_WATCH_MS = 2500;
-  const MENU_WATCH_LIMIT = 300;
+  // Menus are portalled to the end of <body> by both sites, so a positioned
+  // child of the body is a candidate even when it carries no role at all.
+  const PORTAL_POSITIONS = ['fixed', 'absolute'];
 
   /**
    * Splits the message list's own siblings into what sits above it and what
@@ -146,21 +145,51 @@
     const furniture = new WeakSet();
     let peekStarted = 0;
     let peekTarget = null;
-    // Elements the page has added since one of its own controls was asked to
-    // open something. Watched only for a moment and only when a menu has
-    // actually been asked for: observing a whole channel page is not free when
-    // chat is arriving continuously.
-    let added = [];
-    let watcher = null;
-    let watchUntil = 0;
+    // Which menu-like elements were on screen the last time this looked.
+    //
+    // "Has it just opened" is the question, and it has to be asked that way
+    // rather than as "has it just been added". Kick's menus are Radix dialogs:
+    // closing one leaves it mounted and opening it again reuses the same
+    // element, so nothing is added the second time and every time after.
+    const wasOpen = new WeakSet();
 
-    document.querySelectorAll(DIALOG_SELECTOR).forEach((el) => furniture.add(el));
-
-    function stopWatching() {
-      if (watcher) { watcher.disconnect(); watcher = null; }
-      added = [];
-      watchUntil = 0;
+    function isOpen(el) {
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
     }
+
+    /**
+     * Everything that could be one of the site's menus.
+     *
+     * Twitch names its rewards panel `role="dialog"` and draws it inside the
+     * chat column. Kick names nothing and portals to the end of `<body>`, as a
+     * full-screen backdrop plus a panel that is centred on the window and so
+     * never overlaps the chat column at all — the backdrop is the part that
+     * covers the overlay, and the part worth standing aside for.
+     */
+    function menuCandidates() {
+      const list = [];
+      document.querySelectorAll(DIALOG_SELECTOR).forEach((el) => list.push(el));
+      if (document.body) {
+        for (const el of document.body.children) {
+          if (list.indexOf(el) !== -1) continue;
+          if (PORTAL_POSITIONS.indexOf(getComputedStyle(el).position) !== -1) list.push(el);
+        }
+      }
+      return list;
+    }
+
+    // Everything already open is the page's own furniture until it closes and
+    // opens again, which is what stops the overlay hiding for something that
+    // was on screen before it ever mounted.
+    function snapshot() {
+      menuCandidates().forEach((el) => {
+        if (isOpen(el)) wasOpen.add(el);
+        else wasOpen.delete(el);
+      });
+    }
+
+    snapshot();
 
     // Whether an element is big enough, and overlapping enough, to be the menu.
     function coversBox(r, box) {
@@ -233,28 +262,12 @@
       },
 
       /**
-       * Starts watching for the site to draw a menu.
-       *
-       * Called just before one of the site's own controls is clicked. Twitch
-       * labels its rewards panel `role="dialog"` and is found by name below,
-       * but Kick labels almost nothing, and a menu that carries no role would
-       * never be recognised. What both sites do is *add an element* — so for
-       * the moment after a control is pressed, that is watched for directly.
+       * Takes a fresh note of what is already open, immediately before one of
+       * the site's own controls is clicked. Whatever opens next is then the
+       * thing that just opened, however the site chooses to draw it.
        */
       expectMenu() {
-        stopWatching();
-        if (!window.MutationObserver || !document.body) return;
-        watchUntil = Date.now() + MENU_WATCH_MS;
-        watcher = new window.MutationObserver((records) => {
-          if (Date.now() > watchUntil) { stopWatching(); return; }
-          records.forEach((record) => {
-            record.addedNodes.forEach((node) => {
-              if (node.nodeType === 1) added.push(node);
-            });
-          });
-          if (added.length > MENU_WATCH_LIMIT) added.splice(0, added.length - MENU_WATCH_LIMIT);
-        });
-        watcher.observe(document.body, { childList: true, subtree: true });
+        snapshot();
       },
 
       /**
@@ -269,26 +282,16 @@
           peekTarget = null;
         }
         let found = null;
-        document.querySelectorAll(DIALOG_SELECTOR).forEach((el) => {
-          if (found || furniture.has(el)) return;
-          if (coversBox(el.getBoundingClientRect(), box)) found = el;
-        });
-
-        // Nothing named itself a menu, so fall back to what the page just drew.
-        // Only positioned elements count: a chat message is added constantly and
-        // sits in normal flow, while a menu is placed over the page.
-        if (!found && Date.now() < watchUntil) {
-          for (const el of added) {
-            if (!el.isConnected || furniture.has(el)) continue;
-            if (!coversBox(el.getBoundingClientRect(), box)) continue;
-            const position = getComputedStyle(el).position;
-            if (position !== 'absolute' && position !== 'fixed') continue;
+        menuCandidates().forEach((el) => {
+          const open = isOpen(el);
+          // Open now and not last time: this is the one that just opened.
+          if (open && !found && !wasOpen.has(el) && !furniture.has(el)
+            && coversBox(el.getBoundingClientRect(), box)) {
             found = el;
-            break;
           }
-        }
-        // Once there is something to watch, the observer has done its job.
-        if (found) stopWatching();
+          if (open) wasOpen.add(el);
+          else wasOpen.delete(el);
+        });
 
         if (found !== peekTarget) {
           peekTarget = found;
@@ -356,7 +359,6 @@
 
       // Puts every element this bridge touched back the way it was found.
       release() {
-        stopWatching();
         forced.forEach((el) => { el.style.visibility = ''; });
         forced.clear();
         const body = site.nativeChatBody && site.nativeChatBody();

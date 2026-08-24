@@ -8,7 +8,7 @@ streamer is also live on Kick, the overlay says so and offers to add the Kick ch
 feed. Open a Kick channel and it works the other way round.
 
 ![Platform](https://img.shields.io/badge/Chrome-MV3-blue)
-![Version](https://img.shields.io/badge/version-1.2.1-green)
+![Version](https://img.shields.io/badge/version-1.2.2-green)
 
 ## What it does
 
@@ -62,7 +62,7 @@ feed. Open a Kick channel and it works the other way round.
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.2.1.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.2.2.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and a folder named `FriendlyChatExtension-main`. The
@@ -611,7 +611,7 @@ DOM, so nothing in the page's layout or stacking contexts has to be fought with.
 node tests/run.js
 ```
 
-773 assertions, no network. It drives the real parsers with real payload shapes: IRC lines with
+771 assertions, no network. It drives the real parsers with real payload shapes: IRC lines with
 tags and emote positions, Kick Pusher events, emote sets from every provider, and the
 counterpart matcher against stubbed platform APIs — including the cases that matter most, like a
 manual mapping beating a same-name guess and a failing emote provider not taking the others down.
@@ -696,11 +696,17 @@ the send path.
   itself begins before the site has drawn anything to find. Nothing went looking afterwards. It
   does now.
 
-  That fix alone would not have covered Kick. Menus were recognised by `role="dialog"`, which
-  Twitch sets and Kick does not, so for the moment after one of the site's own controls is pressed
-  the overlay also watches for the element being *added* — positioned, large enough, and
-  overlapping the panel. A chat message is added constantly and sits in normal flow, so it never
-  qualifies, and the watch is torn down as soon as it has an answer.
+  That fix alone did not cover Kick, whose menus are Radix dialogs portalled to the end of
+  `<body>`: a full-screen backdrop plus a panel *centred on the window*, so the panel never
+  overlaps the chat column at all and only the backdrop covers the overlay. Neither carries a
+  role. Watching for the element being *added* was not enough either, because Radix leaves a
+  closed dialog mounted and reuses it — nothing is added the second time, or any time after.
+
+  So the question asked is whether a menu has just **opened**, not whether one has just been
+  added. Candidates are anything carrying a dialog role plus any positioned child of `<body>`,
+  which is where both sites portal; whatever is already on screen when the overlay looks is the
+  page's own furniture, and anything that goes from closed to open and covers the panel is the
+  menu. That holds however many times the same element is reused.
 
 - **The feed could freeze permanently, and silently.** Rows are batched and flushed on the next
   animation frame. Frames stop arriving whenever the page is not being drawn — a background tab,

@@ -415,11 +415,11 @@
 
       // Kick's icons are the one thing in its footer that carries a stable
       // name — everything else is generated Tailwind with no label at all.
-      const byIcon = (pattern) => {
+      const byIcon = (pattern, skip) => {
         for (const icon of footer.querySelectorAll('[data-ds-icon]')) {
           if (!pattern.test(icon.getAttribute('data-ds-icon') || '')) continue;
           const btn = icon.closest('button');
-          if (btn && !isSend(btn)) return btn;
+          if (btn && btn !== skip && !isSend(btn)) return btn;
         }
         return null;
       };
@@ -428,26 +428,31 @@
       // matches: a footer button whose entire visible text is a number is a
       // balance and nothing else. Anything that does something — send, emotes,
       // settings — either says so or shows only an icon.
-      const byNumber = () => {
+      const byNumber = (skip) => {
         for (const btn of footer.querySelectorAll('button')) {
-          if (isSend(btn)) continue;
+          if (isSend(btn) || btn === skip) continue;
           if (FCM.looksLikeBalance(btn.textContent)) return btn;
         }
         return null;
       };
 
-      const kicks = firstIn(footer, [
-        '[data-testid*="kicks" i]',
-        'button[aria-label*="kicks" i]',
-        'button[title*="kicks" i]',
-      ]) || byIcon(/kick|spark|gift/i) || byNumber();
-
+      // Rewards is resolved first because it is the narrower search, and then
+      // excluded from the Kicks one: the last resort there is "a button showing
+      // a number", which would otherwise happily return the button Rewards had
+      // already claimed and put two chips on the same control.
       const points = firstIn(footer, [
         '[data-testid*="point" i]',
         'button[aria-label*="point" i]',
         'button[aria-label*="reward" i]',
         'button[title*="reward" i]',
       ]) || byIcon(/point|reward|trophy/i);
+
+      const notPoints = (el) => (el && el !== points ? el : null);
+      const kicks = notPoints(firstIn(footer, [
+        '[data-testid*="kicks" i]',
+        'button[aria-label*="kicks" i]',
+        'button[title*="kicks" i]',
+      ])) || notPoints(byIcon(/kick|spark|gift/i, points)) || notPoints(byNumber(points));
 
       return {
         // Kick keeps the number inside the button rather than in a labelled

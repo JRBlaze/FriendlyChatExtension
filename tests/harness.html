@@ -41,6 +41,11 @@
   .chatcol .rewards button[hidden] { display: none; }
   .chatcol .rewards .sep { color: #46464b; }
   .fakemenu { position: fixed; z-index: 2000; background: #1f1f23; border: 1px solid #3a3a3d; border-radius: 8px; padding: 16px; width: 300px; box-shadow: 0 12px 40px rgba(0,0,0,.6); font-size: 12px; }
+  /* Kick portals its menus to <body> as a Radix dialog: a full-screen backdrop
+     plus a panel centred on the window, neither carrying a role, and the panel
+     nowhere near the chat column. Only the backdrop covers the overlay. */
+  .fakebackdrop { position: fixed; inset: 0; z-index: 1999; background: rgba(0,0,0,.75); }
+  .fakemodal { position: fixed; z-index: 2000; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 418px; height: 400px; background: #1f1f23; border: 1px solid #3a3a3d; border-radius: 8px; padding: 16px; font-size: 12px; }
   /* Kick's chat column, mirroring the real nesting: a header outside the body,
      an in-flow card slot above the message wrapper (the gifter leaderboard),
      and a banner slot drawn *over* the top of the messages (pinned messages). */
@@ -254,29 +259,53 @@ mockComposer(document.querySelector('.kickcol .editor-input'), document.getEleme
 // can be watched stepping aside while one is open and coming back when it goes.
 (function () {
   let menu = null;
+  let nodes = [];
   function close() {
     if (!menu) return;
-    menu.remove();
+    nodes.forEach((n) => n.remove());
+    nodes = [];
     menu = null;
     document.removeEventListener('mousedown', outside, true);
   }
-  function outside(e) { if (menu && !menu.contains(e.target)) close(); }
+  function outside(e) {
+    if (!menu) return;
+    const inside = nodes.some((n) => n.contains(e.target));
+    if (!inside || e.target.classList.contains('fakebackdrop')) close();
+  }
   // `labelled` mirrors the difference between the two sites: Twitch marks its
   // rewards panel `role="dialog"`, Kick marks its own nothing at all, which is
   // why the overlay also has to notice a menu simply by it being drawn.
+  /**
+   * `labelled` is the difference between the two sites. Twitch marks its
+   * rewards panel `role="dialog"` and draws it inside the chat column, over the
+   * overlay. Kick marks nothing, portals to <body>, and centres the panel on the
+   * window behind a full-screen backdrop — so the panel never touches the chat
+   * column and the backdrop is the only part the overlay has to stand aside for.
+   */
   function open(title, body, labelled = true) {
     close();
-    const col = document.querySelector('.chatcol:not([style*="none"]), .kickcol:not([style*="none"])').getBoundingClientRect();
-    menu = document.createElement('div');
-    menu.className = 'fakemenu';
-    if (labelled) menu.setAttribute('role', 'dialog');
-    menu.innerHTML = `<h3>${title}</h3><p>${body}</p><button>Close</button>`;
-    menu.style.left = `${col.left + 12}px`;
-    menu.style.top = `${col.top + 90}px`;
-    menu.style.width = `${col.width - 24}px`;
-    menu.style.height = '260px';
+    nodes = [];
+    if (labelled) {
+      const col = document.querySelector('.chatcol:not([style*="none"]), .kickcol:not([style*="none"])').getBoundingClientRect();
+      menu = document.createElement('div');
+      menu.className = 'fakemenu';
+      menu.setAttribute('role', 'dialog');
+      menu.innerHTML = `<h3>${title}</h3><p>${body}</p><button>Close</button>`;
+      menu.style.left = `${col.left + 12}px`;
+      menu.style.top = `${col.top + 90}px`;
+      menu.style.width = `${col.width - 24}px`;
+      menu.style.height = '260px';
+      nodes.push(menu);
+    } else {
+      const backdrop = document.createElement('div');
+      backdrop.className = 'fakebackdrop';
+      menu = document.createElement('div');
+      menu.className = 'fakemodal';
+      menu.innerHTML = `<h3>${title}</h3><p>${body}</p><button>Close</button>`;
+      nodes.push(backdrop, menu);
+    }
+    nodes.forEach((n) => document.body.appendChild(n));
     menu.querySelector('button').addEventListener('click', close);
-    document.body.appendChild(menu);
     setTimeout(() => document.addEventListener('mousedown', outside, true), 0);
   }
   document.getElementById('native-balances').addEventListener('click',
