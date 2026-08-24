@@ -271,15 +271,24 @@
      * their old test selectors, `bits-balance-string` and `copo-balance-string`
      * ("copo" being Twitch's own name for community points).
      */
+    // Where the site keeps its balance controls. Named separately so a
+    // diagnostics report can list everything in it, which is the one thing
+    // worth having when a control cannot be found.
+    nativeFooter() {
+      return firstMatch([
+        '[data-test-selector="chat-input-buttons-container"]',
+        '.chat-input__buttons-container',
+        '[data-test-selector="community-points-summary"]',
+        '.community-points-summary',
+      ]);
+    },
+
     nativeControls() {
       const summary = firstMatch([
         '[data-test-selector="community-points-summary"]',
         '.community-points-summary',
       ]);
-      const bar = firstMatch([
-        '[data-test-selector="chat-input-buttons-container"]',
-        '.chat-input__buttons-container',
-      ]);
+      const bar = this.nativeFooter();
       const scope = summary || bar;
       // "Whichever button is there" is only safe inside the points summary. The
       // wider buttons container also holds the emote picker and Send, and a
@@ -399,12 +408,16 @@
      * matches, the overlay simply shows no balances rather than guessing at a
      * button and sending a click somewhere unintended.
      */
-    nativeControls() {
-      const footer = firstReal([
+    nativeFooter() {
+      return firstReal([
         '#chatroom-footer',
         'div[class*="chatroom-footer"]',
         '#chat-input-wrapper',
       ]);
+    },
+
+    nativeControls() {
+      const footer = this.nativeFooter();
       if (!footer) return {};
 
       // Sending is the one thing in this footer that must never be triggered by

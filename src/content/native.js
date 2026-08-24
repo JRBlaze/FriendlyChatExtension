@@ -130,6 +130,78 @@
     return r.width > 0 && r.height > 0;
   }
 
+  function boxOf(el) {
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)];
+  }
+
+  // Everything about one element that could be used to find it again.
+  function describe(el) {
+    if (!el) return null;
+    return {
+      tag: el.tagName ? el.tagName.toLowerCase() : null,
+      id: el.id || null,
+      testid: el.getAttribute ? el.getAttribute('data-testid') : null,
+      testSelector: el.getAttribute ? el.getAttribute('data-test-selector') : null,
+      aTarget: el.getAttribute ? el.getAttribute('data-a-target') : null,
+      aria: el.getAttribute ? el.getAttribute('aria-label') : null,
+      title: el.getAttribute ? el.getAttribute('title') : null,
+      text: (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 40),
+      icons: el.querySelectorAll
+        ? Array.from(el.querySelectorAll('[data-ds-icon]'))
+          .map((i) => i.getAttribute('data-ds-icon')).slice(0, 4)
+        : [],
+      box: boxOf(el),
+    };
+  }
+
+  /**
+   * A snapshot of what the adapters can and cannot find on this page.
+   *
+   * Both sites move their markup, and when they do the useful question is
+   * always the same: what is actually in the chat's footer, and what did the
+   * selectors make of it. Answering that from a bug report is the difference
+   * between fixing it and guessing at it.
+   *
+   * It reads only the chat's own controls. That does include whatever those
+   * controls display, which is why the button that copies it says so.
+   */
+  FCM.nativeDiagnostics = function (site, bridge) {
+    const controls = (() => {
+      try { return (site.nativeControls && site.nativeControls()) || {}; } catch (e) { return {}; }
+    })();
+    const footer = site.nativeFooter && site.nativeFooter();
+    const cards = bridge && bridge.cards ? bridge.cards() : null;
+
+    return {
+      site: site.id,
+      url: location.href,
+      viewport: [window.innerWidth, window.innerHeight],
+      chatColumn: boxOf(site.chatContainer && site.chatContainer()),
+      messageList: boxOf(site.messageList && site.messageList()),
+      nativeChatBody: boxOf(site.nativeChatBody && site.nativeChatBody()),
+      composer: describe(site.composer && site.composer()),
+      sendButton: describe(site.sendButton && site.sendButton()),
+      cards: cards ? { count: cards.elements.length, top: Math.round(cards.top), bottom: Math.round(cards.bottom) } : null,
+      resolved: {
+        pointsValue: describe(controls.pointsValue),
+        bitsValue: describe(controls.bitsValue),
+        openBalances: describe(controls.openBalances),
+        cheer: describe(controls.cheer),
+        claim: describe(controls.claim),
+      },
+      stats: bridge && bridge.stats ? bridge.stats() : null,
+      // The part that matters most when a control cannot be found: everything
+      // the footer actually contains.
+      footerFound: !!footer,
+      footerControls: footer
+        ? Array.from(footer.querySelectorAll('button,[data-testid],[role="button"]'))
+          .slice(0, 40).map(describe)
+        : [],
+    };
+  };
+
   /**
    * @param {object} site one of FCM.SITES
    * @returns the bridge the overlay uses to see and drive the page's own chat

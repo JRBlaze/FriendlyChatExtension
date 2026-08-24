@@ -490,6 +490,27 @@
 }
 .fcm-native-claim:hover { filter: brightness(1.12); }
 
+/* The diagnostics dump, shown so it can always be selected by hand even when
+   the page will not give the clipboard up. */
+.fcm-diag {
+  width: 100%;
+  height: 150px;
+  margin-top: 6px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  color: var(--text);
+  font-family: var(--fcm-mono);
+  font-size: 10.5px;
+  line-height: 1.4;
+  white-space: pre;
+  overflow: auto;
+  resize: vertical;
+  outline: none;
+}
+.fcm-diag:focus { border-color: var(--accent); }
+
 /* ── Composer ──────────────────────────────────────────────────────────────── */
 
 .fcm-composer {
