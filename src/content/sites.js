@@ -67,6 +67,29 @@
     return messages ? expandToChatColumn(messages) : null;
   }
 
+  // The message list is the anchor the native-region code climbs from, so it is
+  // resolved with a far looser layout test than the chat column: an empty or
+  // barely-started chat is a few pixels tall and still the right element.
+  function firstPresent(selectors) {
+    for (const sel of selectors) {
+      for (const el of document.querySelectorAll(sel)) {
+        const r = el.getBoundingClientRect();
+        if (r.width >= 80 && r.height >= 8) return el;
+      }
+    }
+    return null;
+  }
+
+  // First match for any of these selectors inside one subtree.
+  function firstIn(root, selectors) {
+    if (!root) return null;
+    for (const sel of selectors) {
+      const el = root.querySelector(sel);
+      if (el) return el;
+    }
+    return null;
+  }
+
   // Looks inside the chat column first. Both sites have other contenteditable
   // and textbox elements on the page (search, the whisper composer, moderation
   // views), and the broadest selectors here would otherwise pick one of those.
@@ -210,6 +233,74 @@
       ]);
     },
 
+    // The scrolling list of messages, and the anchor everything the site draws
+    // around it is measured from.
+    messageList() {
+      return firstPresent([
+        'div[data-test-selector="chat-scrollable-area__message-container"]',
+        '.chat-scrollable-area__message-container',
+        'div[data-a-target="chat-scroller"]',
+        '.chat-list--default',
+      ]);
+    },
+
+    /**
+     * The site's own bits and channel-points controls, at the foot of its chat.
+     *
+     * Twitch merged the two balances into one button — its accessible name is
+     * "Bits and Points Balances" — and the two numbers inside it still carry
+     * their old test selectors, `bits-balance-string` and `copo-balance-string`
+     * ("copo" being Twitch's own name for community points).
+     */
+    nativeControls() {
+      const summary = firstMatch([
+        '[data-test-selector="community-points-summary"]',
+        '.community-points-summary',
+      ]);
+      const bar = firstMatch([
+        '[data-test-selector="chat-input-buttons-container"]',
+        '.chat-input__buttons-container',
+      ]);
+      const scope = summary || bar;
+      // "Whichever button is there" is only safe inside the points summary. The
+      // wider buttons container also holds the emote picker and Send, and a
+      // rewards chip that clicked Send would be a great deal worse than one
+      // that did nothing.
+      const openBalances = firstIn(scope, [
+        'button[aria-label*="balance" i]',
+        'button[aria-label*="points" i]',
+        'button[data-test-selector*="points" i]',
+      ].concat(summary ? ['button'] : []));
+      // The bonus chest only exists while there is a bonus waiting, so it is
+      // looked for by name first and then, if Twitch has renamed it again, as
+      // whichever other button the summary has grown.
+      const named = firstIn(bar || summary, [
+        'button[aria-label*="claim" i]',
+        'button[data-test-selector*="claim" i]',
+      ]);
+      const spare = summary
+        ? Array.from(summary.querySelectorAll('button'))
+          .find((b) => b !== openBalances && b.getBoundingClientRect().height > 0)
+        : null;
+
+      return {
+        pointsValue: firstIn(scope, [
+          '[data-test-selector="copo-balance-string"]',
+          '[data-test-selector*="points-balance" i]',
+        ]),
+        bitsValue: firstIn(scope, [
+          '[data-test-selector="bits-balance-string"]',
+          '[data-test-selector*="bits-balance" i]',
+        ]),
+        openBalances,
+        cheer: firstMatch([
+          'button[data-a-target="bits-button"]',
+          'button[aria-label="Cheer"]',
+        ]),
+        claim: named || spare || null,
+      };
+    },
+
     hints() {
       return scrapeHints(/kick\.com/i);
     },
@@ -270,6 +361,54 @@
         '#chatroom',
         '[data-testid="chat-container"]',
       ]);
+    },
+
+    messageList() {
+      return firstPresent([
+        '#chatroom-messages',
+        '[data-testid="chatroom-messages"]',
+        '[data-testid="chat-message-list"]',
+        'div[class*="chat-message-list"]',
+      ]);
+    },
+
+    /**
+     * Kick's footer carries the Kicks and rewards buttons, but — unlike
+     * Twitch — it labels nothing with a test selector, and the classes are
+     * generated Tailwind. So the search goes by accessible name, which is the
+     * one thing a control that has to be usable cannot drop. Where nothing
+     * matches, the overlay simply shows no balances rather than guessing at a
+     * button and sending a click somewhere unintended.
+     */
+    nativeControls() {
+      const footer = firstMatch([
+        '#chatroom-footer',
+        'div[class*="chatroom-footer"]',
+        '#chat-input-wrapper',
+      ]);
+      const kicks = firstIn(footer, [
+        '[data-testid*="kicks" i]',
+        'button[aria-label*="kicks" i]',
+        'button[title*="kicks" i]',
+      ]);
+      const points = firstIn(footer, [
+        '[data-testid*="point" i]',
+        'button[aria-label*="point" i]',
+        'button[aria-label*="reward" i]',
+        'button[title*="reward" i]',
+      ]);
+      return {
+        // Kick keeps the number inside the button rather than in a labelled
+        // node of its own, so the button is both the value and the way in.
+        pointsValue: points,
+        bitsValue: kicks,
+        openBalances: points || kicks,
+        cheer: kicks,
+        claim: firstIn(footer, [
+          'button[aria-label*="claim" i]',
+          'button[title*="claim" i]',
+        ]),
+      };
     },
 
     hints() {

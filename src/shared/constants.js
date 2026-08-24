@@ -116,6 +116,11 @@
     thirdPartyEmotes: true,
     highlightNames: '',
     hideNativeChat: false,      // collapse the site's own chat while merged
+    // The site's own chat furniture, which the overlay would otherwise cover.
+    revealHighlights: true,     // shrink so hype trains, polls, predictions and
+                                // pinned messages stay visible above the panel
+    showNativeStats: true,      // read bits, Kicks and channel points off the
+                                // page, and open the site's own rewards menu
     // Composer
     sendTargets: ['twitch', 'kick'],  // which platforms a typed message goes to
     // Credentials the OAuth flows use. Defaults are the desktop app's, and can

@@ -8,13 +8,22 @@ streamer is also live on Kick, the overlay says so and offers to add the Kick ch
 feed. Open a Kick channel and it works the other way round.
 
 ![Platform](https://img.shields.io/badge/Chrome-MV3-blue)
-![Version](https://img.shields.io/badge/version-1.0.0-green)
+![Version](https://img.shields.io/badge/version-1.1.0-green)
 
 ## What it does
 
 - **Exactly covers the site's own chat.** The panel takes the chat column's own width, height
   and position — not an approximation — and keeps matching it as you drag Twitch's chat-width
   handle, toggle theatre mode, collapse the sidebar or resize the window.
+- **Leaves the site's own cards showing.** A hype train, poll, prediction, pinned message or
+  leaderboard at the top of chat is measured and the panel starts below it, so the real card
+  stays visible and stays clickable. Nothing about it is redrawn or reimplemented.
+- **Your bits, Kicks and channel points**, read off the page and shown above the composer, with
+  a *Claim bonus* button when one is waiting. Clicking a balance opens the site's own rewards or
+  cheer menu, and the panel steps out of the way for as long as it is open.
+- **Drag and resize it, and put it back.** Move or resize the panel and it stays where you put
+  it, on that platform, across reloads. A reset button appears in the title bar the moment you
+  do, and snaps it back over the site's own chat at the size it first opened at.
 - **Tells you when they are live on the other platform.** While you watch Twitch it works out
   which Kick channel belongs to the same streamer, checks whether it is live, and offers to
   connect it. The same logic runs in reverse on Kick.
@@ -47,7 +56,7 @@ feed. Open a Kick channel and it works the other way round.
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.0.2.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.1.0.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and a folder named `FriendlyChatExtension-main`. The
@@ -139,6 +148,10 @@ are on.
 - **Click a username** for reply, copy, or opening that person's channel. Reply drops
   `@name ` into the box, and doing it again appends rather than replacing, so you can address
   two people at once.
+- **Send wears the site's colour** — Twitch purple on Twitch, Kick green on Kick — so the box
+  reads as part of the chat you are in. Kick's green is bright enough that the label goes dark on
+  it, and on a light page the green is darkened so white stays readable; every combination clears
+  the WCAG AA contrast ratio. The rest of the overlay keeps its own accent.
 
 ### Replies go to the chat the person is actually in
 
@@ -168,6 +181,38 @@ would actually be delivered:
 
 At least one target always stays selected. If a send only partly succeeds, the toast names the
 platform that refused and the reason lands in the feed as a system row.
+
+## Bits, points and the cards above chat
+
+Both platforms put things in the chat column that are not messages. Twitch stacks cards at the
+top — hype train, poll, prediction, pinned message, the bits leaderboard — and puts your bits and
+channel-points balances at the bottom. Kick does much the same. An overlay sized to cover the
+chat column covers all of it.
+
+**The cards stay visible.** The panel measures whatever the site has stacked above its message
+list and starts below it, so the real card is on screen and still fully interactive — you can
+click through a prediction or vote in a poll exactly as you would without the overlay. That
+costs feed height, so it is a setting: *Leave room for the site's cards*, on by default. The
+strip is capped at 45% of the chat column, so a tall card cannot squeeze the feed out.
+
+Note that on many Twitch channels there is a card there permanently — the bits leaderboard —
+so the panel will usually start an inch or so down the column. Turn the setting off if you would
+rather have the height.
+
+**The balances are lifted into the overlay.** A row above the composer shows what the site is
+showing: channel points, bits or Kicks, and a *Claim bonus* button while there is a bonus
+waiting. These are read straight off the page, so they are the balances of whichever account is
+signed in there, and reading them needs no token, no scope and no API call.
+
+**Redeeming opens the site's own menu.** Clicking a balance hands the click to Twitch's or
+Kick's own button. The site's real rewards panel opens, over the site's own chat, with the
+current costs, the paused rewards greyed out and the prompts that some rewards need — and the
+overlay makes itself invisible and click-through for as long as it is up, then comes back when
+you close it. Nothing here holds a token that could spend anything, and none of the redemption
+rules are duplicated: the platform owns them.
+
+Claiming a bonus is the one exception, because it is a single click with no menu behind it, so
+the overlay just clicks it and tells you it did.
 
 ## Moderating
 
@@ -364,9 +409,12 @@ src/
     boot.js          channel detection, SPA navigation, the port
     overlay.js       the shadow-DOM panel, prompt, targets and settings sheet
     compose.js       emote picker, : and @ autocomplete, the username menu
+    native.js        the site's own cards, balances and menus: measuring,
+                     reading and driving them
     render.js        message tokenising and row building
     feed.js          the batched, bounded message feed
-    sites.js         per-site selectors and the native composer
+    sites.js         per-site selectors, the native composer and the
+                     bits/points controls
     overlay.css
   options/ popup/
 tests/
@@ -402,6 +450,48 @@ A sync that finds nothing keeps the last box that worked rather than jumping, so
 an ad break does not throw the overlay across the screen. Placement is re-checked on resize, on
 scroll, by a `ResizeObserver` that re-attaches whenever the site swaps the chat node out, and by
 a 500 ms poll for the layout changes that fire no event at all.
+
+Dragging or resizing the panel by hand switches placement off and is remembered per platform
+across reloads, so there has to be a way back: a reset button appears in the title bar the moment
+you move it, there is a *Reset* in the overlay's settings under *Overlay*, and double-clicking
+the title bar does the same. All three put the panel back over the chat column at the size it
+first opened at.
+
+### Finding the cards above chat
+
+Twitch has hashed the class names off every wrapper around its highlight stack — there is no
+`community-highlight-stack` to match on any more — and Kick's are generated Tailwind. So the
+cards are found by position instead.
+
+The message list is the anchor, because it is the one element on either site that has kept a
+name. The search climbs from it until it reaches the first level where a sibling sits *wholly*
+above or *wholly* below it, which is the level where both sites place their cards and their
+composer. Everything above that line is the card block; the overlay starts at its bottom edge.
+
+Anything overlapping the list is skipped rather than counted, which is what keeps the
+absolutely-positioned layers both sites park over their messages — Twitch's viewer card, the
+jump-to-bottom pill — from being mistaken for cards.
+
+Hiding the site's own chat and revealing its cards would contradict each other, so the cards are
+exempted rather than un-hidden: `visibility` is inherited, and setting it back to `visible` on a
+card inside a hidden subtree shows that card and nothing else around it.
+
+### Getting out of the way of the site's own menus
+
+Twitch draws its rewards panel inside the chat column at `z-index: 2000`. The overlay sits at
+`2147483000`, so a menu opened underneath it would be painted straight over.
+
+So the panel watches for one. Any dialog, menu or balloon that overlaps the panel's box makes it
+go `visibility: hidden` and `pointer-events: none` until that element goes away — the menu is
+then both visible and usable, and clicking outside it closes it through the panel exactly as it
+would without one. The check runs on the same 500 ms tick as placement, and a click anywhere on
+the page brings the next few checks forward so a menu you just opened is noticed in under a tenth
+of a second rather than half of one.
+
+Two things stop that from ever stranding the panel invisible. Anything matching those selectors
+that was already on screen when the overlay mounted is treated as the page's own furniture and
+never triggers it, so one mismatched element cannot hide the overlay for good; and a "menu" that
+nobody has closed in two minutes is written off as furniture too.
 
 ### How sending works
 
@@ -454,7 +544,7 @@ DOM, so nothing in the page's layout or stacking contexts has to be fought with.
 node tests/run.js
 ```
 
-624 assertions, no network. It drives the real parsers with real payload shapes: IRC lines with
+695 assertions, no network. It drives the real parsers with real payload shapes: IRC lines with
 tags and emote positions, Kick Pusher events, emote sets from every provider, and the
 counterpart matcher against stubbed platform APIs — including the cases that matter most, like a
 manual mapping beating a same-name guess and a failing emote provider not taking the others down.
@@ -477,8 +567,15 @@ Two suites exist specifically to break things rather than to confirm they work:
   and malformed commands from the page.
 
 Run one suite with `node tests/run.js <name>` (`irc`, `kick`, `render`, `settings`, `compose`,
-`reply`, `sites`, `discovery`, `emotes`, `theme`, `auth`, `send`, `resilience`, `errors`, `feed`,
-`moderation`, `multitab`, `background`).
+`reply`, `authpages`, `sites`, `native`, `discovery`, `emotes`, `theme`, `auth`, `send`,
+`resilience`, `errors`, `feed`, `navigation`, `moderation`, `channelswitch`, `endtoend`,
+`multitab`, `background`).
+
+The **`native`** suite covers the part of the overlay that reads the page rather than a protocol:
+splitting the message list's siblings into the cards above and the bar below against both sites'
+real nesting, reading a balance out of text or an accessible name, driving the site's own buttons
+without ever clicking one that is not on screen, hiding the site's chat while keeping its cards,
+and the rules that stop a popup from stranding the panel invisible.
 
 To look at the overlay without loading the extension, serve the project root and open the
 harness. It mocks a channel page, the `chrome.*` APIs, and — importantly — a *controlled* chat
@@ -493,12 +590,39 @@ Then open `http://127.0.0.1:8123/tests/harness.html`. The buttons along the bott
 events and the cross-platform prompt through the real rendering path, resize the mock chat column
 to check the overlay tracks it, drop the chat-column selectors to exercise the walk-up fallback,
 and fake connected accounts so the send-target chips and the send-to-both path can be driven
-without signing in to anything. Setting `window.autoSendResult` answers a send with a canned
+without signing in to anything.
+
+The mock page also carries the furniture this version reads and drives. *+ hype train card* and
+*+ pinned card* stack cards above the message list, so the panel can be watched shrinking out of
+their way and coming back when they clear; *toggle claim bonus* puts a bonus chest in the mock
+rewards row; and clicking a balance opens a mock menu at the same `z-index` Twitch uses, so the
+panel can be watched standing aside for it. The mock column mirrors Twitch's real nesting,
+including keeping the chat header *outside* the chat-room section — that detail is why the header
+is not a sibling of the message list and so is never mistaken for a card. Setting `window.autoSendResult` answers a send with a canned
 per-platform result, which is how the partial-failure and expired-token paths get exercised. Setting `composerMode` in the console to `paste-only`, `beforeinput`, `plain`,
 `readonly` or `no-submit` switches how the mock composer behaves, which covers each branch of
 the send path.
 
 ## Bugs this testing found
+
+- **A navigation that overtook a mount left no overlay at all.** Mounting is asynchronous — it
+  reads settings and geometry out of `chrome.storage` — and a second channel change lands inside
+  that window readily enough on a fast connection. When the overtaken call resumed, it checked
+  that it had been superseded and correctly tore an overlay down, but it tore down whichever one
+  the module variable currently held: by then, the *newer* navigation's. The page was left with
+  no panel until the next navigation. `mountFor` now returns the overlay it built and the caller
+  tears down that one by identity. Separately, `mount()` itself carried on after a `destroy()`
+  landed mid-flight, appending a host nobody owned and starting a poll and page listeners that
+  nothing was left holding a reference to remove; it now bails at each await point. The
+  `navigation` suite reproduces both by holding each mount open until the test releases it —
+  with the old code, zero overlays survive.
+
+- **A card that appeared while the site's chat was hidden stayed hidden with it.** The exemption
+  that keeps hype trains and polls visible was applied when a *setting* changed, but both sites
+  replace those nodes outright when a card starts, and a fresh node inside a hidden subtree
+  inherits the hiding. So turning on *hide the site's own chat* and then waiting for a hype train
+  got a gap where the card should be. The card search now runs on the tick and re-applies the
+  exemption whenever the set of cards changes, not just when a setting does.
 
 - **Switching channels churned between connect and disconnect.** Two races, either of which
   alone was enough. A socket's `close()` is asynchronous, so the one being replaced reported its
@@ -558,6 +682,16 @@ was never going to see in a friendly test:
   falls back to locating the message list and climbing to its column, so a renamed wrapper does
   not break sizing; only if that fails too does the panel dock to the right of the window.
   `src/content/sites.js` is the one file to update when that happens.
+- **Kick's bits and points controls are found by accessible name.** Twitch labels its balances
+  with test selectors (`bits-balance-string`, `copo-balance-string`) that have outlived several
+  redesigns. Kick labels nothing and its classes are generated, so the search there goes by
+  `aria-label` and `data-testid` — the one thing a control that has to be usable cannot drop.
+  Where nothing matches, the row simply does not appear, rather than guessing at a button and
+  sending a click somewhere unintended. `kick.nativeControls()` in `src/content/sites.js` is the
+  place to add a selector if Kick moves them.
+- **The card strip costs feed height.** Twitch keeps a bits leaderboard above chat on many
+  channels, so *Leave room for the site's cards* usually gives up an inch of column even when
+  there is no hype train running. Turning it off puts the panel back over the whole column.
 - **Kick's API sits behind Cloudflare.** The endpoints used here are the public ones and are
   currently reachable, but if Cloudflare starts challenging them, Kick channel lookups will fail
   and the overlay will say so.
@@ -587,6 +721,23 @@ Three things were doing far more work than they needed to:
   when the index is built.
 - **The mention-highlight pattern was compiled per message.** On a busy channel that was a regex
   build for every line that arrived; it is now compiled when the setting changes.
+
+Two costs went the wrong way when the overlay learned to read the page, and were measured on
+twitch.tv rather than the harness — the harness page has 79 nodes and a real channel has upwards
+of 1,500, which is the difference between a `querySelectorAll` that costs nothing and one that
+does not:
+
+- **Finding the site's cards ran on every scroll event.** Placement is bound to `scroll` with
+  capture, and on a busy channel the site's own message list scrolls on every message that
+  arrives. Adding the structural card search to it took that path from 55 µs to 109 µs, each one
+  forcing layout. The search now runs on the 500 ms tick and keeps the elements it found;
+  everything in between re-measures those, which put the scroll path back to **64 µs**.
+- **Looking for the site's menus was a document-wide query every tick.** At 169 µs it cost more
+  than everything else on the tick combined, to answer "no" almost every time. A menu can only
+  appear because the viewer did something, so the scan is now armed by clicks and keystrokes,
+  with a five-second backstop; while one *is* open the check is against that element alone. Idle
+  cost went from 169 µs every tick to **2 µs**, measured as one scan per five seconds instead of
+  ten.
 
 Emote search also stopped sorting the whole match set. A two-character query can match thousands
 of emotes when only thirty are ever shown, so matches are split into prefix and substring groups

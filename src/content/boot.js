@@ -199,8 +199,17 @@
 
   // ── Mounting ────────────────────────────────────────────────────────────────
 
+  /**
+   * Builds and mounts the overlay for a channel, and returns the one it built.
+   *
+   * Returning it matters. Mounting is asynchronous — it reads settings and
+   * geometry out of chrome.storage — and a second navigation lands inside that
+   * window often enough to matter. When this call resumes, the module's
+   * `overlay` may already belong to that newer navigation, so the caller has to
+   * be able to tear down its own rather than whatever is current.
+   */
   async function mountFor(channel) {
-    overlay = FCM.createOverlay({
+    const mine = FCM.createOverlay({
       site,
       channel,
       onCommand: (command) => {
@@ -212,7 +221,9 @@
         post(command);
       },
     });
-    await overlay.mount();
+    overlay = mine;
+    await mine.mount();
+    return mine;
   }
 
   function unmount() {
@@ -242,11 +253,15 @@
     disconnectPort();
     unmount();
 
-    await mountFor(channel);
+    const mounted = await mountFor(channel);
     // A faster navigation may have overtaken this one while the overlay was
-    // being built; if so, that one owns the page now.
+    // being built; if so, that one owns the page now. Only this call's own
+    // overlay may be torn down here — clearing whichever one the module happens
+    // to hold would take the newer navigation's panel down with it and leave
+    // the page with no overlay at all.
     if (epoch !== navEpoch) {
-      if (overlay) { overlay.destroy(); overlay = null; }
+      mounted.destroy();
+      if (overlay === mounted) overlay = null;
       return;
     }
 

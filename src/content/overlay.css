@@ -86,6 +86,7 @@
   box-shadow: var(--shadow);
   overflow: hidden;
   z-index: 2147483000;
+  transition: opacity .12s ease;
   /* No min-width/min-height: the panel is sized to the site's own chat box, and
      a floor here would make a narrow chat column mismatch. The drag handles
      enforce their own minimums when the panel is moved by hand. */
@@ -95,7 +96,18 @@
 .fcm-panel.fcm-collapsed .fcm-feed,
 .fcm-panel.fcm-collapsed .fcm-composer,
 .fcm-panel.fcm-collapsed .fcm-statusbar,
+.fcm-panel.fcm-collapsed .fcm-native,
 .fcm-panel.fcm-collapsed .fcm-prompt { display: none; }
+
+/* Standing aside while one of the site's own menus is open underneath. The
+   panel keeps its box — the placement code is still tracking the chat column —
+   but paints nothing and takes no clicks, so the menu below is both visible and
+   usable. !important because the opacity setting is applied inline.
+
+   visibility carries the guarantee and opacity only the fade: a browser that
+   has throttled animations on a background tab freezes the opacity transition
+   part-way, and a panel that is merely click-through is still in the way. */
+.fcm-panel.fcm-peek { opacity: 0 !important; visibility: hidden; pointer-events: none; }
 
 .fcm-hidden { display: none !important; }
 
@@ -398,6 +410,46 @@
 }
 .fcm-empty-icon { font-size: 22px; opacity: 0.3; }
 
+/* ── The site's own balances ───────────────────────────────────────────────── */
+
+/* Bits, Kicks and channel points, read off the page the overlay is covering.
+   Clicking one hands the click to the site's own control, so what opens is the
+   site's own menu rather than anything drawn here. */
+.fcm-native {
+  display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
+  padding: 5px 8px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.fcm-native-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 20px; padding: 0 8px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--surface2);
+  color: var(--text-muted); font-family: var(--fcm-mono);
+  font-size: 9.5px; font-weight: 600; cursor: pointer; white-space: nowrap;
+  transition: border-color .15s, background .15s, color .15s;
+}
+.fcm-native-chip:hover { border-color: var(--border2); background: var(--surface3); color: var(--text); }
+.fcm-native-key { font-size: 8px; letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.7; }
+.fcm-native-val { font-size: 11px; color: var(--text); font-variant-numeric: tabular-nums; }
+
+.fcm-native[data-platform="twitch"] .fcm-native-chip { border-color: var(--twitch-border); }
+.fcm-native[data-platform="twitch"] .fcm-native-chip:hover { background: var(--twitch-dim); }
+.fcm-native[data-platform="kick"] .fcm-native-chip { border-color: var(--kick-border); }
+.fcm-native[data-platform="kick"] .fcm-native-chip:hover { background: var(--kick-dim); }
+
+/* A bonus that is sitting there waiting is worth looking like a thing to press,
+   rather than another read-out. */
+.fcm-native-claim {
+  margin-left: auto;
+  border-color: transparent !important;
+  background: var(--accent) !important;
+  color: #fff !important;
+  letter-spacing: 0.04em; text-transform: uppercase; font-size: 8.5px;
+}
+.fcm-native-claim:hover { filter: brightness(1.12); }
+
 /* ── Composer ──────────────────────────────────────────────────────────────── */
 
 .fcm-composer {
@@ -503,13 +555,30 @@
 }
 .fcm-input:focus { border-color: var(--accent); }
 .fcm-input::placeholder { color: var(--text-dim); }
+/* Send wears the colour of the site it posts to: Twitch purple on Twitch, Kick
+   green on Kick. The rest of the overlay keeps its own accent — this is the one
+   control where the platform matters more than the panel.
+
+   Kick's green is bright enough that white on it is unreadable, so on a dark
+   page it takes dark text, and hovering darkens rather than brightens because
+   there is no headroom left to brighten into. On a light page the button has to
+   carry the contrast instead, so the green is the darker one and the text is
+   white again. */
+.fcm-root { --send-bg: var(--accent); --send-fg: #fff; --send-hover: 1.1; }
+.fcm-root[data-host="twitch"] { --send-bg: #9146ff; }
+.fcm-root[data-host="kick"] { --send-bg: #53fc18; --send-fg: #0b1a05; --send-hover: 0.92; }
+.fcm-root[data-theme="light"][data-host="twitch"] { --send-bg: #7b35e8; }
+.fcm-root[data-theme="light"][data-host="kick"] {
+  --send-bg: #158000; --send-fg: #fff; --send-hover: 1.14;
+}
+
 .fcm-send {
   height: 28px; padding: 0 12px; flex-shrink: 0;
   border-radius: 6px; border: 1px solid transparent;
-  background: var(--accent); color: #fff;
+  background: var(--send-bg); color: var(--send-fg);
   font-family: var(--fcm-font); font-size: 12px; font-weight: 600; cursor: pointer;
 }
-.fcm-send:hover { filter: brightness(1.1); }
+.fcm-send:hover { filter: brightness(var(--send-hover)); }
 .fcm-send:disabled { opacity: 0.4; cursor: not-allowed; filter: none; }
 
 /* ── Status bar ────────────────────────────────────────────────────────────── */

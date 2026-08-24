@@ -25,8 +25,24 @@
   .meta a { color: #bf94ff; font-size: 12px; }
   /* Stands in for Twitch's chat column, matching the selector the adapter uses. */
   .chatcol { width: 340px; border-left: 1px solid #2a2a2d; background: #18181b; display: flex; flex-direction: column; }
+  .chatcol > section { flex: 1; display: flex; flex-direction: column; min-height: 0; }
   .chatcol header { height: 44px; border-bottom: 1px solid #2a2a2d; display: flex; align-items: center; justify-content: center; font-size: 12px; color: #adadb8; }
   .chatcol .msgs { flex: 1; padding: 10px; font-size: 12px; color: #6a6a75; }
+  /* Stands in for the stack Twitch draws above the message list: hype train,
+     poll, prediction, pinned message, leaderboard. */
+  .chatcol .cards:empty { display: none; }
+  .chatcol .cards .card { padding: 10px; border-bottom: 1px solid #2a2a2d; background: #1f1f23; font-size: 12px; }
+  .chatcol .cards .card b { display: block; color: #bf94ff; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; margin-bottom: 4px; }
+  .chatcol .cards .card .bar { height: 6px; border-radius: 3px; background: #3a3a3d; margin-top: 7px; overflow: hidden; }
+  .chatcol .cards .card .bar i { display: block; height: 100%; width: 62%; background: #9146ff; }
+  /* Stands in for the bits and channel-points controls at the foot of chat. */
+  .chatcol .rewards { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+  .chatcol .rewards button { margin: 0; background: #26262e; border: 1px solid #3a3a3d; border-radius: 4px; padding: 4px 8px; font-size: 11px; color: #efeff1; cursor: pointer; }
+  .chatcol .rewards button[hidden] { display: none; }
+  .chatcol .rewards .sep { color: #46464b; }
+  .fakemenu { position: fixed; z-index: 2000; background: #1f1f23; border: 1px solid #3a3a3d; border-radius: 8px; padding: 16px; width: 300px; box-shadow: 0 12px 40px rgba(0,0,0,.6); font-size: 12px; }
+  .fakemenu h3 { margin: 0 0 8px; font-size: 13px; }
+  .fakemenu p { margin: 0 0 12px; color: #adadb8; }
   .chatcol .box { border-top: 1px solid #2a2a2d; padding: 10px; }
   .chatcol .box div[contenteditable] { min-height: 34px; background: #0e0e10; border: 1px solid #3a3a3d; border-radius: 4px; padding: 8px; font-size: 12px; }
   .chatcol .box button { margin-top: 8px; background: #9146ff; color: #fff; border: 0; border-radius: 4px; padding: 6px 12px; font-size: 12px; cursor: pointer; }
@@ -50,8 +66,12 @@
       </div>
     </div>
     <div class="chatcol" data-a-target="right-column-chat-bar">
+      <!-- Twitch keeps its chat header outside the chat-room section, above the
+           card stack, and the region code depends on that: the header is not a
+           sibling of the message list, so it is never mistaken for a card. -->
+      <header>STREAM CHAT (native)</header>
       <section data-test-selector="chat-room-component-layout">
-        <header>STREAM CHAT (native)</header>
+        <div class="cards"></div>
         <div class="msgs" data-test-selector="chat-scrollable-area__message-container">
           the site's own chat sits underneath the overlay
         </div>
@@ -59,6 +79,15 @@
           <div id="native-composer" contenteditable="true" role="textbox" data-a-target="chat-input"></div>
           <button id="native-send" data-a-target="chat-send-button" disabled>Chat</button>
           <div class="sentlog">last sent: <span id="sent-log">(none)</span></div>
+          <div class="rewards" data-test-selector="community-points-summary">
+            <button id="native-balances" aria-label="Bits and Points Balances">
+              <span data-test-selector="bits-balance-string">1,250</span>
+              <span class="sep">/</span>
+              <span data-test-selector="copo-balance-string">48,930</span>
+            </button>
+            <button id="native-claim" aria-label="Claim Bonus" hidden>+50</button>
+            <button id="native-cheer" data-a-target="bits-button" aria-label="Cheer">Cheer</button>
+          </div>
         </div>
       </section>
     </div>
@@ -78,6 +107,11 @@
     <button data-act="short">chat 60% tall</button>
     <button data-act="reset-size">chat default</button>
     <button data-act="drop-selectors">drop column selectors</button>
+    <button data-act="hype">+ hype train card</button>
+    <button data-act="pinned">+ pinned card</button>
+    <button data-act="no-cards">clear cards</button>
+    <button data-act="bonus">toggle claim bonus</button>
+    <button data-act="no-rewards">toggle rewards row</button>
     <button data-act="auth-both">fake: both accounts</button>
     <button data-act="auth-none">fake: no accounts</button>
     <button data-act="long">+ long message</button>
@@ -156,6 +190,45 @@ window.composerMode = 'paste-only';
 </script>
 
 <script>
+// ── Mock rewards menu ─────────────────────────────────────────────────────────
+// Twitch draws its rewards panel and cheer menu inside the chat column, at a
+// z-index the overlay sits far above. This stands in for that, so the overlay
+// can be watched stepping aside while one is open and coming back when it goes.
+(function () {
+  let menu = null;
+  function close() {
+    if (!menu) return;
+    menu.remove();
+    menu = null;
+    document.removeEventListener('mousedown', outside, true);
+  }
+  function outside(e) { if (menu && !menu.contains(e.target)) close(); }
+  function open(title, body) {
+    close();
+    const col = document.querySelector('.chatcol').getBoundingClientRect();
+    menu = document.createElement('div');
+    menu.className = 'fakemenu';
+    menu.setAttribute('role', 'dialog');
+    menu.innerHTML = `<h3>${title}</h3><p>${body}</p><button>Close</button>`;
+    menu.style.left = `${col.left + 12}px`;
+    menu.style.top = `${col.top + 90}px`;
+    menu.style.width = `${col.width - 24}px`;
+    menu.style.height = '260px';
+    menu.querySelector('button').addEventListener('click', close);
+    document.body.appendChild(menu);
+    setTimeout(() => document.addEventListener('mousedown', outside, true), 0);
+  }
+  document.getElementById('native-balances').addEventListener('click',
+    () => open('Power-ups &amp; Rewards', 'The site draws its own reward list here.'));
+  document.getElementById('native-cheer').addEventListener('click',
+    () => open('Cheer with Bits', 'The site draws its own cheer picker here.'));
+  document.getElementById('native-claim').addEventListener('click', (e) => {
+    e.currentTarget.hidden = true;
+  });
+})();
+</script>
+
+<script>
 // ── chrome.* stubs ────────────────────────────────────────────────────────────
 const mem = { sync: {}, local: {} };
 function area(name) {
@@ -190,6 +263,7 @@ const SOURCES = [
   '/src/content/render.js',
   '/src/content/feed.js',
   '/src/content/compose.js',
+  '/src/content/native.js',
   '/src/content/overlay.js',
   '/src/content/sites.js',
 ];
@@ -317,6 +391,27 @@ function loadSources(bust) {
     'toggle-times': async () => {
       const cur = await FCM.loadSettings();
       overlay.applyStoredSettings(await FCM.saveSettings({ timestamps: !cur.timestamps }));
+    },
+    // The cards Twitch stacks above its message list. The overlay is meant to
+    // shrink out of their way, so they can be added and removed here.
+    hype: () => {
+      document.querySelector('.chatcol .cards').innerHTML =
+        '<div class="card"><b>Hype train level 3</b>1 minute left'
+        + '<div class="bar"><i></i></div></div>';
+    },
+    pinned: () => {
+      document.querySelector('.chatcol .cards').innerHTML =
+        '<div class="card"><b>Pinned by moderator</b>read the rules before chatting</div>'
+        + '<div class="card"><b>Poll</b>which map next? 41% / 59%</div>';
+    },
+    'no-cards': () => { document.querySelector('.chatcol .cards').innerHTML = ''; },
+    bonus: () => {
+      const chest = document.getElementById('native-claim');
+      chest.hidden = !chest.hidden;
+    },
+    'no-rewards': () => {
+      const row = document.querySelector('.chatcol .rewards');
+      row.style.display = row.style.display === 'none' ? '' : 'none';
     },
     'drop-selectors': () => {
       document.querySelector('[data-a-target="right-column-chat-bar"]')

@@ -5,12 +5,18 @@
 
   const GEOMETRY_KEY = 'fcm_geometry_v1';
 
+  // Ticks between full looks for one of the site's own menus while nothing has
+  // been clicked. Ten ticks is five seconds, which only has to catch a menu the
+  // site opened by itself — anything the viewer opens arms the scan directly.
+  const IDLE_SCAN_TICKS = 10;
+
   const ICONS = {
     gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
     minus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M5 12h14"/></svg>',
     plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
     close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>',
     refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>',
+    fit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>',
   };
 
   FCM.createOverlay = function (options) {
@@ -46,7 +52,21 @@
     let manualPlacement = false;
     let collapsed = false;
     let destroyed = false;
-    let nativeChatPrev = null;
+    let visible = true;
+    // Reads and drives the site's own chat: the cards above the message list,
+    // and the bits and channel-points controls below it.
+    const native = FCM.createNativeBridge(site);
+    // Set while one of the site's own menus is open where the panel would cover
+    // it — the rewards panel, the cheer menu. The panel steps aside until it
+    // closes rather than painting over a menu the user just opened.
+    let peeking = false;
+    let peekTimers = [];
+    let peekHoldUntil = 0;
+    // Until when a full look for one of the site's menus is worth doing, and how
+    // many quiet ticks have passed since the last one.
+    let dialogScanUntil = 0;
+    let idleTicks = 0;
+    let statsSignature = '';
 
     // ── DOM ───────────────────────────────────────────────────────────────────
 
@@ -57,6 +77,9 @@
 
     const root = document.createElement('div');
     root.className = 'fcm-root';
+    // Which site the panel is sitting on. It never changes for one overlay, and
+    // it is what makes Send wear the colour of the chat it posts to.
+    root.dataset.host = hostPlatform;
     shadow.appendChild(root);
 
     // The stylesheet is a web-accessible resource rather than an inline string
@@ -82,6 +105,7 @@
           <span class="fcm-brand"><span class="fcm-brand-mark"></span>Merged</span>
           <div class="fcm-chips"></div>
           <div class="fcm-actions">
+            <button class="fcm-icon-btn fcm-hidden" data-act="reset-placement" title="Reset size and position — back over the site's own chat">${ICONS.fit}</button>
             <button class="fcm-icon-btn" data-act="recheck" title="Re-check the other platform">${ICONS.refresh}</button>
             <button class="fcm-icon-btn" data-act="settings" title="Overlay settings">${ICONS.gear}</button>
             <button class="fcm-icon-btn" data-act="collapse" title="Collapse">${ICONS.minus}</button>
@@ -92,6 +116,8 @@
         <div class="fcm-prompt fcm-hidden"></div>
 
         <div class="fcm-feed"></div>
+
+        <div class="fcm-native fcm-hidden"></div>
 
         <div class="fcm-composer">
           <div class="fcm-reply fcm-hidden"></div>
@@ -127,6 +153,10 @@
     const countEl = $('.fcm-count');
     const sendNoteEl = $('.fcm-sendnote');
     const toastEl = $('.fcm-toast');
+    const nativeEl = $('.fcm-native');
+    // Held by reference: the settings sheet grows a Reset button of its own, and
+    // a selector would then be picking between two.
+    const resetBtn = $('.fcm-actions [data-act="reset-placement"]');
 
     const feed = FCM.createFeed(feedEl, () => settings);
     feed.onCount((n) => { countEl.textContent = `${n} message${n === 1 ? '' : 's'}`; });
@@ -158,6 +188,62 @@
       panel.style.height = `${Math.round(r.height)}px`;
     }
 
+    // The cards found by the last structural search, and the inset they came to.
+    let cardEls = [];
+    let lastCardInset = 0;
+
+    /**
+     * Re-runs the search for the site's cards.
+     *
+     * This is the expensive half — it walks the chat column's levels — so it
+     * runs on the 500 ms tick and nothing faster. Everything in between only
+     * re-measures the elements it found, which matters because placement is
+     * also bound to `scroll`, and on a busy channel the site's own message list
+     * scrolls on every message that arrives.
+     */
+    function refreshCards() {
+      const found = settings.revealHighlights === false ? null : native.cards();
+      const next = found ? found.elements : [];
+      const changed = next.length !== cardEls.length
+        || next.some((el, i) => el !== cardEls[i]);
+      cardEls = next;
+      // Both sites replace these nodes outright when a card starts or ends, and
+      // a fresh node inside a hidden chat is hidden with it — so the exemption
+      // has to follow the cards, not just changes to the setting.
+      if (changed) applyNativeChatVisibility();
+      return changed;
+    }
+
+    /**
+     * How much of the chat column's top to leave to the site itself.
+     *
+     * Twitch and Kick both stack their live cards there — hype train, poll,
+     * prediction, pinned message, the bits leaderboard — and the overlay used
+     * to sit straight over them. Measuring the block and starting below it hands
+     * that strip back, so the real card is visible and still fully interactive,
+     * which no copy of it inside the overlay could be.
+     *
+     * The result is capped: a tall card must not squeeze the feed out entirely.
+     */
+    function cardInsetFor(columnRect) {
+      if (settings.revealHighlights === false) { lastCardInset = 0; return 0; }
+      if (!cardEls.length) { lastCardInset = 0; return 0; }
+      let bottom = -Infinity;
+      for (const el of cardEls) {
+        // A card the site has just swapped out measures nothing useful. Holding
+        // the last inset keeps the panel still until the next tick re-finds
+        // them, rather than snapping to the top and back down again.
+        if (!el.isConnected) return lastCardInset;
+        const r = el.getBoundingClientRect();
+        if (r.height >= 6) bottom = Math.max(bottom, r.bottom);
+      }
+      const gap = bottom === -Infinity ? 0 : bottom - columnRect.top;
+      lastCardInset = gap <= 2
+        ? 0
+        : Math.min(Math.round(gap), Math.round(columnRect.height * 0.45));
+      return lastCardInset;
+    }
+
     function syncPlacement() {
       if (destroyed || manualPlacement) return;
       const target = site.chatContainer();
@@ -170,15 +256,21 @@
       if (r.width < 80 || r.height < 60) { dockRight(); return; }
 
       // The panel is border-box, so these are exactly the chat's own outer
-      // width and height — no insets, no padding of our own.
-      lastGoodRect = { left: r.left, top: r.top, width: r.width, height: r.height };
+      // width and height, less whatever is being left to the site's own card.
+      const inset = cardInsetFor(r);
+      lastGoodRect = {
+        left: r.left,
+        top: r.top + inset,
+        width: r.width,
+        height: r.height - inset,
+      };
       observeTarget(target);
       // While collapsed the panel is auto-height, so only track position and
       // width; the full height is restored when it expands again.
       if (collapsed) {
-        panel.style.left = `${Math.round(r.left)}px`;
-        panel.style.top = `${Math.round(r.top)}px`;
-        panel.style.width = `${Math.round(r.width)}px`;
+        panel.style.left = `${Math.round(lastGoodRect.left)}px`;
+        panel.style.top = `${Math.round(lastGoodRect.top)}px`;
+        panel.style.width = `${Math.round(lastGoodRect.width)}px`;
         return;
       }
       applyRect(lastGoodRect);
@@ -200,14 +292,211 @@
       observedTarget = target;
     }
 
-    function watchPlacement() {
+    function tick() {
+      refreshCards();
       syncPlacement();
+      syncPeek();
+      renderNativeBar();
+    }
+
+    function watchPlacement() {
+      tick();
       window.addEventListener('resize', syncPlacement, { passive: true });
       window.addEventListener('scroll', syncPlacement, { passive: true, capture: true });
       // Twitch's own chat-width drag handle, sidebar collapses and ad breaks all
       // move the column without firing anything we can hook, so a poll backs the
-      // observer up.
-      placementTimer = setInterval(syncPlacement, 500);
+      // observer up. The same tick re-reads the balances and notices one of the
+      // site's own menus opening.
+      placementTimer = setInterval(tick, 500);
+      // Half a second is fine for layout and far too slow for a menu the user
+      // just clicked open, so input on the page brings the next few checks
+      // forward rather than raising the poll rate for everything.
+      document.addEventListener('click', schedulePeekCheck, true);
+      // A keystroke rarely opens a menu, and this fires for every character
+      // typed into the site's own chat box, so it only arms the next tick's
+      // scan rather than scheduling checks of its own.
+      document.addEventListener('keydown', armDialogScan, true);
+    }
+
+    // ── Standing aside for the site's own menus ───────────────────────────────
+
+    function clearPeekTimers() {
+      peekTimers.forEach(clearTimeout);
+      peekTimers = [];
+    }
+
+    function schedulePeekCheck() {
+      if (destroyed) return;
+      armDialogScan();
+      clearPeekTimers();
+      peekTimers = [80, 260, 600].map((ms) => setTimeout(() => {
+        if (!destroyed) syncPeek();
+      }, ms));
+    }
+
+    // Looking for a menu means a document-wide query, which on Twitch costs
+    // more than everything else on the tick put together. A menu can only
+    // appear because the viewer did something, so the scan is armed by input
+    // instead of run every time.
+    function armDialogScan() {
+      dialogScanUntil = Date.now() + 1500;
+    }
+
+    /**
+     * Twitch draws its rewards panel and its cheer menu inside the chat column,
+     * at a z-index the overlay sits far above, so a menu the user opens would
+     * otherwise be painted straight over. While one is open the panel steps
+     * aside and stops taking clicks, and comes back the moment the menu closes.
+     */
+    function syncPeek() {
+      if (destroyed) return;
+
+      // While a menu is open the question is only whether that one is still
+      // there, which costs a rect rather than a search of the document.
+      if (peeking) {
+        if (native.dialogStillOpen()) return;
+        if (Date.now() < peekHoldUntil) return;
+        setPeek(false);
+        return;
+      }
+
+      // Idle, the scan is skipped entirely bar a slow backstop, so a menu the
+      // site opens by itself is still noticed eventually.
+      if (Date.now() >= dialogScanUntil && ++idleTicks < IDLE_SCAN_TICKS) return;
+      idleTicks = 0;
+
+      const box = visible && !panel.classList.contains('fcm-hidden')
+        ? panel.getBoundingClientRect()
+        : null;
+      if (native.dialogOver(box)) setPeek(true);
+    }
+
+    function setPeek(next) {
+      if (peeking === next) return;
+      peeking = next;
+      panel.classList.toggle('fcm-peek', peeking);
+      // The site's own chat has to be on screen for its own menu to be, so the
+      // "hide the site's chat" setting stands down for as long as one is open.
+      applyNativeChatVisibility();
+    }
+
+    // ── Bits, Kicks and channel points ────────────────────────────────────────
+
+    const NATIVE_LABELS = {
+      twitch: { points: 'Channel points', bits: 'Bits', menu: 'Rewards' },
+      kick: { points: 'Rewards', bits: 'Kicks', menu: 'Rewards' },
+    };
+
+    function nativeChip(kind, key, value, title) {
+      const btn = document.createElement('button');
+      btn.className = 'fcm-native-chip';
+      btn.dataset.kind = kind;
+      btn.title = title;
+
+      const label = document.createElement('span');
+      label.className = 'fcm-native-key';
+      label.textContent = key;
+      btn.appendChild(label);
+
+      if (value) {
+        const val = document.createElement('span');
+        val.className = 'fcm-native-val';
+        val.textContent = value;
+        btn.appendChild(val);
+      }
+
+      btn.addEventListener('click', () => openNative(kind));
+      nativeEl.appendChild(btn);
+    }
+
+    /**
+     * The balances the site is showing at the foot of its own chat, lifted into
+     * the overlay that covers them.
+     *
+     * The numbers are read straight off the page rather than fetched: they are
+     * the ones the account signed in here can actually spend, which is the only
+     * balance worth showing, and reading them needs no token and no scope.
+     */
+    function renderNativeBar() {
+      if (destroyed) return;
+      // Nothing of the bar is on screen, so nothing needs reading. What is
+      // already rendered still matches the signature that built it, so whenever
+      // the panel comes back a changed balance rebuilds it on the next tick and
+      // an unchanged one correctly does nothing.
+      if (!visible || collapsed) return;
+      const stats = settings.showNativeStats === false ? null : native.stats();
+      const signature = stats
+        ? `${stats.points}|${stats.bits}|${stats.canClaim}|${stats.hasMenu}`
+        : 'off';
+      if (signature === statsSignature) return;
+      statsSignature = signature;
+
+      const show = !!stats && !!(stats.points || stats.bits || stats.canClaim || stats.hasMenu);
+      nativeEl.classList.toggle('fcm-hidden', !show);
+      nativeEl.replaceChildren();
+      if (!show) return;
+
+      const meta = FCM.PLATFORM_META[hostPlatform];
+      const labels = NATIVE_LABELS[hostPlatform] || NATIVE_LABELS.twitch;
+      nativeEl.dataset.platform = hostPlatform;
+
+      if (stats.points) {
+        nativeChip('points', labels.points, stats.points,
+          `${stats.points} ${labels.points.toLowerCase()} — click to open ${meta.name}'s own rewards menu`);
+      }
+      if (stats.bits) {
+        nativeChip('bits', labels.bits, stats.bits,
+          `${stats.bits} ${labels.bits} — click to open ${meta.name}'s own cheer menu`);
+      }
+      // Nothing legible to read, but the site does have a way in. Better a door
+      // than a blank row.
+      if (!stats.points && !stats.bits && stats.hasMenu) {
+        nativeChip('points', labels.menu, '', `Open ${meta.name}'s own rewards menu`);
+      }
+      if (stats.canClaim) {
+        const claim = document.createElement('button');
+        claim.className = 'fcm-native-chip fcm-native-claim';
+        claim.dataset.kind = 'claim';
+        claim.textContent = 'Claim bonus';
+        claim.title = `${meta.name} has a bonus waiting — click to claim it`;
+        claim.addEventListener('click', () => openNative('claim'));
+        nativeEl.appendChild(claim);
+      }
+    }
+
+    /**
+     * Hands the click to the site's own control.
+     *
+     * The overlay never spends anything itself. It holds no token that could,
+     * and the redemption rules — which reward costs what, which are paused,
+     * which need text typed in — belong to the platform. So the site's own menu
+     * is opened, over its own chat, and the panel steps aside while it is up.
+     */
+    function openNative(kind) {
+      const meta = FCM.PLATFORM_META[hostPlatform];
+      if (kind === 'claim') {
+        // A bonus is a single click with no menu behind it, so there is nothing
+        // to stand aside for.
+        toast(native.activate('claim')
+          ? `Claimed the ${meta.name} bonus`
+          : 'That bonus is no longer there');
+        statsSignature = '';
+        return;
+      }
+      // The site's own chat has to be on screen before its menu will draw, so
+      // the panel steps aside first and the click follows. Both happen in the
+      // same task deliberately: the un-hide is a synchronous style change, and
+      // waiting a frame for it would strand the panel invisible on a tab the
+      // browser has stopped animating.
+      peekHoldUntil = Date.now() + 900;
+      setPeek(true);
+      if (!native.activate(kind)) {
+        peekHoldUntil = 0;
+        setPeek(false);
+        toast(`${meta.name} is not showing that control on this page`);
+        return;
+      }
+      schedulePeekCheck();
     }
 
     async function loadGeometry() {
@@ -222,6 +511,36 @@
           panel.style.height = `${geo.height}px`;
         }
       } catch (e) { /* fall back to auto placement */ }
+      refreshResetButton();
+    }
+
+    // The reset button is only there once there is something to reset. An
+    // overlay still tracking the chat column has nothing to go back to, and a
+    // button that does nothing is worse than no button.
+    function refreshResetButton() {
+      resetBtn.classList.toggle('fcm-hidden', !manualPlacement);
+    }
+
+    /**
+     * Puts the panel back over the site's own chat, at the size the chat column
+     * is now — which is where it started and what it is sized to by default.
+     *
+     * A dragged or resized panel is remembered per platform and survives
+     * reloads, so without a way back a mis-drag is permanent.
+     */
+    function resetPlacement() {
+      const wasManual = manualPlacement;
+      manualPlacement = false;
+      saveGeometry();
+      refreshResetButton();
+      syncPlacement();
+      // A sync that cannot find the chat holds the last good box rather than
+      // re-applying it, so without this a reset while the column is mid-render
+      // would leave the dragged size sitting there.
+      if (lastGoodRect && !collapsed) applyRect(lastGoodRect);
+      toast(wasManual
+        ? 'Reset to the size and position it started at'
+        : 'Already sized to the site’s own chat');
     }
 
     async function saveGeometry() {
@@ -255,7 +574,11 @@
         const move = (ev) => {
           const dx = ev.clientX - start.x;
           const dy = ev.clientY - start.y;
-          manualPlacement = true;
+          if (!manualPlacement) {
+            manualPlacement = true;
+            // The way back appears the moment the panel stops tracking the chat.
+            refreshResetButton();
+          }
           if (mode === 'move') {
             panel.style.left = `${Math.max(0, Math.min(window.innerWidth - 80, start.left + dx))}px`;
             panel.style.top = `${Math.max(0, Math.min(window.innerHeight - 40, start.top + dy))}px`;
@@ -287,13 +610,11 @@
         if (e.target.closest('button')) return;
         drag(e, 'move');
       });
-      // Double-clicking the header snaps the panel back over the native chat.
+      // Double-clicking the header is the same reset as the header button, kept
+      // because it is the quicker one once you know it is there.
       header.addEventListener('dblclick', (e) => {
         if (e.target.closest('button')) return;
-        manualPlacement = false;
-        saveGeometry();
-        syncPlacement();
-        toast('Snapped back over the native chat');
+        resetPlacement();
       });
       grip.addEventListener('mousedown', (e) => drag(e, 'height'));
       corner.addEventListener('mousedown', (e) => { e.stopPropagation(); drag(e, 'width'); });
@@ -545,6 +866,18 @@
             <input type="checkbox" data-set="hideNativeChat">
           </div>
           <div class="fcm-field">
+            <label>Leave room for ${FCM.escapeHtml(FCM.PLATFORM_META[hostPlatform].name)}'s cards
+              <small>Hype trains, polls, predictions and pinned messages stay visible above the panel</small>
+            </label>
+            <input type="checkbox" data-set="revealHighlights">
+          </div>
+          <div class="fcm-field">
+            <label>Show bits and channel points
+              <small>Read from this page, and clicking one opens ${FCM.escapeHtml(FCM.PLATFORM_META[hostPlatform].name)}'s own menu</small>
+            </label>
+            <input type="checkbox" data-set="showNativeStats">
+          </div>
+          <div class="fcm-field">
             <label>Theme<small>Follows the site's own dark or light mode</small></label>
             <select data-set="theme">
               <option value="auto">Match this site</option>
@@ -559,6 +892,13 @@
           <div class="fcm-field">
             <label>Text size</label>
             <input type="number" min="10" max="22" step="1" data-set="fontSize">
+          </div>
+          <div class="fcm-field">
+            <label>Size and position
+              <small>Puts a dragged or resized panel back over the site's own chat, at the size it
+                first opened at. Double-clicking the title bar does the same.</small>
+            </label>
+            <button class="fcm-btn" data-act="reset-placement">Reset</button>
           </div>
 
           <div class="fcm-section-title">Feed</div>
@@ -635,6 +975,7 @@
       });
 
       sheet.querySelector('[data-act="close-sheet"]').addEventListener('click', closeSheet);
+      sheet.querySelector('[data-act="reset-placement"]').addEventListener('click', resetPlacement);
       sheet.querySelector('[data-act="save-link"]').addEventListener('click', () => {
         const value = FCM.normalizeChannel(sheet.querySelector('[data-link-input]').value);
         onCommand({ cmd: 'setLink', target: value });
@@ -667,6 +1008,12 @@
       renderPrompt();
       renderTargets();
       refreshSendNote();
+      // Both of these can be switched off, so the bar and the reserved strip
+      // have to be rebuilt rather than left as they were.
+      statsSignature = '';
+      refreshCards();
+      renderNativeBar();
+      syncPlacement();
     }
 
     // 'auto' mirrors the host page, so the overlay never looks like a light
@@ -679,16 +1026,15 @@
       root.dataset.theme = theme;
     }
 
+    // Hiding the site's own chat is about what shows through a panel that is
+    // never quite opaque. The cards above the message list are the exception:
+    // they are the whole point of the reveal, so they stay visible while the
+    // rest of the site's chat is hidden. Everything comes back while one of the
+    // site's own menus is open over it, and while the panel is closed — an
+    // empty chat column would be worse than the duplicate it was hiding.
     function applyNativeChatVisibility() {
-      const body = site.nativeChatBody();
-      if (!body) return;
-      if (settings.hideNativeChat && !collapsed) {
-        if (nativeChatPrev === null) nativeChatPrev = body.style.visibility || '';
-        body.style.visibility = 'hidden';
-      } else if (nativeChatPrev !== null) {
-        body.style.visibility = nativeChatPrev;
-        nativeChatPrev = null;
-      }
+      const hide = !!settings.hideNativeChat && !collapsed && visible && !peeking;
+      native.setNativeHidden(hide, settings.revealHighlights === false ? [] : cardEls);
     }
 
     // ── Misc UI ───────────────────────────────────────────────────────────────
@@ -714,9 +1060,13 @@
     }
 
     function setVisible(next) {
+      visible = next;
       panel.classList.toggle('fcm-hidden', !next);
       launcher.classList.toggle('fcm-hidden', next);
       if (!next) {
+        // Nothing of ours is on screen to be covered, so nothing is standing
+        // aside for the site's menus either.
+        setPeek(false);
         // Park the launcher where the panel was, so it is easy to find again.
         const left = panel.style.left;
         const top = panel.style.top;
@@ -1025,6 +1375,7 @@
         if (act === 'collapse') setCollapsed(!collapsed);
         else if (act === 'close') setVisible(false);
         else if (act === 'settings') openSheet();
+        else if (act === 'reset-placement') resetPlacement();
         else if (act === 'recheck') { onCommand({ cmd: 'recheck' }); toast('Re-checking the other platform…'); }
       });
     });
@@ -1052,9 +1403,15 @@
     const api = {
       async mount() {
         settings = await FCM.loadSettings();
+        // destroy() can land while either of these reads is outstanding, which
+        // is exactly what a channel switch does. Carrying on would put a host
+        // nobody owns into the page, and start a poll and page listeners that
+        // nothing is left holding a reference to remove.
+        if (destroyed) return api;
         FCM.setViewSettings(settings);
         document.documentElement.appendChild(host);
         await loadGeometry();
+        if (destroyed) { host.remove(); return api; }
         applySettings(settings);
         renderChips();
         renderTargets();
@@ -1091,16 +1448,18 @@
         if (compose) compose.closeAll();
         pendingSends.clear();
         clearInterval(placementTimer);
+        clearPeekTimers();
         window.removeEventListener('resize', syncPlacement);
         window.removeEventListener('scroll', syncPlacement, true);
+        document.removeEventListener('click', schedulePeekCheck, true);
+        document.removeEventListener('keydown', armDialogScan, true);
         if (resizeObserver) resizeObserver.disconnect();
         if (themeWatcher) { themeWatcher.stop(); themeWatcher = null; }
         if (endDrag) endDrag();
-        if (nativeChatPrev !== null) {
-          const body = site.nativeChatBody();
-          if (body) body.style.visibility = nativeChatPrev;
-          nativeChatPrev = null;
-        }
+        // Every card forced back into view and the site's own chat itself go
+        // back the way they were found, so hopping channels does not leave the
+        // page with inline styles the overlay put there.
+        native.release();
         host.remove();
       },
 

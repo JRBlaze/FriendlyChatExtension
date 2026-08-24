@@ -940,6 +940,277 @@ suites.theme = function () {
     'theme: hyphenated markers still resolve sensibly');
 };
 
+suites.native = function () {
+  // A fake page just detailed enough for the region code: boxes, parents and
+  // children. Every rect is [top, height]; width and left are fixed, because
+  // nothing here turns on them beyond "is this a real element".
+  function el({ rect = [0, 0], text = '', attrs = {}, kids = [] } = {}) {
+    const node = {
+      children: [],
+      parentElement: null,
+      style: {},
+      textContent: text,
+      // Real nodes carry this, and both the card cache and the cheap menu check
+      // read it to tell "still in the page" from "swapped out by a re-render".
+      isConnected: true,
+      clicks: 0,
+      getAttribute: (k) => (k in attrs ? attrs[k] : null),
+      getBoundingClientRect() {
+        const [top, height] = this.rect;
+        return { top, height, bottom: top + height, left: 900, right: 1240, width: 340 };
+      },
+      click() { this.clicks++; },
+    };
+    node.rect = rect;
+    kids.forEach((k) => { k.parentElement = node; node.children.push(k); });
+    return node;
+  }
+
+  function page(root, dialogs = []) {
+    const body = el({ rect: [0, 900], kids: [root] });
+    const html = el({ rect: [0, 900], kids: [body] });
+    return {
+      document: {
+        body,
+        documentElement: html,
+        querySelectorAll: () => dialogs,
+      },
+    };
+  }
+
+  function bridgeFor(doc, site) {
+    const sandbox = makeSandbox({ ...doc, window: {} });
+    const FCM = load(sandbox, ...SHARED, 'src/content/native.js');
+    return { FCM, bridge: FCM.createNativeBridge(site) };
+  }
+
+  // ── Splitting the message list's own siblings ───────────────────────────────
+
+  // Twitch's shape: the cards sit above the list, the composer below it, and an
+  // absolutely-positioned viewer-card layer covers the lot. The list itself is
+  // three wrappers deep, so the search has to climb to reach the level where
+  // the siblings that matter actually live.
+  const card = el({ rect: [262, 69] });
+  const spacer = el({ rect: [331, 0] });
+  const container = el({ rect: [331, 40] });
+  const scroller = el({ rect: [331, 141], kids: [container] });
+  const listWrap = el({ rect: [331, 141], kids: [scroller] });
+  const notifications = el({ rect: [262, 0] });
+  const input = el({ rect: [472, 191] });
+  const viewerCard = el({ rect: [262, 401] });
+  const content = el({
+    rect: [262, 401],
+    kids: [card, spacer, listWrap, notifications, input, viewerCard],
+  });
+
+  const tw = bridgeFor(page(content), {});
+  const split = tw.FCM.splitChatSiblings(container);
+
+  eq(split.above.length, 1, 'native: one card above the message list');
+  ok(split.above[0] === card, 'native: the card above is the highlight stack');
+  eq(split.below.length, 1, 'native: one element below the message list');
+  ok(split.below[0] === input, 'native: the element below is the composer');
+
+  // Everything the split deliberately leaves out.
+  ok(!split.above.includes(spacer), 'native: a zero-height sibling is not a card');
+  ok(!split.below.includes(notifications), 'native: an empty notifications slot is not a bar');
+  ok(!split.above.includes(viewerCard) && !split.below.includes(viewerCard),
+    'native: a layer overlapping the messages is neither above nor below');
+
+  // Kick's shape: nothing qualifies at the list's own level, and the footer is
+  // one further up.
+  const kickPin = el({ rect: [110, 0] });
+  const kickMessages = el({ rect: [110, 496] });
+  const kickOverlay = el({ rect: [110, 12] });
+  const kickWrap = el({ rect: [110, 496], kids: [kickOverlay, kickMessages] });
+  const kickFooter = el({ rect: [606, 114] });
+  const kickCol = el({ rect: [60, 660], kids: [kickPin, kickWrap, kickFooter] });
+  const kickSplit = bridgeFor(page(kickCol), {}).FCM.splitChatSiblings(kickMessages);
+  eq(kickSplit.above.length, 0, 'native: an empty pinned slot leaves nothing above');
+  ok(kickSplit.below[0] === kickFooter, 'native: the climb reaches the footer a level up');
+
+  // The same page once a pinned message arrives.
+  kickPin.rect = [110, 54];
+  kickWrap.rect = [164, 442];
+  kickMessages.rect = [164, 442];
+  kickOverlay.rect = [164, 12];
+  const kickPinned = bridgeFor(page(kickCol), {}).FCM.splitChatSiblings(kickMessages);
+  ok(kickPinned.above[0] === kickPin, 'native: a pinned message is found once it has height');
+
+  // A message list with no siblings anywhere around it.
+  const lonely = el({ rect: [100, 300] });
+  const lonelyWrap = el({ rect: [100, 300], kids: [lonely] });
+  const lonelySplit = bridgeFor(page(lonelyWrap), {}).FCM.splitChatSiblings(lonely);
+  eq(lonelySplit.above.length, 0, 'native: nothing above means nothing to reveal');
+  eq(lonelySplit.below.length, 0, 'native: nothing below either');
+
+  // ── The card block as one box ───────────────────────────────────────────────
+
+  const second = el({ rect: [200, 62] });
+  const stacked = el({ rect: [200, 500], kids: [card, second, listWrap, input] });
+  const stackedBridge = bridgeFor(page(stacked), { messageList: () => container }).bridge;
+  const cards = stackedBridge.cards();
+  eq(cards.top, 200, 'native: the card block starts at the topmost card');
+  eq(cards.bottom, 331, 'native: and ends at the lowest');
+  eq(cards.height, 131, 'native: which is the strip to leave to the site');
+  eq(cards.elements.length, 2, 'native: both cards are kept, to be shown through');
+
+  ok(bridgeFor(page(lonelyWrap), { messageList: () => lonely }).bridge.cards() === null,
+    'native: no cards means no inset');
+  ok(bridgeFor(page(content), { messageList: () => null }).bridge.cards() === null,
+    'native: a chat whose message list cannot be found asks for nothing');
+
+  // ── Balances ────────────────────────────────────────────────────────────────
+
+  const FCM = bridgeFor(page(content), {}).FCM;
+  const read = (spec) => FCM.readNativeBalance(el(spec));
+  eq(read({ text: '12,480' }), '12,480', 'native: a plain balance is taken as it is');
+  eq(read({ text: '12.4K' }), '12.4K', 'native: an abbreviated balance survives');
+  eq(read({ text: ' 350 ' }), '350', 'native: surrounding whitespace is dropped');
+  eq(read({ text: 'Kicks 350' }), '350', 'native: a number inside a label is found');
+  eq(read({ text: '', attrs: { 'aria-label': 'Channel Points Balance: 1,234' } }), '1,234',
+    'native: the accessible name is read when the node has no text of its own');
+  eq(read({ text: 'Bits and Points Balances' }), '',
+    'native: a control with no number reports no balance');
+  eq(FCM.readNativeBalance(null), '', 'native: a missing control reports no balance');
+
+  // ── Driving the site's own controls ─────────────────────────────────────────
+
+  function controlPage({ claim = true } = {}) {
+    const points = el({ rect: [620, 32], text: '4,201' });
+    const bits = el({ rect: [620, 32], text: '350' });
+    const open = el({ rect: [620, 32], attrs: { 'aria-label': 'Bits and Points Balances' } });
+    const cheer = el({ rect: [580, 32], attrs: { 'aria-label': 'Cheer' } });
+    const chest = el({ rect: claim ? [620, 32] : [0, 0] });
+    const body = el({ rect: [262, 401] });
+    const site = {
+      messageList: () => container,
+      nativeChatBody: () => body,
+      nativeControls: () => ({
+        pointsValue: points, bitsValue: bits, openBalances: open, cheer, claim: chest,
+      }),
+    };
+    return { site, points, bits, open, cheer, chest, body };
+  }
+
+  const withClaim = controlPage();
+  const cb = bridgeFor(page(content), withClaim.site).bridge;
+  eq(cb.stats(), { points: '4,201', bits: '350', canClaim: true, hasMenu: true },
+    'native: both balances and a waiting bonus are reported');
+
+  ok(cb.activate('points'), 'native: the rewards control is there to click');
+  eq(withClaim.open.clicks, 1, 'native: and the click goes to the site’s own button');
+  ok(cb.activate('bits'), 'native: the cheer control is there to click');
+  eq(withClaim.cheer.clicks, 1, 'native: and that click goes to the cheer button');
+  ok(cb.activate('claim'), 'native: the bonus is there to claim');
+  eq(withClaim.chest.clicks, 1, 'native: and that click goes to the chest');
+
+  const noClaim = controlPage({ claim: false });
+  const nb = bridgeFor(page(content), noClaim.site).bridge;
+  eq(nb.stats().canClaim, false, 'native: an unrendered chest is no bonus');
+  ok(!nb.activate('claim'), 'native: and claiming it is refused rather than sent nowhere');
+  eq(noClaim.chest.clicks, 0, 'native: a control that is not on screen is never clicked');
+
+  const bare = bridgeFor(page(content), { messageList: () => container }).bridge;
+  eq(bare.stats(), { points: '', bits: '', canClaim: false, hasMenu: false },
+    'native: a site with no controls of its own reports nothing');
+  ok(!bare.activate('points'), 'native: and offers nothing to click');
+
+  // A site adapter that throws must not take the overlay down with it.
+  const angry = bridgeFor(page(content), {
+    messageList: () => container,
+    nativeControls: () => { throw new Error('selectors moved'); },
+  }).bridge;
+  eq(angry.stats(), { points: '', bits: '', canClaim: false, hasMenu: false },
+    'native: a throwing adapter reads as no controls');
+
+  // ── Hiding the site's chat without hiding its cards ─────────────────────────
+
+  const vis = controlPage();
+  const visBridge = bridgeFor(page(stacked), { ...vis.site, messageList: () => container }).bridge;
+
+  const block = visBridge.cards().elements;
+  visBridge.setNativeHidden(true, block);
+  eq(vis.body.style.visibility, 'hidden', 'native: the site’s own chat is hidden');
+  eq(card.style.visibility, 'visible', 'native: but its cards are forced back into view');
+  eq(second.style.visibility, 'visible', 'native: every card in the block, not only the first');
+
+  visBridge.setNativeHidden(true, []);
+  eq(vis.body.style.visibility, 'hidden', 'native: the chat stays hidden with the reveal off');
+  eq(card.style.visibility, '', 'native: and the cards go back to being hidden with it');
+
+  // A card the site swapped out is released and the new one takes over, which
+  // is what keeps a hype train that starts mid-stream from staying hidden.
+  visBridge.setNativeHidden(true, block);
+  visBridge.setNativeHidden(true, [second]);
+  eq(card.style.visibility, '', 'native: a card no longer in the block stops being forced');
+  eq(second.style.visibility, 'visible', 'native: and the one still there stays forced');
+
+  visBridge.setNativeHidden(true, block);
+  visBridge.setNativeHidden(false, block);
+  eq(vis.body.style.visibility, '', 'native: showing the chat again clears the override');
+  eq(card.style.visibility, '', 'native: and the cards stop being forced');
+
+  visBridge.setNativeHidden(true, block);
+  visBridge.release();
+  eq(vis.body.style.visibility, '', 'native: release puts the chat back');
+  eq(card.style.visibility, '', 'native: and every card it touched');
+
+  // ── Standing aside for the site's own menus ─────────────────────────────────
+
+  const box = { left: 900, right: 1240, top: 260, bottom: 660 };
+  const furniture = el({ rect: [200, 400] });
+  const menu = el({ rect: [300, 300] });
+  const tooltip = el({ rect: [300, 20] });
+  const elsewhere = el({ rect: [1000, 300] });
+
+  // Anything already on screen when the overlay mounts is the page's own
+  // furniture. Treating it as a menu would leave the panel invisible for good.
+  const seeded = bridgeFor(page(content, [furniture]), {}).bridge;
+  ok(seeded.dialogOver(box) === null, 'native: a popup present at mount never triggers a peek');
+
+  const menus = [];
+  const watcher = bridgeFor(page(content, menus), {}).bridge;
+  ok(watcher.dialogOver(box) === null, 'native: nothing open, nothing to stand aside for');
+
+  menus.push(tooltip);
+  ok(watcher.dialogOver(box) === null, 'native: a tooltip-sized popup is not worth hiding for');
+
+  menus.push(elsewhere);
+  ok(watcher.dialogOver(box) === null, 'native: a menu that misses the panel is left alone');
+
+  menus.push(menu);
+  ok(watcher.dialogOver(box) === menu, 'native: a menu over the panel is found');
+  ok(watcher.dialogOver(null) === null, 'native: a closed panel covers nothing');
+
+  menus.length = 0;
+  ok(watcher.dialogOver(box) === null, 'native: closing the menu ends the peek');
+
+  // The cheap check used while a menu is open, which is what keeps the tick off
+  // a document-wide query for as long as one is up.
+  const live = [];
+  const cheap = bridgeFor(page(content, live), {}).bridge;
+  eq(cheap.dialogStillOpen(), false, 'native: nothing open, nothing to stay aside for');
+
+  const openMenu = el({ rect: [300, 300] });
+  openMenu.parentElement = content;
+  live.push(openMenu);
+  ok(cheap.dialogOver(box) === openMenu, 'native: the menu is found by the full scan');
+  eq(cheap.dialogStillOpen(), true, 'native: and the cheap check agrees it is still up');
+
+  openMenu.rect = [300, 10];
+  eq(cheap.dialogStillOpen(), false, 'native: a menu collapsed to nothing counts as closed');
+  eq(cheap.dialogStillOpen(), false, 'native: and stays closed once let go of');
+
+  // A menu the site removes outright, which is the usual way one closes.
+  const removed = el({ rect: [300, 300] });
+  live.length = 0;
+  live.push(removed);
+  ok(cheap.dialogOver(box) === removed, 'native: the replacement menu is found');
+  removed.isConnected = false;
+  eq(cheap.dialogStillOpen(), false, 'native: a menu taken out of the page counts as closed');
+};
+
 suites.auth = function () {
   function build({ redirect, launchError, tokenResponse, configResponse } = {}) {
     const store = {};
@@ -2046,7 +2317,7 @@ suites.feed = function () {
 // apps, so this is a URL change rather than a page load, and everything from
 // the channel being left has to stop before the new one starts.
 suites.navigation = function () {
-  function boot(startPath) {
+  function boot(startPath, options = {}) {
     const ports = [];
     const timers = { intervals: [], timeouts: [] };
     const location = {
@@ -2097,12 +2368,19 @@ suites.navigation = function () {
 
     // A stand-in overlay: boot only needs it to mount, take messages and go away.
     const overlays = [];
+    // Mounting is genuinely asynchronous — it reads settings and geometry out of
+    // chrome.storage — so a navigation can overtake one that is still in flight.
+    // With slowMount the test decides when each mount finishes, which is what
+    // makes that window reproducible instead of a matter of luck.
+    const gates = [];
     FCM.createOverlay = (opts) => {
       const o = {
         channel: opts.channel,
         destroyed: false,
         statuses: [],
-        mount: async () => o,
+        mount: () => (options.slowMount
+          ? new Promise((resolve) => { gates.push(() => resolve(o)); })
+          : Promise.resolve(o)),
         destroy() { o.destroyed = true; },
         sys() {}, event() {}, chat() {}, batch() {}, setEmotes() {}, setBadges() {},
         deleteMessage() {}, deleteUser() {}, setCounterpart() {}, setAccounts() {},
@@ -2119,13 +2397,20 @@ suites.navigation = function () {
     const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
 
     return {
-      FCM, ports, overlays, timers, location, flush,
+      FCM, ports, overlays, timers, location, flush, gates,
       // The SPA nav poll boot installs.
       async navigateTo(pathname) {
         location.pathname = pathname;
         timers.intervals.filter((t) => t.ms === 600).forEach((t) => t.fn());
         await flush();
       },
+      // The same poll, without waiting for what it starts to finish — so a
+      // second navigation can be fired while the first is still mounting.
+      navigateNow(pathname) {
+        location.pathname = pathname;
+        timers.intervals.filter((t) => t.ms === 600).forEach((t) => t.fn());
+      },
+      releaseMount(i) { if (gates[i]) gates[i](); },
       live() { return ports.filter((p) => !p.disconnected); },
       joinsFor(port) { return port.sent.filter((m) => m.cmd === 'join').map((m) => m.channel); },
       allJoins() { return ports.flatMap((p) => p.sent.filter((m) => m.cmd === 'join').map((m) => m.channel)); },
@@ -2225,6 +2510,52 @@ suites.navigation = function () {
       await t.navigateTo('/echo');
       eq(t.live().length, 1, 'nav: returning to a channel opens one port');
       eq(t.hellos().slice(-1)[0], 'echo', 'nav: and announces that channel');
+    }
+
+    // ── A navigation that overtakes one still mounting ──
+    //
+    // mount() reads settings and geometry out of chrome.storage, so it takes
+    // real milliseconds, and a second navigation lands inside that window. Both
+    // halves have to be right: the overlay left behind is the one that call
+    // built, not whatever the module variable points at by the time it resumes.
+    {
+      const t = boot('/alpha', { slowMount: true });
+      await t.flush();
+      eq(t.overlays.length, 1, 'nav: the first overlay is created');
+
+      t.navigateNow('/bravo');
+      await t.flush();
+      eq(t.overlays.length, 2, 'nav: the second is created while the first is still mounting');
+
+      // The overtaken mount finishes first, then the one that owns the page.
+      t.releaseMount(0);
+      await t.flush();
+      t.releaseMount(1);
+      await t.flush();
+
+      const alive = t.overlays.filter((o) => !o.destroyed);
+      eq(alive.length, 1, 'nav: an overtaken mount leaves exactly one overlay alive');
+      eq(alive.length === 1 ? alive[0].channel : null, 'bravo',
+        'nav: and it is the channel actually on screen, not the one that was overtaken');
+      eq(t.overlays[0].destroyed, true, 'nav: the overtaken overlay is the one torn down');
+    }
+
+    // ── Three navigations stacked inside each other ──
+    {
+      const t = boot('/alpha', { slowMount: true });
+      await t.flush();
+      t.navigateNow('/bravo');
+      await t.flush();
+      t.navigateNow('/charlie');
+      await t.flush();
+      eq(t.overlays.length, 3, 'nav: one overlay per navigation');
+
+      [0, 1, 2].forEach((i) => t.releaseMount(i));
+      await t.flush();
+
+      const alive = t.overlays.filter((o) => !o.destroyed);
+      eq(alive.length, 1, 'nav: stacked mounts still settle on one overlay');
+      eq(alive.length === 1 ? alive[0].channel : null, 'charlie', 'nav: the last one wins');
     }
 
     // ── Navigating to the same channel again is a no-op ──
