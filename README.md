@@ -243,9 +243,14 @@ as the desktop app, so the Connect button works as shipped.
 
 It talks to the same worker
 (`https://friendly-chat-kick-proxy.jrblaze.workers.dev`), the same endpoints (`/kick-config`,
-`/kick-token`, `/kick-refresh`), the same application (`01KM9M6876PX3CJ83FHPD1J3C2` — the worker
-is asked which one to use), and by default the same redirect the desktop app registers:
+`/kick-token`, `/kick-refresh`), and by default the same redirect the desktop app registers:
 `http://localhost:8080/friendly-chat.html`.
+
+The Kick client id is **not** kept in this repository. The worker holds the client secret, so
+only the worker knows which application that secret belongs to — the extension asks it at
+sign-in. A copy in the source could only go stale and send people to authorise against the wrong
+application, and it would buy nothing: if the worker is unreachable, the token exchange fails
+anyway, so the sign-in stops before the consent screen rather than after it.
 
 Reusing that redirect is what removes the setup step, and it needs one trick.
 `chrome.identity.launchWebAuthFlow` only ever finishes on a `chromiumapp.org` URL, so it cannot
@@ -441,7 +446,7 @@ DOM, so nothing in the page's layout or stacking contexts has to be fought with.
 node tests/run.js
 ```
 
-563 assertions, no network. It drives the real parsers with real payload shapes: IRC lines with
+565 assertions, no network. It drives the real parsers with real payload shapes: IRC lines with
 tags and emote positions, Kick Pusher events, emote sets from every provider, and the
 counterpart matcher against stubbed platform APIs — including the cases that matter most, like a
 manual mapping beating a same-name guess and a failing emote provider not taking the others down.

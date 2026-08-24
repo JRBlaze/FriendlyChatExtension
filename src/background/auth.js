@@ -290,13 +290,14 @@
     return `${base}${path}`;
   }
 
-  // The proxy is the authority: whichever application its client secret belongs
-  // to is the one the token exchange will work for. The built-in id is only a
-  // fallback for a transient failure of that one call.
+  // The proxy is the only source: whichever application its client secret
+  // belongs to is the one the token exchange will work for. Falling back to a
+  // built-in id would be worse than failing here — the exchange runs through
+  // the proxy too, so an unreachable proxy means walking the user through
+  // authorising and only then failing.
   async function kickClientId(settings) {
     const data = await FCM.getJson(proxy(settings, '/kick-config'));
-    if (data && data.client_id) return data.client_id;
-    return FCM.DEFAULT_KICK_CLIENT_ID || '';
+    return (data && data.client_id) || '';
   }
 
   // Base64url without padding, for putting the extension's own redirect inside

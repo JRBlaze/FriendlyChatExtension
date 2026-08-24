@@ -30,11 +30,10 @@
   // from the desktop app's client id, so neither can break the other's sign-in.
   FCM.DEFAULT_TWITCH_CLIENT_ID = '4bfkouj78vsa1crhf7juucfkb273nv';
   FCM.DEFAULT_KICK_PROXY_URL = 'https://friendly-chat-kick-proxy.jrblaze.workers.dev';
-  // The Kick application the proxy holds the secret for. The proxy is asked
-  // first, since it is the authority on which app its secret belongs to; this
-  // is only a fallback for when that one call does not come back, so a blip
-  // there cannot block sign-in on its own. Client ids are public.
-  FCM.DEFAULT_KICK_CLIENT_ID = '01KM9M6876PX3CJ83FHPD1J3C2';
+  // Kick's client id is deliberately not kept here. The proxy holds the client
+  // secret, so only the proxy knows which application that secret belongs to —
+  // it is asked at sign-in. A copy in this file could only ever go stale and
+  // send people to authorise against the wrong application.
   // The redirect the Friendly Chat desktop app registers with that same Kick
   // application: its local server's origin plus page, per config.json's port.
   // Reusing it means Kick sign-in works with no registration at all.

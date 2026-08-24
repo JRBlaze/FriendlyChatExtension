@@ -1108,17 +1108,25 @@ suites.auth = function () {
         'auth: the proxy decides which Kick application is used');
     }
 
-    // ── A blip fetching the id falls back rather than blocking sign-in ──
+    // ── No client id is kept in the extension, so the proxy is required ──
     {
       const { FCM, calls } = build({
         configResponse: {},
         redirect: (url) => 'https://abcd.chromiumapp.org/?code=CODE&state='
           + new URL(url).searchParams.get('state'),
       });
-      await FCM.auth.connect('kick', { kickRedirect: 'extension' });
-      const authCall = calls.find((c) => c.authUrl);
-      eq(new URL(authCall.authUrl).searchParams.get('client_id'), FCM.DEFAULT_KICK_CLIENT_ID,
-        'auth: a failed config lookup falls back to the built-in id');
+      let threw = '';
+      try {
+        await FCM.auth.connect('kick', { kickRedirect: 'extension' });
+      } catch (e) { threw = e.message; }
+      contains(threw, 'proxy', 'auth: an unreachable proxy is named as the problem');
+      // Failing here is the point. Guessing at a client id would send the user
+      // through the whole consent flow only to fail at the exchange, which
+      // also runs through the proxy.
+      ok(!calls.some((c) => c.authUrl), 'auth: and no sign-in is started at all');
+
+      eq(FCM.DEFAULT_KICK_CLIENT_ID, undefined,
+        'auth: the extension keeps no copy of the Kick client id');
     }
 
     // ── The default: reuse the redirect the desktop app already registered ──
