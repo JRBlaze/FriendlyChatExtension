@@ -446,12 +446,13 @@
       if (!visible || collapsed) return;
       const stats = settings.showNativeStats === false ? null : native.stats();
       const signature = stats
-        ? `${stats.points}|${stats.bits}|${stats.canClaim}|${stats.hasMenu}`
+        ? `${stats.points}|${stats.bits}|${stats.hasPoints}|${stats.hasBits}`
+          + `|${stats.canClaim}|${stats.hasMenu}`
         : 'off';
       if (signature === statsSignature) return;
       statsSignature = signature;
 
-      const show = !!stats && !!(stats.points || stats.bits || stats.canClaim || stats.hasMenu);
+      const show = !!stats && !!(stats.hasPoints || stats.hasBits || stats.canClaim);
       nativeEl.classList.toggle('fcm-hidden', !show);
       nativeEl.replaceChildren();
       if (!show) return;
@@ -460,18 +461,20 @@
       const labels = NATIVE_LABELS[hostPlatform] || NATIVE_LABELS.twitch;
       nativeEl.dataset.platform = hostPlatform;
 
-      if (stats.points) {
+      // A chip for each control the site actually has, carrying its balance
+      // where there is one. Kick's Kicks button shows no number — it is still
+      // the way to send them, and it was this that kept it off the row.
+      if (stats.hasPoints) {
         nativeChip('points', labels.points, stats.points,
-          `${stats.points} ${labels.points.toLowerCase()} — click to open ${meta.name}'s own rewards menu`);
+          stats.points
+            ? `${stats.points} ${labels.points.toLowerCase()} — click to open ${meta.name}'s own rewards menu`
+            : `Open ${meta.name}'s own rewards menu`);
       }
-      if (stats.bits) {
+      if (stats.hasBits) {
         nativeChip('bits', labels.bits, stats.bits,
-          `${stats.bits} ${labels.bits} — click to open ${meta.name}'s own cheer menu`);
-      }
-      // Nothing legible to read, but the site does have a way in. Better a door
-      // than a blank row.
-      if (!stats.points && !stats.bits && stats.hasMenu) {
-        nativeChip('points', labels.menu, '', `Open ${meta.name}'s own rewards menu`);
+          stats.bits
+            ? `${stats.bits} ${labels.bits} — click to open ${meta.name}'s own ${labels.bits} menu`
+            : `Open ${meta.name}'s own ${labels.bits} menu`);
       }
       if (stats.canClaim) {
         const claim = document.createElement('button');

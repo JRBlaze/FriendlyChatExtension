@@ -453,15 +453,21 @@
       // excluded from the Kicks one: the last resort there is "a button showing
       // a number", which would otherwise happily return the button Rewards had
       // already claimed and put two chips on the same control.
+      // The two exact names Kick uses, confirmed against a signed-in channel,
+      // ahead of the looser matches that stand in if it renames them.
       const points = firstIn(footer, [
+        '[data-testid="channel-points-button"]',
         '[data-testid*="point" i]',
         'button[aria-label*="point" i]',
         'button[aria-label*="reward" i]',
         'button[title*="reward" i]',
-      ]) || byIcon(/point|reward|trophy/i);
+      ]) || byIcon(/point|reward|trophy|bubble/i);
 
+      // Kick's Kicks control is labelled "Get KICKs" and shows no balance at
+      // all, which is why it is looked for by name rather than by a number.
       const notPoints = (el) => (el && el !== points ? el : null);
       const kicks = notPoints(firstIn(footer, [
+        '[data-testid="get-kicks"]',
         '[data-testid*="kicks" i]',
         'button[aria-label*="kicks" i]',
         'button[title*="kicks" i]',

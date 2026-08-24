@@ -195,9 +195,18 @@
       // The part that matters most when a control cannot be found: everything
       // the footer actually contains.
       footerFound: !!footer,
+      // Anything carrying a name comes first. An open emote picker puts dozens
+      // of unlabelled buttons in this list, and they were pushing the ones
+      // worth reading off the end of it.
       footerControls: footer
-        ? Array.from(footer.querySelectorAll('button,[data-testid],[role="button"]'))
-          .slice(0, 40).map(describe)
+        ? (() => {
+          const all = Array.from(footer.querySelectorAll('button,[data-testid],[role="button"]'))
+            .map(describe);
+          const named = all.filter((d) => d.testid || d.testSelector || d.aTarget
+            || d.aria || d.title || d.text || d.icons.length);
+          const rest = all.filter((d) => named.indexOf(d) === -1);
+          return named.concat(rest).slice(0, 60);
+        })()
         : [],
     };
   };
@@ -298,18 +307,29 @@
       },
 
       /**
-       * The balances the page is showing, and whether the site's own controls
+       * The balances the page is showing, and which of the site's own controls
        * are there to be driven.
-       * @returns {{points: string, bits: string, canClaim: boolean, hasMenu: boolean}}
+       *
+       * Whether a control *exists* is reported separately from whatever it
+       * displays, because the two do not always go together. Kick's Kicks
+       * button reads "Get KICKs" and carries no number at all — it is still a
+       * way in, and hiding it because there was nothing to count was why it
+       * never appeared.
        */
       stats() {
         const c = controls();
-        if (!c) return { points: '', bits: '', canClaim: false, hasMenu: false };
+        if (!c) {
+          return { points: '', bits: '', hasPoints: false, hasBits: false, canClaim: false, hasMenu: false };
+        }
+        const hasPoints = onScreen(c.pointsValue) || onScreen(c.openBalances);
+        const hasBits = onScreen(c.bitsValue) || onScreen(c.cheer);
         return {
           points: FCM.readNativeBalance(c.pointsValue),
           bits: FCM.readNativeBalance(c.bitsValue),
+          hasPoints,
+          hasBits,
           canClaim: onScreen(c.claim),
-          hasMenu: onScreen(c.openBalances) || onScreen(c.cheer),
+          hasMenu: hasPoints || hasBits,
         };
       },
 

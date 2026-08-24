@@ -136,9 +136,13 @@
             </div>
             <div id="chatroom-footer">
               <div class="editor-input" data-testid="chat-input" contenteditable="true" role="textbox"></div>
+              <!-- The two controls a signed-in Kick footer actually carries,
+                   with the names and text taken from a real channel: channel
+                   points show a balance, Kicks shows no number at all. -->
               <div class="kick-btns">
                 <button id="kick-emote"><svg data-ds-icon="Smile" width="12" height="12"></svg></button>
-                <button id="kick-balance"><svg data-ds-icon="SparkleOutline" width="12" height="12"></svg>1,250</button>
+                <button id="kick-balance" data-testid="channel-points-button"><svg data-ds-icon="Bubbles" width="12" height="12"></svg>4.6K</button>
+                <button id="kick-kicks" data-testid="get-kicks">Get KICKs</button>
                 <button id="send-message-button">Chat</button>
               </div>
             </div>
@@ -316,7 +320,9 @@ mockComposer(document.querySelector('.kickcol .editor-input'), document.getEleme
     e.currentTarget.hidden = true;
   });
   document.getElementById('kick-balance').addEventListener('click',
-    () => open('Kicks', 'Kick draws its own gifting panel here.', false));
+    () => open('Channel points', 'Kick draws its own rewards panel here.', false));
+  document.getElementById('kick-kicks').addEventListener('click',
+    () => open('Kicks', 'Kick draws its own Kicks panel here.', false));
 })();
 </script>
 

@@ -1230,7 +1230,7 @@ suites.native = function () {
 
   const withClaim = controlPage();
   const cb = bridgeFor(page(content), withClaim.site).bridge;
-  eq(cb.stats(), { points: '4,201', bits: '350', canClaim: true, hasMenu: true },
+  eq(cb.stats(), { points: '4,201', bits: '350', hasPoints: true, hasBits: true, canClaim: true, hasMenu: true },
     'native: both balances and a waiting bonus are reported');
 
   ok(cb.activate('points'), 'native: the rewards control is there to click');
@@ -1247,7 +1247,7 @@ suites.native = function () {
   eq(noClaim.chest.clicks, 0, 'native: a control that is not on screen is never clicked');
 
   const bare = bridgeFor(page(content), { messageList: () => container }).bridge;
-  eq(bare.stats(), { points: '', bits: '', canClaim: false, hasMenu: false },
+  eq(bare.stats(), { points: '', bits: '', hasPoints: false, hasBits: false, canClaim: false, hasMenu: false },
     'native: a site with no controls of its own reports nothing');
   ok(!bare.activate('points'), 'native: and offers nothing to click');
 
@@ -1256,8 +1256,25 @@ suites.native = function () {
     messageList: () => container,
     nativeControls: () => { throw new Error('selectors moved'); },
   }).bridge;
-  eq(angry.stats(), { points: '', bits: '', canClaim: false, hasMenu: false },
+  eq(angry.stats(), { points: '', bits: '', hasPoints: false, hasBits: false, canClaim: false, hasMenu: false },
     'native: a throwing adapter reads as no controls');
+
+  // Kick's Kicks button is labelled "Get KICKs" and shows no balance. A control
+  // with nothing to count is still a control, and reporting the two separately
+  // is what keeps it on the row.
+  {
+    const wordy = el({ rect: [620, 32], text: 'Get KICKs' });
+    const numeric = el({ rect: [620, 32], text: '4.6K' });
+    const rig = bridgeFor(page(content, []), {
+      messageList: () => container,
+      nativeControls: () => ({ pointsValue: numeric, bitsValue: wordy, openBalances: numeric, cheer: wordy, claim: null }),
+    }).bridge;
+    const st = rig.stats();
+    eq(st.points, '4.6K', 'native: a control showing a balance reports it');
+    eq(st.bits, '', 'native: one showing only words reports no balance');
+    eq(st.hasBits, true, 'native: but is still reported as being there');
+    eq(st.hasPoints, true, 'native: as is the other');
+  }
 
   // ── Hiding the site's chat without hiding its cards ─────────────────────────
 

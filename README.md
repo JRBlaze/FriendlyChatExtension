@@ -8,7 +8,7 @@ streamer is also live on Kick, the overlay says so and offers to add the Kick ch
 feed. Open a Kick channel and it works the other way round.
 
 ![Platform](https://img.shields.io/badge/Chrome-MV3-blue)
-![Version](https://img.shields.io/badge/version-1.2.3-green)
+![Version](https://img.shields.io/badge/version-1.2.4-green)
 
 ## What it does
 
@@ -62,7 +62,7 @@ feed. Open a Kick channel and it works the other way round.
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.2.3.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.2.4.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and a folder named `FriendlyChatExtension-main`. The
@@ -612,7 +612,7 @@ DOM, so nothing in the page's layout or stacking contexts has to be fought with.
 node tests/run.js
 ```
 
-771 assertions, no network. It drives the real parsers with real payload shapes: IRC lines with
+775 assertions, no network. It drives the real parsers with real payload shapes: IRC lines with
 tags and emote positions, Kick Pusher events, emote sets from every provider, and the
 counterpart matcher against stubbed platform APIs — including the cases that matter most, like a
 manual mapping beating a same-name guess and a failing emote provider not taking the others down.
@@ -809,18 +809,15 @@ was never going to see in a friendly test:
   falls back to locating the message list and climbing to its column, so a renamed wrapper does
   not break sizing; only if that fails too does the panel dock to the right of the window.
   `src/content/sites.js` is the one file to update when that happens.
-- **Kick's Kicks balance is found by shape, not by name, and is the one thing here not verified
-  against a signed-in page.** Twitch labels its balances with test selectors
-  (`bits-balance-string`, `copo-balance-string`) that have outlived several redesigns. Kick
-  labels nothing in its chat footer at all, so its controls are matched on the `data-ds-icon`
-  name Kick puts on its own icons and, failing that, on a footer button whose entire visible text
-  is a number. Both were checked against a live Kick channel while signed out, where they
-  correctly match nothing — but what Kick renders there once you *are* signed in could not be
-  observed, so the row may simply not appear. It cannot click the wrong thing: the send button is
-  excluded from every search first. `kick.nativeControls()` in `src/content/sites.js` is the one
-  function to update, and *Copy diagnostics* under **Diagnostics** in the overlay's settings
-  produces exactly what is needed to update it: every control in the chat's footer with its ids,
-  labels and icon names, next to what the adapter made of them.
+- **Kick shows no Kicks balance, only a way in.** Its two chat-footer controls are
+  `data-testid="channel-points-button"`, which carries the points balance as its own text, and
+  `data-testid="get-kicks"`, which reads "Get KICKs" and carries no number at all. Both are
+  matched by name first and by shape after, so a rename does not lose them. Whether a control
+  *exists* is tracked separately from whatever it displays, which is what lets the Kicks chip
+  appear at all — an earlier version hid it because there was nothing to count.
+  `kick.nativeControls()` in `src/content/sites.js` is the one function to update if Kick moves
+  them, and *Copy diagnostics* under **Diagnostics** in the overlay's settings produces exactly
+  what is needed to update it.
 - **The Opacity setting can take contrast below AA.** The palette is built to clear 4.5:1 at the
   default 96%. Below roughly 90% the panel starts blending enough of the page underneath to erode
   that, and how far depends on what is behind it. Nothing is stopping you — it is a deliberate
