@@ -327,6 +327,68 @@ suites.render = function () {
     'render: authors are remembered for @ autocomplete');
   ok(FCM.recentChatters().some((c) => c.name === 'mod' && c.platform === 'twitch'),
     'render: both platforms contribute chatters');
+
+  // ── Name colours are made readable without being taken away ────────────────
+  //
+  // Twitch and Kick both let people choose their own name colour, and plenty
+  // choose one that lands near 2:1 against a dark feed. The colour is theirs, so
+  // only its lightness moves, and only as far as it has to.
+  (function authorColours() {
+    const BACKDROP = { dark: [13, 13, 15], light: [245, 247, 251] };
+    const srgb = (c) => { const v = c / 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+    const lum = ([r, g, b]) => 0.2126 * srgb(r) + 0.7152 * srgb(g) + 0.0722 * srgb(b);
+    const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+    const rgbOf = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+    const parts = (value) => {
+      const style = FCM.authorColorStyle(value);
+      const d = /--author-dark:(#[0-9a-f]{6})/.exec(style);
+      const l = /--author-light:(#[0-9a-f]{6})/.exec(style);
+      return { style, dark: d && d[1], light: l && l[1] };
+    };
+    // Hue is what makes a name recognisable, so it is what must survive.
+    const hueOf = ([r, g, b]) => {
+      const max = Math.max(r, g, b); const min = Math.min(r, g, b);
+      if (max === min) return null;
+      const d = max - min;
+      let h;
+      if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+      else if (max === g) h = ((b - r) / d + 2) / 6;
+      else h = ((r - g) / d + 4) / 6;
+      return Math.round(h * 360);
+    };
+
+    eq(FCM.authorColorStyle(''), '', 'render: no name colour means no inline style');
+    eq(FCM.authorColorStyle('red'), '', 'render: a colour that is not a hex triple is ignored');
+    eq(FCM.authorColorStyle('#12345'), '', 'render: a malformed hex is ignored');
+
+    // Every colour a platform might hand over, readable on both themes.
+    ['#0000FF', '#8A2BE2', '#FF0000', '#1E90FF', '#00FF7F', '#FFFFFF', '#000000',
+      '#B22222', '#DAA520', '#2E8B57', '#4B0082', '#556B2F'].forEach((c) => {
+      const p = parts(c);
+      ok(ratio(rgbOf(p.dark), BACKDROP.dark) >= 4.5,
+        `render: ${c} is readable on the dark feed (${ratio(rgbOf(p.dark), BACKDROP.dark).toFixed(2)})`);
+      ok(ratio(rgbOf(p.light), BACKDROP.light) >= 4.5,
+        `render: ${c} is readable on the light feed (${ratio(rgbOf(p.light), BACKDROP.light).toFixed(2)})`);
+      const original = hueOf(rgbOf(c.toLowerCase()));
+      if (original !== null) {
+        // Within a couple of degrees: the round trip through HSL and back to
+        // whole bytes moves a hue by one now and then, which no one can see.
+        const drift = (a, b) => Math.min(Math.abs(a - b), 360 - Math.abs(a - b));
+        ok(drift(hueOf(rgbOf(p.dark)), original) <= 2,
+          `render: ${c} keeps its hue on dark (${hueOf(rgbOf(p.dark))} vs ${original})`);
+        ok(drift(hueOf(rgbOf(p.light)), original) <= 2,
+          `render: ${c} keeps its hue on light (${hueOf(rgbOf(p.light))} vs ${original})`);
+      }
+    });
+
+    // A colour that already reads well is left exactly as it was given.
+    eq(parts('#1E90FF').dark, '#1e90ff', 'render: a readable colour is not touched');
+    eq(parts('#B22222').light, '#b22222', 'render: nor on the theme where it already works');
+
+    // And the extremes, which have no hue to preserve, still come back legible.
+    ok(parts('#000000').dark !== '#000000', 'render: black is lifted off a dark feed');
+    ok(parts('#FFFFFF').light !== '#ffffff', 'render: white is dropped onto a light feed');
+  })();
 };
 
 suites.settings = function () {
@@ -955,6 +1017,12 @@ suites.native = function () {
       isConnected: true,
       clicks: 0,
       getAttribute: (k) => (k in attrs ? attrs[k] : null),
+      // Only ever asked for the media that proves a card has something in it.
+      querySelector(sel) {
+        return node.query && sel.split(',').some((s) => s.trim() === node.query)
+          ? node.children[0] || null
+          : null;
+      },
       getBoundingClientRect() {
         const [top, height] = this.rect;
         return { top, height, bottom: top + height, left: 900, right: 1240, width: 340 };
@@ -1036,6 +1104,68 @@ suites.native = function () {
   kickOverlay.rect = [164, 12];
   const kickPinned = bridgeFor(page(kickCol), {}).FCM.splitChatSiblings(kickMessages);
   ok(kickPinned.above[0] === kickPin, 'native: a pinned message is found once it has height');
+
+  // ── Kick's other card slot: a banner drawn over the top of the messages ────
+  //
+  // Kick does not push the chat down for a pinned message; it floats one over
+  // the message list. That is still a card the overlay must not cover, and it
+  // has to be told apart from the full-height layers both sites park there.
+  {
+    const list = el({ rect: [110, 496] });
+    const banner = el({ rect: [110, 82], text: 'Pinned by moderator' });
+    const emptySlot = el({ rect: [110, 12] });
+    const bottomPill = el({ rect: [590, 30], text: 'scroll to bottom' });
+    const fullLayer = el({ rect: [110, 496], text: 'viewer card' });
+    const wrap = el({ rect: [110, 496], kids: [banner, emptySlot, bottomPill, fullLayer, list] });
+    el({ rect: [60, 660], kids: [wrap] });
+
+    const split = bridgeFor(page(wrap), {}).FCM.splitChatSiblings(list);
+    eq(split.above.length, 1, 'native: exactly one banner is counted over the messages');
+    ok(split.above[0] === banner, 'native: and it is the one with a pinned message in it');
+    ok(!split.above.includes(emptySlot),
+      'native: an empty slot at the top is padding, not a card');
+    ok(!split.above.includes(fullLayer),
+      'native: a layer covering the whole list is not a banner');
+    ok(!split.above.includes(bottomPill),
+      'native: something floating at the bottom is not a banner either');
+  }
+
+  // The guards on that, one at a time.
+  {
+    const build = (spec) => {
+      const list = el({ rect: [110, 496] });
+      const cand = el(spec);
+      const wrap = el({ rect: [110, 496], kids: [cand, list] });
+      el({ rect: [60, 660], kids: [wrap] });
+      return { split: bridgeFor(page(wrap), {}).FCM.splitChatSiblings(list), cand };
+    };
+    let r = build({ rect: [110, 82], text: 'Pinned by moderator' });
+    ok(r.split.above[0] === r.cand, 'native: a banner hugging the top counts');
+
+    r = build({ rect: [110, 82] });
+    eq(r.split.above.length, 0, 'native: a banner with nothing in it does not');
+
+    r = build({ rect: [110, 14], text: 'x' });
+    eq(r.split.above.length, 0, 'native: nor one too short to be a card');
+
+    r = build({ rect: [180, 82], text: 'Pinned' });
+    eq(r.split.above.length, 0, 'native: nor one floating away from the top');
+
+    r = build({ rect: [110, 300], text: 'covers half the list' });
+    eq(r.split.above.length, 0, 'native: nor one swallowing half the messages');
+
+    // Content can be an image rather than text — a card is still a card.
+    const list = el({ rect: [110, 496] });
+    const withImg = el({ rect: [110, 82] });
+    const img = el({ rect: [112, 60] });
+    img.tagName = 'IMG';
+    withImg.children.push(img); img.parentElement = withImg;
+    withImg.query = 'img';
+    const wrap = el({ rect: [110, 496], kids: [withImg, list] });
+    el({ rect: [60, 660], kids: [wrap] });
+    ok(bridgeFor(page(wrap), {}).FCM.splitChatSiblings(list).above[0] === withImg,
+      'native: a banner whose content is an image counts too');
+  }
 
   // A message list with no siblings anywhere around it.
   const lonely = el({ rect: [100, 300] });
@@ -2285,31 +2415,67 @@ suites.feed = function () {
       'feed: and forgets what it had seen');
   }
 
-  // ── A hidden tab still drains, because rAF does not run there ──
-  {
+  // ── The queue drains even when no animation frame ever arrives ──
+  //
+  // A frame stops being delivered whenever the page is not being drawn, and not
+  // only when the tab is hidden: a window fully covered by another one is
+  // occluded with `document.hidden` still false. Worse, that can begin *after*
+  // a frame has been asked for, so picking between a frame and a timer at the
+  // moment of scheduling is not enough — the frame that never arrives leaves the
+  // queue permanently unscheduled and the feed stops drawing for good.
+  function drainRig({ frameFires }) {
     const feedEl = fakeNode();
+    const frames = [];
     const timeouts = [];
     const sandbox = makeSandbox({
       chrome: { storage: { sync: { get: async () => ({}) } } },
       document: {
-        hidden: true,
+        hidden: false,
         createElement: (t) => fakeNode(t),
         createDocumentFragment: () => { const f = fakeNode(); f.__fragment = true; return f; },
       },
-      window: { requestAnimationFrame: () => { throw new Error('rAF must not be used while hidden'); } },
+      window: {
+        requestAnimationFrame: (fn) => { frames.push(fn); return frames.length; },
+        cancelAnimationFrame: (id) => { frames[id - 1] = null; },
+      },
     });
     sandbox.setTimeout = (fn) => { timeouts.push(fn); return timeouts.length; };
+    sandbox.clearTimeout = (id) => { if (id) timeouts[id - 1] = null; };
     const FCM = load(sandbox, ...SHARED, 'src/content/render.js', 'src/content/feed.js');
     FCM.setViewSettings(FCM.DEFAULT_SETTINGS);
     const feed = FCM.createFeed(feedEl, () => FCM.DEFAULT_SETTINGS);
-    let threw = null;
-    try {
-      feed.addMessage({ platform: 'twitch', author: 'a', text: 'x', messageId: 'h1' }, filter);
-    } catch (e) { threw = e.message; }
-    eq(threw, null, 'feed: a hidden tab does not reach for requestAnimationFrame');
-    ok(timeouts.length > 0, 'feed: it falls back to a timer instead');
-    timeouts.forEach((fn) => fn());
-    eq(feedEl.childElementCount, 1, 'feed: and the message still lands');
+    const fire = (list) => list.forEach((fn) => { if (fn) fn(); });
+    return { feedEl, feed, frames, timeouts, fireFrames: () => fire(frames), fireTimers: () => fire(timeouts) };
+  }
+
+  // A window that stops being drawn: the frame never comes, the timer saves it.
+  {
+    const t = drainRig({});
+    t.feed.addMessage({ platform: 'twitch', author: 'a', text: 'x', messageId: 'h1' }, filter);
+    ok(t.frames.length > 0, 'feed: a frame is asked for');
+    ok(t.timeouts.filter(Boolean).length > 0, 'feed: and a timer alongside it');
+    t.fireTimers();
+    eq(t.feedEl.childElementCount, 1, 'feed: the timer drains the queue when no frame arrives');
+
+    // The real damage was to everything after it: with the queue stuck, no
+    // later message ever rescheduled a flush.
+    t.feed.addMessage({ platform: 'twitch', author: 'a', text: 'y', messageId: 'h2' }, filter);
+    t.fireTimers();
+    eq(t.feedEl.childElementCount, 2, 'feed: and the next message still lands after that');
+  }
+
+  // A window that is being drawn: the frame wins and the timer is cancelled, so
+  // the fallback costs nothing when it is not needed.
+  {
+    const t = drainRig({});
+    t.feed.addMessage({ platform: 'twitch', author: 'a', text: 'x', messageId: 'v1' }, filter);
+    t.fireFrames();
+    eq(t.feedEl.childElementCount, 1, 'feed: a frame drains the queue');
+    eq(t.timeouts.filter(Boolean).length, 0, 'feed: and cancels the timer it raced');
+
+    // Firing the cancelled timer too must not double-flush or throw.
+    t.fireTimers();
+    eq(t.feedEl.childElementCount, 1, 'feed: a cancelled timer does nothing if it fires anyway');
   }
 };
 

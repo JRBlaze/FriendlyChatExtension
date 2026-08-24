@@ -90,6 +90,25 @@
     return null;
   }
 
+  /**
+   * Like firstMatch, but skips anything the page is not actually laying out.
+   *
+   * Kick renders its whole chat twice — once for real and once inside a
+   * `display: none` streaming placeholder, both carrying the same ids. Which
+   * copy comes first in the document is not something to depend on, and picking
+   * the dead one would mean hiding a chat nobody can see while the real one
+   * stays on screen.
+   */
+  function firstReal(selectors) {
+    for (const sel of selectors) {
+      for (const el of document.querySelectorAll(sel)) {
+        const r = el.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) return el;
+      }
+    }
+    return null;
+  }
+
   // Looks inside the chat column first. Both sites have other contenteditable
   // and textbox elements on the page (search, the whisper composer, moderation
   // views), and the broadest selectors here would otherwise pick one of those.
@@ -226,7 +245,7 @@
     // The element that, when hidden, removes the site's own chat without
     // collapsing the layout around it.
     nativeChatBody() {
-      return firstMatch([
+      return firstReal([
         'section[data-test-selector="chat-room-component-layout"]',
         'div[data-test-selector="chat-room-component-layout"]',
         'div[data-a-target="right-column-chat-bar"] > div',
@@ -356,7 +375,7 @@
     },
 
     nativeChatBody() {
-      return firstMatch([
+      return firstReal([
         '#chatroom-messages',
         '#chatroom',
         '[data-testid="chat-container"]',
@@ -381,22 +400,55 @@
      * button and sending a click somewhere unintended.
      */
     nativeControls() {
-      const footer = firstMatch([
+      const footer = firstReal([
         '#chatroom-footer',
         'div[class*="chatroom-footer"]',
         '#chat-input-wrapper',
       ]);
+      if (!footer) return {};
+
+      // Sending is the one thing in this footer that must never be triggered by
+      // accident, so it is identified once and excluded from every search below.
+      const isSend = (btn) => !!btn
+        && (btn.id === 'send-message-button'
+          || /^(chat|send)$/i.test((btn.textContent || '').replace(/\s+/g, ' ').trim()));
+
+      // Kick's icons are the one thing in its footer that carries a stable
+      // name — everything else is generated Tailwind with no label at all.
+      const byIcon = (pattern) => {
+        for (const icon of footer.querySelectorAll('[data-ds-icon]')) {
+          if (!pattern.test(icon.getAttribute('data-ds-icon') || '')) continue;
+          const btn = icon.closest('button');
+          if (btn && !isSend(btn)) return btn;
+        }
+        return null;
+      };
+
+      // Last resort, and safe as a last resort precisely because of what it
+      // matches: a footer button whose entire visible text is a number is a
+      // balance and nothing else. Anything that does something — send, emotes,
+      // settings — either says so or shows only an icon.
+      const byNumber = () => {
+        for (const btn of footer.querySelectorAll('button')) {
+          if (isSend(btn)) continue;
+          if (FCM.looksLikeBalance(btn.textContent)) return btn;
+        }
+        return null;
+      };
+
       const kicks = firstIn(footer, [
         '[data-testid*="kicks" i]',
         'button[aria-label*="kicks" i]',
         'button[title*="kicks" i]',
-      ]);
+      ]) || byIcon(/kick|spark|gift/i) || byNumber();
+
       const points = firstIn(footer, [
         '[data-testid*="point" i]',
         'button[aria-label*="point" i]',
         'button[aria-label*="reward" i]',
         'button[title*="reward" i]',
-      ]);
+      ]) || byIcon(/point|reward|trophy/i);
+
       return {
         // Kick keeps the number inside the button rather than in a labelled
         // node of its own, so the button is both the value and the way in.
@@ -429,7 +481,12 @@
     },
 
     sendButton() {
-      return firstMatch([
+      // Kick's send button carries no test selector, no aria-label and no
+      // title — only an id. Without it the send path fell back to pressing
+      // Enter, which works but is a guess about a key binding rather than the
+      // button the site actually wired up.
+      return firstReal([
+        '#send-message-button',
         'button[data-testid="chat-send-button"]',
         'button[aria-label*="send" i]',
         'button[title*="send" i]',

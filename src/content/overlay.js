@@ -10,6 +10,16 @@
   // site opened by itself — anything the viewer opens arms the scan directly.
   const IDLE_SCAN_TICKS = 10;
 
+  // What the panel must keep for itself however tall the site's card is: enough
+  // for the header, a few lines of chat, the composer and the status bar.
+  //
+  // This is a floor on the panel rather than a ceiling on the card, because the
+  // two sites' cards are not the same size. A share of the column that leaves
+  // Twitch's leaderboard room over-clips Kick's, whose gifter leaderboard opens
+  // to 310px — measured on a 660px column, where 45% would have covered the top
+  // 63px of it.
+  const MIN_PANEL_HEIGHT = 260;
+
   const ICONS = {
     gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
     minus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M5 12h14"/></svg>',
@@ -238,9 +248,8 @@
         if (r.height >= 6) bottom = Math.max(bottom, r.bottom);
       }
       const gap = bottom === -Infinity ? 0 : bottom - columnRect.top;
-      lastCardInset = gap <= 2
-        ? 0
-        : Math.min(Math.round(gap), Math.round(columnRect.height * 0.45));
+      const room = Math.round(columnRect.height) - MIN_PANEL_HEIGHT;
+      lastCardInset = gap <= 2 ? 0 : Math.max(0, Math.min(Math.round(gap), room));
       return lastCardInset;
     }
 
@@ -663,7 +672,9 @@
           const x = document.createElement('span');
           x.textContent = '×';
           x.dataset.act = 'disconnect';
-          x.style.cssText = 'opacity:.6;font-size:12px;line-height:1;padding-left:1px;';
+          // No opacity: it would multiply with the chip's and the panel's own,
+          // and this is the control that leaves a chat.
+          x.style.cssText = 'font-size:12px;line-height:1;padding-left:1px;';
           x.title = `Disconnect ${FCM.PLATFORM_META[platform].name}`;
           btn.appendChild(x);
         }

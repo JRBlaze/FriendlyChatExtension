@@ -41,6 +41,26 @@
   .chatcol .rewards button[hidden] { display: none; }
   .chatcol .rewards .sep { color: #46464b; }
   .fakemenu { position: fixed; z-index: 2000; background: #1f1f23; border: 1px solid #3a3a3d; border-radius: 8px; padding: 16px; width: 300px; box-shadow: 0 12px 40px rgba(0,0,0,.6); font-size: 12px; }
+  /* Kick's chat column, mirroring the real nesting: a header outside the body,
+     an in-flow card slot above the message wrapper (the gifter leaderboard),
+     and a banner slot drawn *over* the top of the messages (pinned messages). */
+  .kickcol { width: 340px; border-left: 1px solid #2a2d31; background: #0f1214; display: flex; flex-direction: column; }
+  .kickcol #channel-chatroom { display: flex; flex-direction: column; height: 100%; }
+  .kickcol .kick-contents { display: contents; }
+  .kickcol .kick-head { height: 50px; display: flex; align-items: center; justify-content: center; font-size: 12px; color: #8f9296; border-bottom: 1px solid #2a2d31; }
+  .kickcol .kick-body { position: relative; display: flex; flex: 1; flex-direction: column; min-height: 0; }
+  .kickcol .kick-flow { overflow: hidden; }
+  .kickcol .kick-flow-inner { position: relative; display: flex; flex-direction: column; justify-content: flex-end; height: 0; }
+  .kickcol .kick-msgwrap { position: relative; flex: 1 1 auto; min-height: 0; overflow: hidden; }
+  .kickcol .kick-banner { position: absolute; width: 100%; z-index: 1; padding: 0 8px; }
+  .kickcol #chatroom-messages { height: 100%; overflow-y: auto; padding: 10px; font-size: 12px; color: #6a6d72; }
+  .kickcol #chatroom-footer { border-top: 1px solid #2a2d31; padding: 10px; }
+  .kickcol .editor-input { min-height: 30px; background: #0a0c0e; border: 1px solid #2a2d31; border-radius: 4px; padding: 7px; font-size: 12px; color: #efeff1; }
+  .kickcol .kick-btns { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+  .kickcol .kick-btns button { background: #1c1f23; border: 1px solid #2a2d31; border-radius: 4px; color: #efeff1; font-size: 11px; padding: 5px 9px; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; }
+  .kickcol #send-message-button { margin-left: auto; background: #53fc18; color: #0b1a05; border-color: transparent; font-weight: 700; }
+  .kickcol .kick-card { background: #1c1f23; border: 1px solid #2a2d31; border-radius: 6px; padding: 10px; font-size: 12px; }
+  .kickcol .kick-card b { display: block; color: #53fc18; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; }
   .fakemenu h3 { margin: 0 0 8px; font-size: 13px; }
   .fakemenu p { margin: 0 0 12px; color: #adadb8; }
   .chatcol .box { border-top: 1px solid #2a2a2d; padding: 10px; }
@@ -91,6 +111,36 @@
         </div>
       </section>
     </div>
+    <!-- Kick ships its whole chat twice: once for real and once inside a
+         display:none streaming placeholder, both carrying the same ids. The
+         dead copy is first here on purpose, which is what the layout-aware
+         lookups have to survive. -->
+    <div class="kick-dead" style="display:none">
+      <div id="channel-chatroom"><div id="chatroom-messages"></div><div id="chatroom-footer"></div></div>
+    </div>
+
+    <div class="kickcol" style="display:none">
+      <div id="channel-chatroom">
+        <div class="kick-contents">
+          <div class="kick-head">CHAT (native kick)</div>
+          <div class="kick-body">
+            <div class="kick-flow"><div class="kick-flow-inner"></div></div>
+            <div class="kick-msgwrap">
+              <div class="kick-banner"><div></div></div>
+              <div id="chatroom-messages">the site's own chat sits underneath the overlay</div>
+            </div>
+            <div id="chatroom-footer">
+              <div class="editor-input" data-testid="chat-input" contenteditable="true" role="textbox"></div>
+              <div class="kick-btns">
+                <button id="kick-emote"><svg data-ds-icon="Smile" width="12" height="12"></svg></button>
+                <button id="kick-balance"><svg data-ds-icon="SparkleOutline" width="12" height="12"></svg>1,250</button>
+                <button id="send-message-button">Chat</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div class="devbar">
@@ -106,6 +156,13 @@
     <button data-act="wide">chat 460px</button>
     <button data-act="short">chat 60% tall</button>
     <button data-act="reset-size">chat default</button>
+    <button data-act="contrast">check contrast</button>
+    <button data-act="site-twitch">site: twitch</button>
+    <button data-act="site-kick">site: kick</button>
+    <button data-act="kick-leaderboard">kick: leaderboard</button>
+    <button data-act="kick-pinned">kick: pinned banner</button>
+    <button data-act="kick-clear">kick: clear cards</button>
+    <button data-act="kick-balance-off">kick: toggle balance</button>
     <button data-act="drop-selectors">drop column selectors</button>
     <button data-act="hype">+ hype train card</button>
     <button data-act="pinned">+ pinned card</button>
@@ -126,9 +183,7 @@
 // nothing they will read. This stands in for that, with a switch for which input
 // route the editor honours, so the send path can be tested against each.
 window.composerMode = 'paste-only';
-(function () {
-  const box = document.getElementById('native-composer');
-  const send = document.getElementById('native-send');
+function mockComposer(box, send) {
   const log = document.getElementById('sent-log');
   let model = '';
   let rendering = false;
@@ -186,7 +241,10 @@ window.composerMode = 'paste-only';
   send.addEventListener('click', submit);
   box.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
   render();
-})();
+}
+// Both sites get one, so the send path can be driven on either.
+mockComposer(document.getElementById('native-composer'), document.getElementById('native-send'));
+mockComposer(document.querySelector('.kickcol .editor-input'), document.getElementById('send-message-button'));
 </script>
 
 <script>
@@ -225,6 +283,8 @@ window.composerMode = 'paste-only';
   document.getElementById('native-claim').addEventListener('click', (e) => {
     e.currentTarget.hidden = true;
   });
+  document.getElementById('kick-balance').addEventListener('click',
+    () => open('Kicks', 'Kick draws its own gifting panel here.'));
 })();
 </script>
 
@@ -392,6 +452,62 @@ function loadSources(bust) {
       const cur = await FCM.loadSettings();
       overlay.applyStoredSettings(await FCM.saveSettings({ timestamps: !cur.timestamps }));
     },
+    // Runs the WCAG AA auditor over the overlay as it currently stands and
+    // reports to the console. Transitions are turned off first: a colour still
+    // transitioning measures as its start value.
+    contrast: async () => {
+      if (!window.__auditContrast) {
+        await new Promise((res, rej) => {
+          const el = document.createElement('script');
+          el.src = `/tests/contrast.js?t=${Date.now()}`;
+          el.onload = res; el.onerror = rej;
+          document.head.appendChild(el);
+        });
+      }
+      const sr = document.getElementById('friendly-chat-merge-host').shadowRoot;
+      if (!sr.querySelector('style[data-no-transition]')) {
+        const kill = document.createElement('style');
+        kill.setAttribute('data-no-transition', '');
+        kill.textContent = '*, *::before, *::after { transition: none !important; animation: none !important; }';
+        sr.appendChild(kill);
+      }
+      await new Promise((r) => setTimeout(r, 250));
+      const fails = window.__auditContrast([sr]);
+      if (!fails.length) console.log('%ccontrast: everything passes WCAG AA', 'color:#53fc18');
+      else console.table(fails);
+      return fails;
+    },
+
+    // Swapping which site the page pretends to be. The other column is taken
+    // out of the layout entirely, so that site's selectors stop matching — the
+    // same thing that makes the real adapters mutually exclusive.
+    'site-twitch': () => switchSite('twitch'),
+    'site-kick': () => switchSite('kick'),
+
+    // Kick's two card slots. The leaderboard sits above the messages in flow;
+    // a pinned message is drawn over the top of them instead.
+    'kick-leaderboard': () => {
+      const inner = document.querySelector('.kickcol .kick-flow-inner');
+      const on = inner.style.height && inner.style.height !== '0px';
+      inner.innerHTML = on ? '' : '<div class="kick-card"><b>Monthly top gifters</b>Eddie 100 · juicerrj 15 · OfficerTerror 5</div>';
+      inner.style.height = on ? '0px' : '160px';
+    },
+    'kick-pinned': () => {
+      const slot = document.querySelector('.kickcol .kick-banner > div');
+      slot.innerHTML = slot.innerHTML
+        ? ''
+        : '<div class="kick-card"><b>Pinned by moderator</b>read the rules before chatting</div>';
+    },
+    'kick-clear': () => {
+      const inner = document.querySelector('.kickcol .kick-flow-inner');
+      inner.innerHTML = ''; inner.style.height = '0px';
+      document.querySelector('.kickcol .kick-banner > div').innerHTML = '';
+    },
+    'kick-balance-off': () => {
+      const b = document.getElementById('kick-balance');
+      b.style.display = b.style.display === 'none' ? '' : 'none';
+    },
+
     // The cards Twitch stacks above its message list. The overlay is meant to
     // shrink out of their way, so they can be added and removed here.
     hype: () => {
@@ -440,6 +556,43 @@ function loadSources(bust) {
     return out.join(' ');
   }
 
+  // Every overlay built in this page is tracked, and swapping sites or churning
+  // tears down all of them rather than only the one this file happens to hold.
+  // Driving the harness from the console makes it easy to leave a second one
+  // running, and two panels fighting over the same mock chat produces readings
+  // that look like bugs and are not.
+  const created = new Set();
+  // The overlay this file mounts on load is built before the wrapper below is
+  // installed, so it has to be registered by hand or it is the one that
+  // survives every teardown.
+  created.add(overlay);
+  const realCreateOverlay = FCM.createOverlay;
+  FCM.createOverlay = function (opts) {
+    const made = realCreateOverlay(opts);
+    created.add(made);
+    return made;
+  };
+  window.destroyAllOverlays = function () {
+    created.forEach((o) => { try { o.destroy(); } catch (e) { /* already gone */ } });
+    created.clear();
+  };
+
+  // Rebuilds the overlay against the other site's adapter, the way boot.js does
+  // on navigation, and swaps which mock column is in the layout.
+  window.switchSite = async function (id) {
+    document.querySelector('.chatcol:not(.kickcol)').style.display = id === 'twitch' ? '' : 'none';
+    document.querySelector('.kickcol').style.display = id === 'kick' ? '' : 'none';
+    window.destroyAllOverlays();
+    overlay = FCM.createOverlay({
+      site: FCM.SITES[id],
+      channel: id === 'twitch' ? 'examplestreamer' : 'examplestreamer-kick',
+      onCommand: () => {},
+    });
+    await overlay.mount();
+    window.overlay = overlay;
+    return id;
+  };
+
   window.perf = {
     // Flips the mock page between dark and light the way the real sites do.
     setSiteTheme(mode) {
@@ -454,9 +607,11 @@ function loadSources(bust) {
 
     // Mount/unmount churn, standing in for moving between channels all evening.
     async churn(times) {
+      // Counted with one overlay mounted, and compared against the same state
+      // at the end, so the comparison is like for like.
       const before = document.querySelectorAll('*').length;
       for (let i = 0; i < times; i++) {
-        overlay.destroy();
+        window.destroyAllOverlays();
         overlay = FCM.createOverlay({
           site: FCM.SITES.twitch,
           channel: `channel${i}`,

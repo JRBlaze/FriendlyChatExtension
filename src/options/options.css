@@ -7,8 +7,11 @@
   --border: rgba(255,255,255,0.09);
   --border2: rgba(255,255,255,0.15);
   --text: #e8e8f0;
-  --muted: #8b8ba0;
-  --dim: #57576b;
+  --muted: #9494ad;
+  /* Both of these carry real text — section headings, helper lines under a
+     setting, the version string — so they clear 4.5:1 on every surface they
+     are used on rather than only looking subdued. */
+  --dim: #8f8fa8;
   --twitch: #9146ff;
   --kick: #53fc18;
   --accent: #7c6bff;

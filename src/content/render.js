@@ -10,6 +10,96 @@
 (function (FCM) {
   'use strict';
 
+  // The feed background each theme paints behind a username, which is what a
+  // name colour has to be readable against.
+  const AUTHOR_BACKDROP = { dark: [13, 13, 15], light: [245, 247, 251] };
+  // Aimed well above the 4.5 bar on purpose. The panel ships at 96% opacity,
+  // which lifts every colour slightly toward the background behind it, so names
+  // clamped to exactly 4.5 measured about 4.3 once actually rendered. This is
+  // the margin that survives the default setting.
+  const AUTHOR_MIN_CONTRAST = 5.2;
+
+  const srgb = (c) => {
+    const v = c / 255;
+    return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  };
+  const luminance = ([r, g, b]) => 0.2126 * srgb(r) + 0.7152 * srgb(g) + 0.0722 * srgb(b);
+  const contrast = (a, b) => {
+    const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+
+  function toHsl([r, g, b]) {
+    const R = r / 255; const G = g / 255; const B = b / 255;
+    const max = Math.max(R, G, B); const min = Math.min(R, G, B);
+    const l = (max + min) / 2;
+    if (max === min) return [0, 0, l];
+    const d = max - min;
+    const sat = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    let h;
+    if (max === R) h = ((G - B) / d + (G < B ? 6 : 0)) / 6;
+    else if (max === G) h = ((B - R) / d + 2) / 6;
+    else h = ((R - G) / d + 4) / 6;
+    return [h, sat, l];
+  }
+
+  function toRgb([h, sat, l]) {
+    if (sat === 0) { const v = Math.round(l * 255); return [v, v, v]; }
+    const q = l < 0.5 ? l * (1 + sat) : l + sat - l * sat;
+    const p = 2 * l - q;
+    const channel = (t) => {
+      let x = t;
+      if (x < 0) x += 1;
+      if (x > 1) x -= 1;
+      if (x < 1 / 6) return p + (q - p) * 6 * x;
+      if (x < 1 / 2) return q;
+      if (x < 2 / 3) return p + (q - p) * (2 / 3 - x) * 6;
+      return p;
+    };
+    return [channel(h + 1 / 3), channel(h), channel(h - 1 / 3)].map((v) => Math.round(v * 255));
+  }
+
+  const hex2 = (n) => n.toString(16).padStart(2, '0');
+  const toHex = ([r, g, b]) => `#${hex2(r)}${hex2(g)}${hex2(b)}`;
+
+  /**
+   * Moves a name colour's lightness until it is readable on the given
+   * background, leaving its hue and saturation alone.
+   *
+   * The colour belongs to the person who picked it, so this is the smallest
+   * change that works: step the lightness away from the background — up on a
+   * dark feed, down on a light one — and stop at the first step that clears the
+   * contrast bar. A colour that is already readable is returned untouched.
+   */
+  function readableOn(rgb, backdrop) {
+    if (contrast(rgb, backdrop) >= AUTHOR_MIN_CONTRAST) return rgb;
+    const [h, sat] = toHsl(rgb);
+    const up = luminance(backdrop) < 0.5;
+    let best = rgb;
+    for (let i = 1; i <= 100; i++) {
+      const l = up ? Math.min(1, toHsl(rgb)[2] + i / 100) : Math.max(0, toHsl(rgb)[2] - i / 100);
+      const candidate = toRgb([h, sat, l]);
+      best = candidate;
+      if (contrast(candidate, backdrop) >= AUTHOR_MIN_CONTRAST) return candidate;
+      if (l === 0 || l === 1) break;
+    }
+    return best;
+  }
+
+  /**
+   * The inline style for a username, carrying one readable value per theme so a
+   * theme switch under an already-rendered row still lands on a readable name.
+   * Returns an empty string when the platform sent no usable colour, which
+   * leaves the row on the stylesheet's own platform colour.
+   */
+  FCM.authorColorStyle = function (value) {
+    if (!/^#[0-9a-fA-F]{6}$/.test(String(value || ''))) return '';
+    const raw = [1, 3, 5].map((i) => parseInt(String(value).slice(i, i + 2), 16));
+    const dark = toHex(readableOn(raw, AUTHOR_BACKDROP.dark));
+    const light = toHex(readableOn(raw, AUTHOR_BACKDROP.light));
+    return ` style="--author-dark:${dark};--author-light:${light}"`;
+  };
+
   const view = {
     emotes: {
       twitch: { native: {}, thirdparty: {} },
@@ -391,8 +481,12 @@
     // instead of only to messages that arrive afterwards.
     const time = `<span class="fcm-time">${FCM.ftime(msg.timestamp || null)}</span>`;
     // Twitch hands out per-user name colours; Kick does the same via identity.
-    const colorAttr = /^#[0-9a-fA-F]{6}$/.test(String(msg.color || ''))
-      ? ` style="color:${msg.color}"` : '';
+    // Both let people pick one, and plenty pick a dark blue that lands at 2:1 on
+    // a dark feed. The hue is theirs to choose, so it is kept and only the
+    // lightness is moved until the name is readable — and because the panel can
+    // switch between light and dark under an already-rendered row, a value for
+    // each theme is emitted and CSS picks.
+    const colorAttr = FCM.authorColorStyle(msg.color);
 
     el.innerHTML = `<span class="fcm-dot fcm-dot-${platform}"></span>`
       + time

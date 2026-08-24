@@ -16,6 +16,14 @@
   // Below this a sibling is a spacer or a rounding artefact, not a card.
   const MIN_CARD_HEIGHT = 6;
   const MIN_CARD_WIDTH = 40;
+  // A banner drawn over the messages has to clear a higher bar than one in
+  // flow: Kick keeps an empty slot up there permanently, and its padding alone
+  // measures a few pixels.
+  const MIN_BANNER_HEIGHT = 20;
+  // How much of the message list a banner may cover before it stops being a
+  // banner. Both sites park full-height layers over their messages — Twitch's
+  // viewer card, the jump-to-bottom pill's container — and those are not cards.
+  const MAX_BANNER_SHARE = 0.5;
   // A popup smaller than this is a tooltip, and hiding the whole overlay for a
   // tooltip would be worse than letting the tooltip be covered.
   const MIN_DIALOG = 80;
@@ -35,9 +43,14 @@
    * level where the site places its cards and its composer as siblings, which
    * is the first level where anything sits wholly above or wholly below.
    *
-   * Anything overlapping the list is skipped rather than counted. Both sites
-   * park absolutely-positioned layers over the messages — viewer cards, the
-   * jump-to-bottom pill — and those are not cards to make room for.
+   * Most things overlapping the list are skipped rather than counted. Both
+   * sites park absolutely-positioned layers over the messages — viewer cards,
+   * the jump-to-bottom pill — and those are not cards to make room for.
+   *
+   * The exception is a banner pinned to the top of the list, which is how Kick
+   * draws a pinned message: it floats over the messages rather than pushing
+   * them down, but it is still a card the overlay must not cover. See
+   * `isTopBanner` for how the two are told apart.
    */
   function splitSiblings(list) {
     let node = list;
@@ -53,6 +66,7 @@
         if (r.height < MIN_CARD_HEIGHT || r.width < MIN_CARD_WIDTH) continue;
         if (r.bottom <= own.top + 2) above.push(sib);
         else if (r.top >= own.bottom - 2) below.push(sib);
+        else if (isTopBanner(sib, r, own)) above.push(sib);
       }
       if (above.length || below.length) return { above, below };
       node = parent;
@@ -60,11 +74,41 @@
     return { above: [], below: [] };
   }
 
+  // Whether an element painting something has anything in it worth showing.
+  // Kick keeps its banner slot in the page permanently and empty, where its own
+  // padding still measures; requiring content is what keeps that from being
+  // mistaken for a card and costing a strip of feed for nothing.
+  function hasContent(el) {
+    if ((el.textContent || '').trim()) return true;
+    return !!el.querySelector('img,svg,video,canvas');
+  }
+
+  /**
+   * Whether an element overlapping the message list is a card drawn over the
+   * top of it rather than a layer covering it.
+   *
+   * Three things have to hold: it hugs the top of the list, it covers only a
+   * small part of it, and it actually has something in it.
+   */
+  function isTopBanner(el, r, own) {
+    if (r.top > own.top + 4) return false;
+    if (r.height < MIN_BANNER_HEIGHT) return false;
+    if (r.bottom >= own.top + own.height * MAX_BANNER_SHARE) return false;
+    return hasContent(el);
+  }
+
   FCM.splitChatSiblings = splitSiblings;
 
   // Twitch abbreviates a large balance ("12.4K"), so this is deliberately loose:
   // it asks "does this read as a number", it does not parse one.
   const BALANCE_RE = /^\d[\d.,]*\s*[KMB]?$/i;
+
+  // Whether a piece of text is a balance and nothing else. Kick labels almost
+  // nothing in its chat footer, so this is what lets a control there be
+  // recognised by what it displays rather than by a name it does not carry.
+  FCM.looksLikeBalance = function (text) {
+    return BALANCE_RE.test(String(text || '').replace(/\s+/g, ' ').trim());
+  };
 
   FCM.readNativeBalance = function (el) {
     if (!el) return '';

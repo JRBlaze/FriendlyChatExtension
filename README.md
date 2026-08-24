@@ -8,16 +8,18 @@ streamer is also live on Kick, the overlay says so and offers to add the Kick ch
 feed. Open a Kick channel and it works the other way round.
 
 ![Platform](https://img.shields.io/badge/Chrome-MV3-blue)
-![Version](https://img.shields.io/badge/version-1.1.0-green)
+![Version](https://img.shields.io/badge/version-1.2.0-green)
 
 ## What it does
 
 - **Exactly covers the site's own chat.** The panel takes the chat column's own width, height
   and position — not an approximation — and keeps matching it as you drag Twitch's chat-width
   handle, toggle theatre mode, collapse the sidebar or resize the window.
-- **Leaves the site's own cards showing.** A hype train, poll, prediction, pinned message or
-  leaderboard at the top of chat is measured and the panel starts below it, so the real card
-  stays visible and stays clickable. Nothing about it is redrawn or reimplemented.
+- **Leaves the site's own cards showing, on both platforms.** A hype train, poll, prediction,
+  pinned message or leaderboard at the top of chat is measured and the panel starts below it, so
+  the real card stays visible and stays clickable. Nothing about it is redrawn or reimplemented.
+  Kick has two of these slots and gets both: the gifter leaderboard, which pushes the chat down,
+  and the pinned message, which floats over the top of it.
 - **Your bits, Kicks and channel points**, read off the page and shown above the composer, with
   a *Claim bonus* button when one is waiting. Clicking a balance opens the site's own rewards or
   cheer menu, and the panel steps out of the way for as long as it is open.
@@ -46,6 +48,10 @@ feed. Open a Kick channel and it works the other way round.
   column beside it.
 - **Timestamps and username badges can each be turned off**, and the change applies to the
   messages already on screen, not just the next one in.
+- **Readable at WCAG AA throughout.** Every piece of text in the overlay, the options page and
+  the popup clears 4.5:1 against what is actually painted behind it, in both themes. Event rows
+  and timestamps follow the *Text size* setting rather than sitting at a fixed 10px, and a name
+  colour the platform hands over is nudged until it is readable while keeping its hue.
 - **Moderation tools** in the username menu, for the channels you actually moderate.
 - **Follows the site's own theme.** Twitch or Kick in dark mode gets a dark overlay, light mode
   gets a light one, and it switches the moment you change it on the site.
@@ -56,7 +62,7 @@ feed. Open a Kick channel and it works the other way round.
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.1.0.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.2.0.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and a folder named `FriendlyChatExtension-main`. The
@@ -192,17 +198,34 @@ chat column covers all of it.
 **The cards stay visible.** The panel measures whatever the site has stacked above its message
 list and starts below it, so the real card is on screen and still fully interactive — you can
 click through a prediction or vote in a poll exactly as you would without the overlay. That
-costs feed height, so it is a setting: *Leave room for the site's cards*, on by default. The
-strip is capped at 45% of the chat column, so a tall card cannot squeeze the feed out.
+costs feed height, so it is a setting: *Leave room for the site's cards*, on by default.
+
+However tall the card is, the panel keeps 260 pixels for itself — enough for its header, a few
+lines of chat, the composer and the status bar. That is a floor on the panel rather than a share
+of the column, because the two sites' cards are not remotely the same size: Kick's gifter
+leaderboard opens to 310 px, which a percentage generous enough for Twitch would have clipped.
 
 Note that on many Twitch channels there is a card there permanently — the bits leaderboard —
 so the panel will usually start an inch or so down the column. Turn the setting off if you would
 rather have the height.
 
+**Kick has two card slots and both are handled.** Its gifter leaderboard sits above the messages
+and pushes them down, the same shape as Twitch's stack. Its pinned message does not: it is drawn
+as a banner *over* the top of the message list. Both end up revealed, but only the second needed
+new work — see *Finding the cards above chat* below.
+
 **The balances are lifted into the overlay.** A row above the composer shows what the site is
 showing: channel points, bits or Kicks, and a *Claim bonus* button while there is a bonus
 waiting. These are read straight off the page, so they are the balances of whichever account is
 signed in there, and reading them needs no token, no scope and no API call.
+
+Twitch labels its balances with test selectors that have outlived several redesigns. Kick labels
+nothing in its chat footer — no test selectors, no `aria-label`, no `title`, and generated class
+names — so its controls are found by what they are rather than by a name they do not carry: the
+icon Kick tags itself with `data-ds-icon`, and failing that a footer button whose entire visible
+text is a number, which in a chat footer is a balance and nothing else. The send button is
+identified first and excluded from both searches, so the worst case is finding nothing rather
+than clicking the wrong control.
 
 **Redeeming opens the site's own menu.** Clicking a balance hands the click to Twitch's or
 Kick's own button. The site's real rewards panel opens, over the site's own chat, with the
@@ -213,6 +236,40 @@ rules are duplicated: the platform owns them.
 
 Claiming a bonus is the one exception, because it is a single click with no menu behind it, so
 the overlay just clicks it and tells you it did.
+
+## Readability
+
+Everything the extension draws is measured against WCAG AA — 4.5:1 for text, 3:1 for large text —
+and the measurement is taken from what is *rendered*, not from reading the stylesheet. That
+distinction turned out to matter twice over.
+
+**Sizes follow the Text size setting.** Event and system rows, timestamps and the little tags on
+them used to be pinned at 10px, 9.5px and 8.5px however large the messages were set. They are now
+derived from that setting with a floor, so raising it raises all of them.
+
+**Opacity is no longer used to dim text.** Several states were faded rather than recoloured — a
+send target that is off, a filtered platform, a message a moderator deleted — and opacity
+multiplies down the whole ancestor chain. A target chip at 0.4 inside a panel at 0.96 with a tag
+at 0.75 came out at **1.55:1**. Those states are carried by colour and background now, which do
+not compound, and a deleted message is struck through and muted rather than faded.
+
+**The panel's own opacity is part of the sum.** It ships at 96%, which lifts every colour slightly
+toward whatever is behind it and was quietly taking values that computed as 4.79 down to 4.49.
+The palette is chosen with that margin built in. Turning the *Opacity* slider down further will
+erode contrast — that is the point of the setting, and it is your call, but it is worth knowing
+the default is the level the palette is designed around.
+
+**Brand colours are split in two.** Twitch purple on its own tinted chip is 3.1:1: fine for a
+border, not fine for a label. `--twitch` and `--kick` still draw dots, edges and the brand mark,
+where the 3:1 non-text bar applies; anything carrying *words* uses a separate pair chosen to clear
+4.5:1 on the tint it sits on, in each theme.
+
+**Name colours are nudged, not replaced.** Twitch and Kick both let people pick their own colour
+and plenty pick one that lands near 2:1 on a dark feed — pure blue is 2.26:1. The colour belongs
+to the person who chose it, so only its lightness moves, and only until it is readable: the hue
+and saturation are untouched, so a blue name stays blue. A colour that already reads well is
+passed through byte for byte. Both a dark-theme and a light-theme value are emitted per name, so
+switching theme under an already-rendered row still lands on a readable one.
 
 ## Moderating
 
@@ -421,6 +478,7 @@ tests/
   run.js           offline test suite
   background.js    boots the real service worker with the platforms stubbed
   harness.html     the overlay against a mock channel page
+  contrast.js      WCAG AA auditor, run from the harness or either page
 cloudflare-worker.js   the Kick token-exchange proxy, deployed separately
 wrangler.toml
 ```
@@ -468,9 +526,17 @@ name. The search climbs from it until it reaches the first level where a sibling
 above or *wholly* below it, which is the level where both sites place their cards and their
 composer. Everything above that line is the card block; the overlay starts at its bottom edge.
 
-Anything overlapping the list is skipped rather than counted, which is what keeps the
+Most things overlapping the list are skipped rather than counted, which is what keeps the
 absolutely-positioned layers both sites park over their messages — Twitch's viewer card, the
 jump-to-bottom pill — from being mistaken for cards.
+
+The exception is Kick's pinned message, which is drawn as a banner over the top of the messages
+rather than pushing them down. That is still a card the overlay must not cover, so a sibling
+overlapping the list counts as one when three things hold: it hugs the top of the list, it covers
+less than half of it, and it actually has something in it. The last of those matters more than it
+sounds — Kick keeps that banner slot in the page permanently and empty, where its own padding
+still measures about 12 px, and counting it would have cost a strip of feed on every channel for
+nothing.
 
 Hiding the site's own chat and revealing its cards would contradict each other, so the cards are
 exempted rather than un-hidden: `visibility` is inherited, and setting it back to `visible` on a
@@ -544,7 +610,7 @@ DOM, so nothing in the page's layout or stacking contexts has to be fought with.
 node tests/run.js
 ```
 
-695 assertions, no network. It drives the real parsers with real payload shapes: IRC lines with
+761 assertions, no network. It drives the real parsers with real payload shapes: IRC lines with
 tags and emote positions, Kick Pusher events, emote sets from every provider, and the
 counterpart matcher against stubbed platform APIs — including the cases that matter most, like a
 manual mapping beating a same-name guess and a failing emote provider not taking the others down.
@@ -598,12 +664,51 @@ their way and coming back when they clear; *toggle claim bonus* puts a bonus che
 rewards row; and clicking a balance opens a mock menu at the same `z-index` Twitch uses, so the
 panel can be watched standing aside for it. The mock column mirrors Twitch's real nesting,
 including keeping the chat header *outside* the chat-room section — that detail is why the header
-is not a sibling of the message list and so is never mistaken for a card. Setting `window.autoSendResult` answers a send with a canned
+is not a sibling of the message list and so is never mistaken for a card.
+
+**Contrast is checked from the harness too.** *check contrast* loads `tests/contrast.js` and
+reports anything below WCAG AA to the console, measured from the rendered page rather than the
+stylesheet so the panel's opacity and any inherited fading are composited in. It works on the
+options page and the popup as well — load the script and call `__auditContrast([document])`.
+Turn transitions off before measuring: a colour part-way through one reads as its start value,
+and in a window that is not compositing it never finishes at all.
+
+**There is a Kick column too**, and *site: twitch* / *site: kick* rebuild the overlay against the
+other adapter the way a navigation would, taking the other column out of the layout so that
+site's selectors stop matching. It mirrors Kick's real nesting, including the second zero-sized
+copy of the chat carrying the same ids — placed first in the document, so the layout-aware
+lookups are actually exercised. *kick: leaderboard* fills the slot that pushes the chat down and
+*kick: pinned banner* the one that floats over it, which are the two different shapes Kick uses.
+Both columns have a composer wired to the same controlled-editor mock, so the send path can be
+driven on either site. Setting `window.autoSendResult` answers a send with a canned
 per-platform result, which is how the partial-failure and expired-token paths get exercised. Setting `composerMode` in the console to `paste-only`, `beforeinput`, `plain`,
 `readonly` or `no-submit` switches how the mock composer behaves, which covers each branch of
 the send path.
 
 ## Bugs this testing found
+
+- **The feed could freeze permanently, and silently.** Rows are batched and flushed on the next
+  animation frame. Frames stop arriving whenever the page is not being drawn — a background tab,
+  but also a window merely covered by another one, which leaves `document.hidden` false — and the
+  code chose between a frame and a timer at the moment of scheduling. That was not enough: the
+  page can stop being drawn *after* the frame is asked for. The frame never arrived, the
+  "already scheduled" flag stayed set, and every message after it returned early without asking
+  again. Chat stopped drawing for the rest of the session while the message counter carried on
+  climbing, so the overlay looked alive and was not. Both a frame and a timer are now started and
+  whichever arrives first does the work, cancelling the other. Found by running the overlay in a
+  window that never composites, which is the same condition as a covered one.
+
+- **Kick renders its whole chat twice and the wrong copy could be hidden.** Kick ships a second,
+  zero-sized copy of the chat inside a `display: none` streaming placeholder, carrying the same
+  `id`s — `#channel-chatroom`, `#chatroom-messages`, `#chatroom-footer` all match twice. Anything
+  resolving them with a plain `querySelector` gets whichever comes first in the document, which
+  is not something to depend on across a hydration. *Hide the site's own chat* could therefore
+  hide the invisible copy and leave the real one showing. Those lookups now skip anything the
+  page is not laying out.
+
+- **Kick's send button was never found.** It carries no test selector, no `aria-label` and no
+  `title` — only `id="send-message-button"`. The send path fell through to pressing Enter, which
+  works, but is a guess about a key binding rather than the button the site actually wired up.
 
 - **A navigation that overtook a mount left no overlay at all.** Mounting is asynchronous — it
   reads settings and geometry out of `chrome.storage` — and a second channel change lands inside
@@ -682,13 +787,23 @@ was never going to see in a friendly test:
   falls back to locating the message list and climbing to its column, so a renamed wrapper does
   not break sizing; only if that fails too does the panel dock to the right of the window.
   `src/content/sites.js` is the one file to update when that happens.
-- **Kick's bits and points controls are found by accessible name.** Twitch labels its balances
-  with test selectors (`bits-balance-string`, `copo-balance-string`) that have outlived several
-  redesigns. Kick labels nothing and its classes are generated, so the search there goes by
-  `aria-label` and `data-testid` — the one thing a control that has to be usable cannot drop.
-  Where nothing matches, the row simply does not appear, rather than guessing at a button and
-  sending a click somewhere unintended. `kick.nativeControls()` in `src/content/sites.js` is the
-  place to add a selector if Kick moves them.
+- **Kick's Kicks balance is found by shape, not by name, and is the one thing here not verified
+  against a signed-in page.** Twitch labels its balances with test selectors
+  (`bits-balance-string`, `copo-balance-string`) that have outlived several redesigns. Kick
+  labels nothing in its chat footer at all, so its controls are matched on the `data-ds-icon`
+  name Kick puts on its own icons and, failing that, on a footer button whose entire visible text
+  is a number. Both were checked against a live Kick channel while signed out, where they
+  correctly match nothing — but what Kick renders there once you *are* signed in could not be
+  observed, so the row may simply not appear. It cannot click the wrong thing: the send button is
+  excluded from every search first. `kick.nativeControls()` in `src/content/sites.js` is the one
+  function to update.
+- **The Opacity setting can take contrast below AA.** The palette is built to clear 4.5:1 at the
+  default 96%. Below roughly 90% the panel starts blending enough of the page underneath to erode
+  that, and how far depends on what is behind it. Nothing is stopping you — it is a deliberate
+  setting — but AA is only guaranteed at the default.
+- **A name colour is nudged, never guaranteed.** The clamp targets the feed background of each
+  theme. A name sitting on the highlight tint of a mention row, rather than the plain feed, can
+  land slightly under.
 - **The card strip costs feed height.** Twitch keeps a bits leaderboard above chat on many
   channels, so *Leave room for the site's cards* usually gives up an inch of column even when
   there is no hype train running. Turning it off puts the panel back over the whole column.
@@ -738,6 +853,20 @@ does not:
   with a five-second backstop; while one *is* open the check is against that element alone. Idle
   cost went from 169 µs every tick to **2 µs**, measured as one scan per five seconds instead of
   ten.
+
+The same two paths were then measured on kick.com, which is the larger page of the two — about
+2,980 nodes against Twitch's 1,554:
+
+| | Twitch | Kick |
+| --- | --- | --- |
+| scroll → placement | 64 µs | **6 µs** |
+| card search (on the 500 ms tick) | 78 µs | 28 µs |
+| balance read (on the tick) | 43 µs | 29 µs |
+| menu scan, when armed | 169 µs | **339 µs** |
+
+Kick's chat is addressed by `id`, which is why its hot path is an order of magnitude cheaper than
+Twitch's attribute selectors. Its menu scan is twice as expensive, being a bigger document —
+which is the argument for arming that scan by input rather than running it every tick, twice over.
 
 Emote search also stopped sorting the whole match set. A two-character query can match thousands
 of emotes when only thirty are ever shown, so matches are split into prefix and substring groups

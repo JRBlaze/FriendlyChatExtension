@@ -20,20 +20,36 @@
   --border: rgba(255, 255, 255, 0.08);
   --border2: rgba(255, 255, 255, 0.14);
   --text: #e8e8f0;
-  --text-muted: #8b8ba0;
-  --text-dim: #57576b;
+  --text-muted: #9494ad;
+  --text-dim: #8f8fa8;
   --twitch: #9146ff;
+  /* The brand colours are kept for borders, dots and the brand mark, where the
+     3:1 bar for non-text applies. Anything that carries *words* uses the -text
+     pair instead: Twitch purple on its own tinted chip is 3.1:1, which is fine
+     for a border and not fine for a label. */
+  --twitch-text: #b98cff;
+  --kick-text: #53fc18;
   --twitch-dim: rgba(145, 70, 255, 0.15);
   --twitch-border: rgba(145, 70, 255, 0.38);
   --kick: #53fc18;
   --kick-dim: rgba(83, 252, 24, 0.12);
   --kick-border: rgba(83, 252, 24, 0.34);
   --accent: #7c6bff;
+  /* Used wherever white text sits on the accent. The accent itself stays for
+     rules, rings and edges, which have a lower bar to clear. */
+  --accent-fill: #6552e8;
+  --send-twitch: #8b3df5;
+  --danger: #ff8a8a;
+  --danger-edge: #ff5a5a;
+  --badge-sub: #c6a5ff;
+  --badge-vip: #ffcc00;
+  --badge-gift: #ff9fbc;
+  --badge-verified: #c4b8ff;
   --link: #7c9fff;
   --link-hover: #a8bfff;
   --sys-bg: #08080a;
   --sys-border: #32323e;
-  --sys-text: #7a7a92;
+  --sys-text: #8686a0;
   --mention-bg: rgba(124, 107, 255, 0.28);
   --mention-text: #d3caff;
   --sys-label-bg: #2b2b36;
@@ -53,15 +69,25 @@
   --border: rgba(23, 31, 56, 0.12);
   --border2: rgba(23, 31, 56, 0.2);
   --text: #171b2a;
-  --text-muted: #657083;
-  --text-dim: #9aa4b7;
+  --text-muted: #4e5765;
+  --text-dim: #5c6675;
   --twitch: #7b35e8;
+  --twitch-text: #6c2ad2;
+  --kick-text: #136400;
   --twitch-dim: rgba(123, 53, 232, 0.12);
   --twitch-border: rgba(123, 53, 232, 0.32);
   --kick: #1f9e00;
   --kick-dim: rgba(31, 158, 0, 0.12);
   --kick-border: rgba(31, 158, 0, 0.3);
   --accent: #5f55e8;
+  --accent-fill: #564cd8;
+  --send-twitch: #7b35e8;
+  --danger: #b01414;
+  --danger-edge: #c41c1c;
+  --badge-sub: #5c1eb0;
+  --badge-vip: #7a5400;
+  --badge-gift: #9c1039;
+  --badge-verified: #4133bd;
   --link: #315ed8;
   --link-hover: #1f46b8;
   --sys-bg: #e6ebf4;
@@ -164,12 +190,12 @@
   transition: border-color .15s, background .15s, color .15s, opacity .15s;
 }
 .fcm-chip-btn:hover { border-color: var(--border2); }
-.fcm-chip-btn[data-on="false"] { opacity: 0.42; }
+.fcm-chip-btn[data-on="false"] { color: var(--text-dim); background: var(--surface); }
 .fcm-chip-btn[data-platform="twitch"][data-on="true"] {
-  border-color: var(--twitch-border); background: var(--twitch-dim); color: var(--twitch);
+  border-color: var(--twitch-border); background: var(--twitch-dim); color: var(--twitch-text);
 }
 .fcm-chip-btn[data-platform="kick"][data-on="true"] {
-  border-color: var(--kick-border); background: var(--kick-dim); color: var(--kick);
+  border-color: var(--kick-border); background: var(--kick-dim); color: var(--kick-text);
 }
 
 .fcm-live-dot {
@@ -180,7 +206,7 @@
 .fcm-live-dot[data-state="connected"] { background: currentColor; box-shadow: 0 0 6px currentColor; }
 .fcm-live-dot[data-state="connecting"] { background: #ffb400; animation: fcm-pulse 1s ease-in-out infinite; }
 .fcm-live-dot[data-state="disconnected"],
-.fcm-live-dot[data-state="error"] { background: #ff5a5a; }
+.fcm-live-dot[data-state="error"] { background: var(--danger-edge); }
 
 @keyframes fcm-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
 
@@ -229,8 +255,8 @@
   font-size: 9px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
   margin-bottom: 3px;
 }
-.fcm-prompt[data-platform="kick"] .fcm-prompt-kicker { color: var(--kick); }
-.fcm-prompt[data-platform="twitch"] .fcm-prompt-kicker { color: var(--twitch); }
+.fcm-prompt[data-platform="kick"] .fcm-prompt-kicker { color: var(--kick-text); }
+.fcm-prompt[data-platform="twitch"] .fcm-prompt-kicker { color: var(--twitch-text); }
 
 .fcm-live-pip {
   width: 6px; height: 6px; border-radius: 50%;
@@ -263,7 +289,7 @@
 .fcm-btn:hover { background: var(--surface3); border-color: var(--border2); }
 .fcm-btn-primary { border-color: transparent; color: #fff; }
 .fcm-prompt[data-platform="kick"] .fcm-btn-primary { background: var(--kick); color: #0a0a0a; }
-.fcm-prompt[data-platform="twitch"] .fcm-btn-primary { background: var(--twitch); color: #fff; }
+.fcm-prompt[data-platform="twitch"] .fcm-btn-primary { background: var(--send-twitch); color: #fff; }
 .fcm-btn-primary:hover { filter: brightness(1.1); }
 .fcm-btn-ghost { background: transparent; border-color: var(--border); color: var(--text-muted); }
 .fcm-btn-ghost:hover { color: var(--text); }
@@ -299,8 +325,9 @@
 
 .fcm-msg:hover { background: var(--surface2); }
 .fcm-hide { display: none !important; }
-.fcm-deleted { opacity: 0.35; }
-.fcm-deleted .fcm-body { text-decoration: line-through; }
+/* Struck through and muted, not faded: it is a record of what was said and
+   then removed, and still has to be readable. */
+.fcm-deleted .fcm-body { text-decoration: line-through; color: var(--text-muted); }
 
 .fcm-msg.fcm-mentioned {
   background: rgba(124, 107, 255, 0.09);
@@ -316,10 +343,13 @@
 .fcm-dot-twitch { background: var(--twitch); }
 .fcm-dot-kick { background: var(--kick); }
 
+/* Sized from the Text size setting rather than pinned in pixels, so raising it
+   raises the timestamp too — it used to stay at 9.5px however large the
+   messages were set. The floor keeps it legible at the smallest setting. */
 .fcm-time {
   display: inline-block;
   font-family: var(--fcm-mono);
-  font-size: 9.5px;
+  font-size: max(10.5px, calc(var(--fcm-size) - 2px));
   color: var(--text-dim);
   margin-right: 5px;
   vertical-align: baseline;
@@ -334,8 +364,13 @@
 
 .fcm-author { font-weight: 600; cursor: pointer; word-break: break-all; }
 .fcm-author:hover { text-decoration: underline; text-underline-offset: 2px; }
-.fcm-author-twitch { color: var(--twitch); }
-.fcm-author-kick { color: var(--kick); }
+.fcm-author-twitch { color: var(--twitch-text); }
+.fcm-author-kick { color: var(--kick-text); }
+/* A name colour the platform supplied, already adjusted to be readable on each
+   theme's feed background. The fallback keeps the platform colour for anyone
+   who never picked one. */
+.fcm-author[style*="--author-dark"] { color: var(--author-dark); }
+.fcm-root[data-theme="light"] .fcm-author[style*="--author-light"] { color: var(--author-light); }
 .fcm-colon { color: var(--text-dim); margin-right: 3px; }
 .fcm-body { color: var(--text); word-break: break-word; }
 
@@ -357,11 +392,11 @@
   vertical-align: middle;
 }
 .fcm-chip { margin-right: 4px; }
-.fcm-chip-sub, .fcm-kbadge-subscriber, .fcm-kbadge-founder { background: rgba(145, 70, 255, 0.25); color: #c6a5ff; }
-.fcm-chip-mod, .fcm-kbadge-moderator, .fcm-kbadge-broadcaster { background: rgba(83, 252, 24, 0.2); color: var(--kick); }
-.fcm-chip-vip, .fcm-kbadge-vip { background: rgba(255, 200, 0, 0.2); color: #ffcc00; }
-.fcm-kbadge-gifter, .fcm-kbadge-gifted { background: rgba(255, 90, 138, 0.2); color: #ff9fbc; }
-.fcm-kbadge-verified, .fcm-kbadge-staff { background: rgba(124, 107, 255, 0.24); color: #c4b8ff; }
+.fcm-chip-sub, .fcm-kbadge-subscriber, .fcm-kbadge-founder { background: rgba(145, 70, 255, 0.25); color: var(--badge-sub); }
+.fcm-chip-mod, .fcm-kbadge-moderator, .fcm-kbadge-broadcaster { background: rgba(83, 252, 24, 0.2); color: var(--kick-text); }
+.fcm-chip-vip, .fcm-kbadge-vip { background: rgba(255, 200, 0, 0.2); color: var(--badge-vip); }
+.fcm-kbadge-gifter, .fcm-kbadge-gifted { background: rgba(255, 90, 138, 0.2); color: var(--badge-gift); }
+.fcm-kbadge-verified, .fcm-kbadge-staff { background: rgba(124, 107, 255, 0.24); color: var(--badge-verified); }
 .fcm-kbadge-default, .fcm-kbadge-og, .fcm-kbadge-event, .fcm-kbadge-sidekick {
   background: var(--surface3); color: var(--text-muted);
 }
@@ -379,28 +414,30 @@
   border-left: 2px solid var(--sys-border);
   border-radius: 5px;
   font-family: var(--fcm-mono);
-  font-size: 10px;
+  font-size: max(11px, calc(var(--fcm-size) - 1px));
 }
-.fcm-sys-error { border-left-color: #ff5a5a; }
+.fcm-sys-error { border-left-color: var(--danger-edge); }
 .fcm-sys-event { border-left-color: var(--accent); }
-.fcm-sys-time { color: var(--sys-text); opacity: 0.7; flex-shrink: 0; min-width: 32px; }
+.fcm-sys-time { color: var(--sys-text); flex-shrink: 0; min-width: 5ch; }
 .fcm-sys-tag {
-  display: inline-flex; align-items: center; height: 15px; padding: 0 6px;
+  display: inline-flex; align-items: center; min-height: 17px; padding: 1px 6px;
   border-radius: 3px; background: var(--sys-label-bg); color: var(--sys-label-text);
-  font-size: 8.5px; font-weight: 700; letter-spacing: 0.08em; line-height: 1;
+  font-size: max(9px, calc(var(--fcm-size) - 3.5px));
+  font-weight: 700; letter-spacing: 0.08em; line-height: 1;
   flex-shrink: 0; font-style: normal;
 }
 .fcm-sys-label {
-  display: inline-flex; align-items: center; height: 15px; padding: 0 6px;
+  display: inline-flex; align-items: center; min-height: 17px; padding: 1px 6px;
   border-radius: 3px; border: 1px solid var(--border); background: var(--surface2);
-  color: var(--text-muted); font-size: 8.5px; font-weight: 700;
+  color: var(--text-muted); font-size: max(9px, calc(var(--fcm-size) - 3.5px));
+  font-weight: 700;
   letter-spacing: 0.04em; line-height: 1; flex-shrink: 0; text-transform: uppercase;
 }
-.fcm-sys-twitch { border-color: var(--twitch-border); background: var(--twitch-dim); color: var(--twitch); }
-.fcm-sys-kick { border-color: var(--kick-border); background: var(--kick-dim); color: var(--kick); }
-.fcm-sys-history { border-color: rgba(124, 107, 255, 0.35); background: rgba(124, 107, 255, 0.1); color: var(--accent); }
+.fcm-sys-twitch { border-color: var(--twitch-border); background: var(--twitch-dim); color: var(--twitch-text); }
+.fcm-sys-kick { border-color: var(--kick-border); background: var(--kick-dim); color: var(--kick-text); }
+.fcm-sys-history { border-color: rgba(124, 107, 255, 0.35); background: rgba(124, 107, 255, 0.1); color: var(--link); }
 .fcm-sys-error .fcm-sys-label,
-.fcm-sys-label.fcm-sys-error { border-color: rgba(255, 90, 90, 0.35); background: rgba(255, 90, 90, 0.08); color: #ff8a8a; }
+.fcm-sys-label.fcm-sys-error { border-color: rgba(255, 90, 90, 0.35); background: rgba(255, 90, 90, 0.08); color: var(--danger); }
 .fcm-sys-body { color: var(--sys-text); word-break: break-word; }
 
 .fcm-empty {
@@ -408,7 +445,7 @@
   gap: 8px; padding: 34px 18px; color: var(--text-dim);
   font-family: var(--fcm-mono); font-size: 11px; text-align: center;
 }
-.fcm-empty-icon { font-size: 22px; opacity: 0.3; }
+.fcm-empty-icon { font-size: 22px; color: var(--text-dim); }
 
 /* ── The site's own balances ───────────────────────────────────────────────── */
 
@@ -431,7 +468,10 @@
   transition: border-color .15s, background .15s, color .15s;
 }
 .fcm-native-chip:hover { border-color: var(--border2); background: var(--surface3); color: var(--text); }
-.fcm-native-key { font-size: 8px; letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.7; }
+.fcm-native-key {
+  font-size: max(9px, calc(var(--fcm-size) - 3.5px));
+  letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-dim);
+}
 .fcm-native-val { font-size: 11px; color: var(--text); font-variant-numeric: tabular-nums; }
 
 .fcm-native[data-platform="twitch"] .fcm-native-chip { border-color: var(--twitch-border); }
@@ -444,7 +484,7 @@
 .fcm-native-claim {
   margin-left: auto;
   border-color: transparent !important;
-  background: var(--accent) !important;
+  background: var(--accent-fill) !important;
   color: #fff !important;
   letter-spacing: 0.04em; text-transform: uppercase; font-size: 8.5px;
 }
@@ -500,7 +540,7 @@
 /* While a reply is pending the chips show where it is going, not what is
    selected, so they read as locked rather than clickable state. */
 .fcm-targets[data-locked="true"] .fcm-target { cursor: default; }
-.fcm-targets[data-locked="true"] .fcm-target[data-on="false"] { opacity: 0.28; }
+.fcm-targets[data-locked="true"] .fcm-target[data-on="false"] { color: var(--text-dim); }
 
 /* Send targets: which platforms a typed message goes to. */
 .fcm-targets { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
@@ -517,18 +557,19 @@
   transition: border-color .15s, background .15s, color .15s, opacity .15s;
 }
 .fcm-target:hover { border-color: var(--border2); }
-.fcm-target[data-on="false"] { opacity: 0.45; }
+.fcm-target[data-on="false"] { color: var(--text-dim); background: var(--surface); }
 .fcm-target[data-platform="twitch"][data-on="true"] {
-  border-color: var(--twitch-border); background: var(--twitch-dim); color: var(--twitch);
+  border-color: var(--twitch-border); background: var(--twitch-dim); color: var(--twitch-text);
 }
 .fcm-target[data-platform="kick"][data-on="true"] {
-  border-color: var(--kick-border); background: var(--kick-dim); color: var(--kick);
+  border-color: var(--kick-border); background: var(--kick-dim); color: var(--kick-text);
 }
 .fcm-target[data-route="blocked"],
-.fcm-target[data-route="no-channel"] { opacity: 0.4; }
+.fcm-target[data-route="no-channel"] { color: var(--text-dim); border-style: dashed; }
 .fcm-target-tag {
-  font-size: 8px; letter-spacing: 0.04em; text-transform: uppercase;
-  opacity: 0.75; max-width: 90px; overflow: hidden; text-overflow: ellipsis;
+  font-size: max(9px, calc(var(--fcm-size) - 4px)); letter-spacing: 0.04em;
+  text-transform: uppercase;
+  max-width: 90px; overflow: hidden; text-overflow: ellipsis;
 }
 
 .fcm-emote-btn {
@@ -564,10 +605,10 @@
    there is no headroom left to brighten into. On a light page the button has to
    carry the contrast instead, so the green is the darker one and the text is
    white again. */
-.fcm-root { --send-bg: var(--accent); --send-fg: #fff; --send-hover: 1.1; }
-.fcm-root[data-host="twitch"] { --send-bg: #9146ff; }
+.fcm-root { --send-bg: var(--accent-fill); --send-fg: #fff; --send-hover: 1.1; }
+.fcm-root[data-host="twitch"] { --send-bg: var(--send-twitch); }
 .fcm-root[data-host="kick"] { --send-bg: #53fc18; --send-fg: #0b1a05; --send-hover: 0.92; }
-.fcm-root[data-theme="light"][data-host="twitch"] { --send-bg: #7b35e8; }
+.fcm-root[data-theme="light"][data-host="twitch"] { --send-bg: var(--send-twitch); }
 .fcm-root[data-theme="light"][data-host="kick"] {
   --send-bg: #158000; --send-fg: #fff; --send-hover: 1.14;
 }
@@ -805,7 +846,7 @@
 }
 .fcm-um-action:disabled { opacity: 0.4; cursor: default; }
 .fcm-um-action:disabled:hover { background: transparent; }
-.fcm-um-danger { color: #ff6b6b; }
+.fcm-um-danger { color: var(--danger); }
 .fcm-um-danger:hover { background: rgba(255, 107, 107, 0.12); }
 
 /* Moderation sits under its own heading so it can never be mistaken for the
@@ -859,10 +900,10 @@
   padding: 9px 11px;
   border-radius: 7px;
   border: 1px solid rgba(255, 90, 90, 0.35);
-  border-left: 3px solid #ff5a5a;
+  border-left: 3px solid var(--danger-edge);
   background: rgba(255, 90, 90, 0.08);
 }
-.fcm-authfail b { display: block; font-size: 12px; color: #ff8a8a; margin-bottom: 3px; }
+.fcm-authfail b { display: block; font-size: 12px; color: var(--danger); margin-bottom: 3px; }
 .fcm-authfail p { font-size: 11.5px; color: var(--text); line-height: 1.5; }
 .fcm-authfail .fcm-code { margin: 6px 0; user-select: all; cursor: text; }
 .fcm-authfail-hint { color: var(--text-muted) !important; font-size: 11px !important; }

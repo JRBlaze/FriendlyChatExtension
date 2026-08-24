@@ -6,9 +6,16 @@
 (function (FCM) {
   'use strict';
 
+  // How long the queue may sit unflushed when no animation frame arrives.
+  // Short enough that a covered window still reads as live chat, long enough
+  // that it never beats the frame in a window that is actually being drawn.
+  const FLUSH_FALLBACK_MS = 250;
+
   FCM.createFeed = function (feedEl, getSettings) {
     const pending = [];
     let scheduled = false;
+    let frameId = null;
+    let timerId = null;
     let msgCount = 0;
     const seen = new Set();
     let onCount = null;
@@ -49,14 +56,35 @@
       if (pinned) feedEl.scrollTop = feedEl.scrollHeight;
     }
 
-    // requestAnimationFrame is suspended while the tab is hidden, so a
-    // background tab has to fall back to a timer or the queue never drains.
-    function schedule(fn) {
-      if (document.hidden || !window.requestAnimationFrame) {
-        setTimeout(fn, 250);
-        return;
-      }
-      window.requestAnimationFrame(fn);
+    /**
+     * Asks for the next flush.
+     *
+     * requestAnimationFrame is the right way to batch this — it lands the rows
+     * just before the browser paints them — but it stops arriving whenever the
+     * page is not being drawn: a hidden tab, and also a window that is merely
+     * covered by another one, which leaves `document.hidden` false.
+     *
+     * Choosing between a frame and a timer up front was not enough, because the
+     * page can stop being drawn *after* the frame is asked for. That frame never
+     * arrives, `scheduled` stays set, and every message after it returns early
+     * without asking again — the feed stops drawing for good while the message
+     * count carries on climbing.
+     *
+     * So both are started and whichever arrives first does the work. In a window
+     * that is being drawn the frame wins within ~16 ms and cancels the timer, so
+     * the fallback costs nothing when it is not needed.
+     */
+    function schedule() {
+      if (window.requestAnimationFrame) frameId = window.requestAnimationFrame(run);
+      timerId = setTimeout(run, FLUSH_FALLBACK_MS);
+    }
+
+    function run() {
+      if (frameId !== null && window.cancelAnimationFrame) window.cancelAnimationFrame(frameId);
+      if (timerId !== null) clearTimeout(timerId);
+      frameId = null;
+      timerId = null;
+      flush();
     }
 
     function queue(el) {
@@ -69,7 +97,7 @@
       if (pending.length > cap) pending.splice(0, pending.length - cap);
       if (scheduled) return;
       scheduled = true;
-      schedule(flush);
+      schedule();
     }
 
     // Bounded so a long session cannot grow the dedupe set without limit.
