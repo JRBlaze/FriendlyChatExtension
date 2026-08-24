@@ -8,7 +8,7 @@ streamer is also live on Kick, the overlay says so and offers to add the Kick ch
 feed. Open a Kick channel and it works the other way round.
 
 ![Platform](https://img.shields.io/badge/Chrome-MV3-blue)
-![Version](https://img.shields.io/badge/version-1.2.5-green)
+![Version](https://img.shields.io/badge/version-1.2.6-green)
 
 ## What it does
 
@@ -62,7 +62,7 @@ feed. Open a Kick channel and it works the other way round.
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.2.5.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.2.6.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and a folder named `FriendlyChatExtension-main`. The
@@ -612,7 +612,7 @@ DOM, so nothing in the page's layout or stacking contexts has to be fought with.
 node tests/run.js
 ```
 
-776 assertions, no network. It drives the real parsers with real payload shapes: IRC lines with
+781 assertions, no network. It drives the real parsers with real payload shapes: IRC lines with
 tags and emote positions, Kick Pusher events, emote sets from every provider, and the
 counterpart matcher against stubbed platform APIs — including the cases that matter most, like a
 manual mapping beating a same-name guess and a failing emote provider not taking the others down.
@@ -716,6 +716,15 @@ the send path.
   never be seen opening later. And nothing inside the message list is ever a menu, because a
   busy channel adds rows constantly and a tall one covers plenty of the panel.
 
+  Recognising the panel is not the whole answer, though, and three attempts at it in a row is
+  enough to say so. While the overlay is standing aside there is a better question available:
+  is anything painted over the chat right now? That is asked by sampling what is actually on top
+  at four points inside the message list — off-centre, because both sites float a jump-to-bottom
+  pill down the middle. If what comes back is the messages, or something the messages sit inside,
+  nothing is covering them. It needs no knowledge of the site's markup at all, which is the
+  point: it was checked against a live Kick channel, where it reports nothing while the chat is
+  idle and reports a cover the moment a panel opens over it.
+
 - **The feed could freeze permanently, and silently.** Rows are batched and flushed on the next
   animation frame. Frames stop arriving whenever the page is not being drawn — a background tab,
   but also a window merely covered by another one, which leaves `document.hidden` false — and the
@@ -816,15 +825,15 @@ was never going to see in a friendly test:
   falls back to locating the message list and climbing to its column, so a renamed wrapper does
   not break sizing; only if that fails too does the panel dock to the right of the window.
   `src/content/sites.js` is the one file to update when that happens.
-- **Kick shows no Kicks balance, only a way in.** Its two chat-footer controls are
-  `data-testid="channel-points-button"`, which carries the points balance as its own text, and
-  `data-testid="get-kicks"`, which reads "Get KICKs" and carries no number at all. Both are
-  matched by name first and by shape after, so a rename does not lose them. Whether a control
-  *exists* is tracked separately from whatever it displays, which is what lets the Kicks chip
-  appear at all — an earlier version hid it because there was nothing to count.
-  `kick.nativeControls()` in `src/content/sites.js` is the one function to update if Kick moves
-  them, and *Copy diagnostics* under **Diagnostics** in the overlay's settings produces exactly
-  what is needed to update it.
+- **Kick's two chat-footer controls are easy to confuse with their neighbours.** Channel points
+  are `data-testid="channel-points-button"`, carrying the balance as the button's own text. Kicks
+  are a `kicks-balance` element *inside* a button — the little "K 0" — and pressing that button
+  opens the gift shop. Sitting beside it is `data-testid="get-kicks"`, which looks like the same
+  thing and is not: it opens a page for buying Kicks. The balance button is preferred and the
+  purchase link is a last resort, which is the difference between opening the shop and opening
+  the till. `kick.nativeControls()` in `src/content/sites.js` is the one function to update if
+  Kick moves them, and *Copy diagnostics* under **Diagnostics** in the overlay's settings
+  produces exactly what is needed to update it.
 - **The Opacity setting can take contrast below AA.** The palette is built to clear 4.5:1 at the
   default 96%. Below roughly 90% the panel starts blending enough of the page underneath to erode
   that, and how far depends on what is behind it. Nothing is stopping you — it is a deliberate

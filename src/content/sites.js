@@ -114,14 +114,20 @@
    * its value. Kick's Kicks balance is a `<div>`, and clicking a div does
    * nothing at all — which is exactly what it did.
    */
-  function clickable(el) {
+  // The real control around an element, or nothing if there is not one.
+  function clickableStrict(el) {
     if (!el) return null;
     const tag = el.tagName;
     if (tag === 'BUTTON' || tag === 'A' || el.getAttribute('role') === 'button') return el;
+    return el.closest ? el.closest('button,[role="button"],a') : null;
+  }
+
+  function clickable(el) {
+    if (!el) return null;
     // Falling back to the element itself matters: plenty of these are a plain
     // div with a handler bound straight to it, and refusing to click that is no
     // better than clicking the wrong thing.
-    return (el.closest && el.closest('button,[role="button"],a')) || el;
+    return clickableStrict(el) || el;
   }
 
   // Looks inside the chat column first. Both sites have other contenteditable
@@ -478,23 +484,34 @@
         'button[title*="reward" i]',
       ]) || byIcon(/point|reward|trophy|bubble/i);
 
-      // Kick draws the Kicks balance and the Kicks button as separate things:
-      // `kicks-balance` is a <div> reading "0", and the way in is a button
-      // beside or around it. Clicking the balance does nothing, which is what
-      // it did.
-      const kicksValue = firstIn(footer, [
-        '[data-testid="kicks-balance"]',
-        '[data-testid*="kicks-balance" i]',
-      ]);
+      // The Kicks control at the foot of Kick's chat is the balance itself
+      // wrapped in a button — the little "K 0" — and pressing it opens the gift
+      // shop. "Get KICKs" is a separate link that opens a page for buying them,
+      // and preferring it sent people to the till instead of the shop, so it is
+      // now only ever a last resort.
+      //
+      // There can be more than one balance readout on screen at once, because
+      // the gift shop shows one of its own. The one wrapped in a button is the
+      // control; the loose one is a label.
       const notPoints = (el) => (el && el !== points ? el : null);
-      const kicksButton = notPoints(firstIn(footer, [
-        '[data-testid="get-kicks"]',
-        'button[data-testid*="kicks" i]',
-        'button[aria-label*="kicks" i]',
-        'button[title*="kicks" i]',
-      ]))
-        || notPoints(clickable(kicksValue))
+      let kicksValue = null;
+      let kicksButton = null;
+      footer.querySelectorAll('[data-testid="kicks-balance"],[data-testid*="kicks-balance" i]')
+        .forEach((el) => {
+          if (kicksButton) return;
+          const btn = clickableStrict(el);
+          if (btn && !isSend(btn)) { kicksValue = el; kicksButton = btn; return; }
+          if (!kicksValue) kicksValue = el;
+        });
+
+      kicksButton = kicksButton
+        || notPoints(firstIn(footer, [
+          'button[aria-label*="kicks" i]',
+          'button[title*="kicks" i]',
+        ]))
+        || notPoints(byIcon(/^kicks?$/i, points))
         || notPoints(byIcon(/kick|spark|gift/i, points))
+        || notPoints(clickable(firstIn(footer, ['[data-testid="get-kicks"]'])))
         || notPoints(byNumber(points));
 
       return {

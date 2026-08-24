@@ -48,7 +48,7 @@
   /* Kick's gift shop and rewards panels are anchored inside the chat column
      rather than portalled to <body>, carry no role, and announce themselves
      only with data-state. */
-  .fakepanel { position: absolute; left: 6px; right: 6px; bottom: 4px; height: 300px; z-index: 30; background: #1f1f23; border: 1px solid #3a3a3d; border-radius: 8px; padding: 14px; font-size: 12px; }
+  .fakepanel { position: absolute; left: 6px; right: 6px; bottom: 4px; height: 60%; z-index: 30; background: #1f1f23; border: 1px solid #3a3a3d; border-radius: 8px; padding: 14px; font-size: 12px; }
   .fakemodal { position: fixed; z-index: 2000; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 418px; height: 400px; background: #1f1f23; border: 1px solid #3a3a3d; border-radius: 8px; padding: 16px; font-size: 12px; }
   /* Kick's chat column, mirroring the real nesting: a header outside the body,
      an in-flow card slot above the message wrapper (the gifter leaderboard),
@@ -149,6 +149,10 @@
                 <button id="kick-emote"><svg data-ds-icon="Smile" width="12" height="12"></svg></button>
                 <button id="kick-points" data-testid="channel-points-button"><svg data-ds-icon="Bubbles" width="12" height="12"></svg>4.6K</button>
                 <button id="kick-kicks"><span data-testid="kicks-balance" aria-label="Kicks balance"><svg data-ds-icon="Kicks" width="12" height="12"></svg>0</span></button>
+                <!-- The decoy: a purchase link that sits in the same footer and
+                     was being preferred over the button above, which sent people
+                     to buy Kicks instead of opening the gift shop. -->
+                <button id="kick-get" data-testid="get-kicks">Get KICKs</button>
                 <button id="send-message-button">Chat</button>
               </div>
             </div>
@@ -349,6 +353,8 @@ mockComposer(document.querySelector('.kickcol .editor-input'), document.getEleme
     () => openKickPanel('Channel points', 'Kick draws its own rewards panel here.'));
   document.getElementById('kick-kicks').addEventListener('pointerdown',
     () => openKickPanel('Gift shop', 'Kick draws its own Kicks panel here.'));
+  document.getElementById('kick-get').addEventListener('pointerdown',
+    () => openKickPanel('Buy Kicks', 'The purchase page, which is not what the chip is for.'));
   // The emote picker stays a portalled modal, which is the other shape Kick
   // uses and the one the earlier fix was built against.
   document.getElementById('kick-emote').addEventListener('click',

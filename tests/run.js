@@ -1018,6 +1018,10 @@ suites.native = function () {
       nodeType: 1,
       events: [],
       dispatchEvent(e) { node.events.push(e.type); return true; },
+      contains(other) {
+        for (let n = other; n; n = n.parentElement) if (n === node) return true;
+        return false;
+      },
       clicks: 0,
       getAttribute: (k) => (k in attrs ? attrs[k] : null),
       // Only ever asked for the media that proves a card has something in it.
@@ -1046,6 +1050,7 @@ suites.native = function () {
         body,
         documentElement: html,
         querySelectorAll: () => dialogs,
+        elementFromPoint: () => null,
       },
       window: {},
       getComputedStyle: (node) => ({ position: node.position || 'static' }),
@@ -1415,6 +1420,46 @@ suites.native = function () {
     reject('a body child in normal flow is not a menu', [0, 720], 'static');
     reject('a popup too small to be a menu is not one', [300, 30], 'fixed');
     reject('a menu that misses the panel is not one', [1000, 300], 'fixed');
+  }
+
+  // ── Noticing a cover without recognising it ───────────────────────────────
+  //
+  // The check that does not depend on the site's markup: sample what is
+  // actually painted over the messages. Kick draws its panels in several
+  // shapes and names none of them, so this is the one that holds regardless.
+  {
+    const list = el({ rect: [110, 400] });
+    const wrap = el({ rect: [110, 400], kids: [list] });
+    el({ rect: [60, 660], kids: [wrap] });
+
+    let topmost = list;                      // nothing covering to begin with
+    const doc = page(wrap, []);
+    doc.document.elementFromPoint = () => topmost;
+    const rig = bridgeFor(doc, { messageList: () => list });
+
+    eq(rig.bridge.coveringChat(), false, 'native: the messages being on top means nothing covers them');
+
+    const ancestor = wrap;
+    topmost = ancestor;
+    eq(rig.bridge.coveringChat(), false, 'native: nor does the column they sit inside');
+
+    const panel = el({ rect: [300, 300], text: 'gift shop' });
+    topmost = panel;
+    eq(rig.bridge.coveringChat(), true, 'native: something else on top is a cover');
+
+    // A row inside the list is still the list.
+    const row = el({ rect: [200, 40] });
+    row.parentElement = list; list.children.push(row);
+    topmost = row;
+    eq(rig.bridge.coveringChat(), false, 'native: a message row is not a cover');
+  }
+
+  // With no message list to sample over there is nothing to say.
+  {
+    const doc = page(content, []);
+    doc.document.elementFromPoint = () => null;
+    eq(bridgeFor(doc, { messageList: () => null }).bridge.coveringChat(), false,
+      'native: no message list means no opinion');
   }
 
   // The cheap check used while a menu is open, which is what keeps the tick off

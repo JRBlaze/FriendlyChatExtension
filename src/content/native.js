@@ -484,6 +484,41 @@
       },
 
       /**
+       * Whether something the site has drawn is sitting on top of the chat.
+       *
+       * This asks what is actually painted, rather than trying to recognise the
+       * panel by its markup. Kick draws these in at least three shapes — a
+       * centred modal with a backdrop, a panel anchored inside the chat column,
+       * and a gift shop above the composer — gives none of them a name, and
+       * moves them between releases. What matters is not which one it is, only
+       * whether the chat is covered.
+       *
+       * Only meaningful while the panel is already standing aside. Its own host
+       * would otherwise be the thing on top at every one of these points.
+       */
+      coveringChat() {
+        const messages = site.messageList && site.messageList();
+        if (!messages || !document.elementFromPoint) return false;
+        const r = messages.getBoundingClientRect();
+        if (r.width < 40 || r.height < 40) return false;
+        // Off-centre on purpose: both sites float a jump-to-bottom pill down
+        // the middle, and it is not a menu.
+        const xs = [r.left + r.width * 0.25, r.left + r.width * 0.75];
+        const ys = [r.top + r.height * 0.45, r.top + r.height * 0.7];
+        for (const x of xs) {
+          for (const y of ys) {
+            const el = document.elementFromPoint(x, y);
+            if (!el) continue;
+            // The messages themselves, or something they sit inside: the chat
+            // is what is on top here, so nothing is covering it.
+            if (messages.contains(el) || el.contains(messages)) continue;
+            return true;
+          }
+        }
+        return false;
+      },
+
+      /**
        * Hides or shows the site's own chat.
        *
        * The cards are exempt while they are being revealed: `visibility` is

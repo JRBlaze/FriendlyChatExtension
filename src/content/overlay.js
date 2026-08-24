@@ -15,6 +15,10 @@
   // between the click and the site drawing something.
   const PEEK_HOLD_MS = 1200;
 
+  // However convincing the evidence, the panel comes back eventually. Nothing
+  // should be able to leave it invisible indefinitely.
+  const PEEK_MAX_MS = 2 * 60 * 1000;
+
   // What the panel must keep for itself however tall the site's card is: enough
   // for the header, a few lines of chat, the composer and the status bar.
   //
@@ -77,6 +81,7 @@
     let peeking = false;
     let peekTimers = [];
     let peekHoldUntil = 0;
+    let peekStartedAt = 0;
     // Until when a full look for one of the site's menus is worth doing, and how
     // many quiet ticks have passed since the last one.
     let dialogScanUntil = 0;
@@ -369,9 +374,19 @@
         : null;
 
       if (peeking) {
+        // Long enough that nothing is standing aside for something that is
+        // never going away.
+        if (peekStartedAt && Date.now() - peekStartedAt > PEEK_MAX_MS) {
+          setPeek(false);
+          return;
+        }
         // A menu already found: the question is only whether that one is still
         // there, which costs a rect rather than a search of the document.
         if (native.dialogStillOpen()) return;
+        // Or, whatever it is and wherever it came from, something is still
+        // painted over the chat. This is the one that does not depend on
+        // recognising the site's markup, which is what kept catching Kick out.
+        if (native.coveringChat()) return;
         // None found yet. A peek the overlay starts itself begins *before* the
         // site has drawn its menu — there is nothing to find at that moment —
         // so this is where that menu gets picked up. Without it the peek only
@@ -394,6 +409,7 @@
     function setPeek(next) {
       if (peeking === next) return;
       peeking = next;
+      peekStartedAt = next ? Date.now() : 0;
       panel.classList.toggle('fcm-peek', peeking);
       // The site's own chat has to be on screen for its own menu to be, so the
       // "hide the site's chat" setting stands down for as long as one is open.
@@ -402,9 +418,10 @@
 
     // ── Bits, Kicks and channel points ────────────────────────────────────────
 
+    // Each platform's own name for the thing, not a name of ours.
     const NATIVE_LABELS = {
-      twitch: { points: 'Channel points', bits: 'Bits', menu: 'Rewards' },
-      kick: { points: 'Rewards', bits: 'Kicks', menu: 'Rewards' },
+      twitch: { points: 'Channel Points', bits: 'Bits' },
+      kick: { points: 'Channel Points', bits: 'Kicks' },
     };
 
     function nativeChip(kind, key, value, title) {
@@ -467,8 +484,8 @@
       if (stats.hasPoints) {
         nativeChip('points', labels.points, stats.points,
           stats.points
-            ? `${stats.points} ${labels.points.toLowerCase()} — click to open ${meta.name}'s own rewards menu`
-            : `Open ${meta.name}'s own rewards menu`);
+            ? `${stats.points} — click to open ${meta.name}'s own ${labels.points} menu`
+            : `Open ${meta.name}'s own ${labels.points} menu`);
       }
       if (stats.hasBits) {
         nativeChip('bits', labels.bits, stats.bits,
