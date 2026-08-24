@@ -261,12 +261,15 @@ mockComposer(document.querySelector('.kickcol .editor-input'), document.getEleme
     document.removeEventListener('mousedown', outside, true);
   }
   function outside(e) { if (menu && !menu.contains(e.target)) close(); }
-  function open(title, body) {
+  // `labelled` mirrors the difference between the two sites: Twitch marks its
+  // rewards panel `role="dialog"`, Kick marks its own nothing at all, which is
+  // why the overlay also has to notice a menu simply by it being drawn.
+  function open(title, body, labelled = true) {
     close();
-    const col = document.querySelector('.chatcol').getBoundingClientRect();
+    const col = document.querySelector('.chatcol:not([style*="none"]), .kickcol:not([style*="none"])').getBoundingClientRect();
     menu = document.createElement('div');
     menu.className = 'fakemenu';
-    menu.setAttribute('role', 'dialog');
+    if (labelled) menu.setAttribute('role', 'dialog');
     menu.innerHTML = `<h3>${title}</h3><p>${body}</p><button>Close</button>`;
     menu.style.left = `${col.left + 12}px`;
     menu.style.top = `${col.top + 90}px`;
@@ -284,7 +287,7 @@ mockComposer(document.querySelector('.kickcol .editor-input'), document.getEleme
     e.currentTarget.hidden = true;
   });
   document.getElementById('kick-balance').addEventListener('click',
-    () => open('Kicks', 'Kick draws its own gifting panel here.'));
+    () => open('Kicks', 'Kick draws its own gifting panel here.', false));
 })();
 </script>
 

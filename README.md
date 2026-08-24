@@ -8,7 +8,7 @@ streamer is also live on Kick, the overlay says so and offers to add the Kick ch
 feed. Open a Kick channel and it works the other way round.
 
 ![Platform](https://img.shields.io/badge/Chrome-MV3-blue)
-![Version](https://img.shields.io/badge/version-1.2.0-green)
+![Version](https://img.shields.io/badge/version-1.2.1-green)
 
 ## What it does
 
@@ -62,7 +62,7 @@ feed. Open a Kick channel and it works the other way round.
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.2.0.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.2.1.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and a folder named `FriendlyChatExtension-main`. The
@@ -245,7 +245,8 @@ distinction turned out to matter twice over.
 
 **Sizes follow the Text size setting.** Event and system rows, timestamps and the little tags on
 them used to be pinned at 10px, 9.5px and 8.5px however large the messages were set. They are now
-derived from that setting with a floor, so raising it raises all of them.
+derived from that setting with a floor, so raising it raises all of them. The default is 14px,
+which puts timestamps at 12, event rows at 13 and their tags at 10.5.
 
 **Opacity is no longer used to dim text.** Several states were faded rather than recoloured — a
 send target that is off, a filtered platform, a message a moderator deleted — and opacity
@@ -610,7 +611,7 @@ DOM, so nothing in the page's layout or stacking contexts has to be fought with.
 node tests/run.js
 ```
 
-761 assertions, no network. It drives the real parsers with real payload shapes: IRC lines with
+773 assertions, no network. It drives the real parsers with real payload shapes: IRC lines with
 tags and emote positions, Kick Pusher events, emote sets from every provider, and the
 counterpart matcher against stubbed platform APIs — including the cases that matter most, like a
 manual mapping beating a same-name guess and a failing emote provider not taking the others down.
@@ -686,6 +687,20 @@ per-platform result, which is how the partial-failure and expired-token paths ge
 the send path.
 
 ## Bugs this testing found
+
+- **The panel came straight back over the menu it had just opened.** Clicking a balance hides the
+  panel and then asks the site to open its rewards menu, and the panel is meant to stay out of the
+  way until that menu closes. It stayed hidden for about a second and then reappeared on top of
+  it. The peek was ended by a hold expiring rather than by the menu going away, because the check
+  that keeps a peek alive only ever tracked a menu already *found* — and a peek the overlay starts
+  itself begins before the site has drawn anything to find. Nothing went looking afterwards. It
+  does now.
+
+  That fix alone would not have covered Kick. Menus were recognised by `role="dialog"`, which
+  Twitch sets and Kick does not, so for the moment after one of the site's own controls is pressed
+  the overlay also watches for the element being *added* — positioned, large enough, and
+  overlapping the panel. A chat message is added constantly and sits in normal flow, so it never
+  qualifies, and the watch is torn down as soon as it has an answer.
 
 - **The feed could freeze permanently, and silently.** Rows are batched and flushed on the next
   animation frame. Frames stop arriving whenever the page is not being drawn — a background tab,

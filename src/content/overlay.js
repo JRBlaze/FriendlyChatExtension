@@ -10,6 +10,11 @@
   // site opened by itself — anything the viewer opens arms the scan directly.
   const IDLE_SCAN_TICKS = 10;
 
+  // How long the panel stays out of the way after asking the site to open a
+  // menu, before giving up on one appearing. It only has to cover the time
+  // between the click and the site drawing something.
+  const PEEK_HOLD_MS = 1200;
+
   // What the panel must keep for itself however tall the site's card is: enough
   // for the header, a few lines of chat, the composer and the status bar.
   //
@@ -359,11 +364,20 @@
      */
     function syncPeek() {
       if (destroyed) return;
+      const box = visible && !panel.classList.contains('fcm-hidden')
+        ? panel.getBoundingClientRect()
+        : null;
 
-      // While a menu is open the question is only whether that one is still
-      // there, which costs a rect rather than a search of the document.
       if (peeking) {
+        // A menu already found: the question is only whether that one is still
+        // there, which costs a rect rather than a search of the document.
         if (native.dialogStillOpen()) return;
+        // None found yet. A peek the overlay starts itself begins *before* the
+        // site has drawn its menu — there is nothing to find at that moment —
+        // so this is where that menu gets picked up. Without it the peek only
+        // ever lasted as long as the hold below and the panel came straight
+        // back over the menu it had just opened.
+        if (native.dialogOver(box)) return;
         if (Date.now() < peekHoldUntil) return;
         setPeek(false);
         return;
@@ -374,9 +388,6 @@
       if (Date.now() >= dialogScanUntil && ++idleTicks < IDLE_SCAN_TICKS) return;
       idleTicks = 0;
 
-      const box = visible && !panel.classList.contains('fcm-hidden')
-        ? panel.getBoundingClientRect()
-        : null;
       if (native.dialogOver(box)) setPeek(true);
     }
 
@@ -497,7 +508,10 @@
       // same task deliberately: the un-hide is a synchronous style change, and
       // waiting a frame for it would strand the panel invisible on a tab the
       // browser has stopped animating.
-      peekHoldUntil = Date.now() + 900;
+      peekHoldUntil = Date.now() + PEEK_HOLD_MS;
+      // Armed before the click, so the element the site draws in response is
+      // seen being added even on a site that gives its menu no role to match on.
+      native.expectMenu();
       setPeek(true);
       if (!native.activate(kind)) {
         peekHoldUntil = 0;
@@ -1012,7 +1026,7 @@
       root.dataset.animate = String(!!settings.animations);
       root.dataset.timestamps = String(settings.timestamps !== false);
       root.dataset.badges = String(settings.showBadges !== false);
-      root.style.setProperty('--fcm-size', `${FCM.clampNumber(settings.fontSize, 10, 22, 13)}px`);
+      root.style.setProperty('--fcm-size', `${FCM.clampNumber(settings.fontSize, 10, 22, FCM.DEFAULT_SETTINGS.fontSize)}px`);
       panel.style.opacity = String(FCM.clampNumber(settings.opacity, 50, 100, 96) / 100);
       applyNativeChatVisibility();
       feed.trim();

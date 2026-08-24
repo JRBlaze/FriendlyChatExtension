@@ -11,7 +11,7 @@
 .fcm-root {
   --fcm-font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --fcm-mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
-  --fcm-size: 13px;
+  --fcm-size: 14px;
 
   --bg: #0d0d0f;
   --surface: #16161a;

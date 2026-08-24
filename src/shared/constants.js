@@ -104,7 +104,7 @@
     crossPromptMode: 'ask',     // 'ask' | 'always' | 'never'
     startCollapsed: false,
     opacity: 96,
-    fontSize: 13,
+    fontSize: 14,
     theme: 'auto',              // 'auto' follows the site | 'dark' | 'light'
     // Feed behaviour
     maxMessages: FCM.MAX_MESSAGES_DEFAULT,

@@ -31,6 +31,10 @@
   // A menu nobody has closed in this long is almost certainly not a menu.
   // Whatever it is, it stops being a reason to keep the overlay invisible.
   const PEEK_MAX_MS = 2 * 60 * 1000;
+  // How long to watch for the site drawing a menu after being asked to open
+  // one, and how many added elements to keep while watching.
+  const MENU_WATCH_MS = 2500;
+  const MENU_WATCH_LIMIT = 300;
 
   /**
    * Splits the message list's own siblings into what sits above it and what
@@ -142,8 +146,29 @@
     const furniture = new WeakSet();
     let peekStarted = 0;
     let peekTarget = null;
+    // Elements the page has added since one of its own controls was asked to
+    // open something. Watched only for a moment and only when a menu has
+    // actually been asked for: observing a whole channel page is not free when
+    // chat is arriving continuously.
+    let added = [];
+    let watcher = null;
+    let watchUntil = 0;
 
     document.querySelectorAll(DIALOG_SELECTOR).forEach((el) => furniture.add(el));
+
+    function stopWatching() {
+      if (watcher) { watcher.disconnect(); watcher = null; }
+      added = [];
+      watchUntil = 0;
+    }
+
+    // Whether an element is big enough, and overlapping enough, to be the menu.
+    function coversBox(r, box) {
+      if (r.width < MIN_DIALOG || r.height < MIN_DIALOG) return false;
+      const overX = Math.min(r.right, box.right) - Math.max(r.left, box.left);
+      const overY = Math.min(r.bottom, box.bottom) - Math.max(r.top, box.top);
+      return overX > 40 && overY > 40;
+    }
 
     function controls() {
       if (!site.nativeControls) return null;
@@ -208,6 +233,31 @@
       },
 
       /**
+       * Starts watching for the site to draw a menu.
+       *
+       * Called just before one of the site's own controls is clicked. Twitch
+       * labels its rewards panel `role="dialog"` and is found by name below,
+       * but Kick labels almost nothing, and a menu that carries no role would
+       * never be recognised. What both sites do is *add an element* — so for
+       * the moment after a control is pressed, that is watched for directly.
+       */
+      expectMenu() {
+        stopWatching();
+        if (!window.MutationObserver || !document.body) return;
+        watchUntil = Date.now() + MENU_WATCH_MS;
+        watcher = new window.MutationObserver((records) => {
+          if (Date.now() > watchUntil) { stopWatching(); return; }
+          records.forEach((record) => {
+            record.addedNodes.forEach((node) => {
+              if (node.nodeType === 1) added.push(node);
+            });
+          });
+          if (added.length > MENU_WATCH_LIMIT) added.splice(0, added.length - MENU_WATCH_LIMIT);
+        });
+        watcher.observe(document.body, { childList: true, subtree: true });
+      },
+
+      /**
        * The site's own menu currently covering the given box, if there is one.
        * Twitch draws its rewards panel at z-index 2000 inside the chat column,
        * which the overlay would otherwise paint straight over.
@@ -221,12 +271,25 @@
         let found = null;
         document.querySelectorAll(DIALOG_SELECTOR).forEach((el) => {
           if (found || furniture.has(el)) return;
-          const r = el.getBoundingClientRect();
-          if (r.width < MIN_DIALOG || r.height < MIN_DIALOG) return;
-          const overX = Math.min(r.right, box.right) - Math.max(r.left, box.left);
-          const overY = Math.min(r.bottom, box.bottom) - Math.max(r.top, box.top);
-          if (overX > 40 && overY > 40) found = el;
+          if (coversBox(el.getBoundingClientRect(), box)) found = el;
         });
+
+        // Nothing named itself a menu, so fall back to what the page just drew.
+        // Only positioned elements count: a chat message is added constantly and
+        // sits in normal flow, while a menu is placed over the page.
+        if (!found && Date.now() < watchUntil) {
+          for (const el of added) {
+            if (!el.isConnected || furniture.has(el)) continue;
+            if (!coversBox(el.getBoundingClientRect(), box)) continue;
+            const position = getComputedStyle(el).position;
+            if (position !== 'absolute' && position !== 'fixed') continue;
+            found = el;
+            break;
+          }
+        }
+        // Once there is something to watch, the observer has done its job.
+        if (found) stopWatching();
+
         if (found !== peekTarget) {
           peekTarget = found;
           peekStarted = found ? Date.now() : 0;
@@ -293,6 +356,7 @@
 
       // Puts every element this bridge touched back the way it was found.
       release() {
+        stopWatching();
         forced.forEach((el) => { el.style.visibility = ''; });
         forced.clear();
         const body = site.nativeChatBody && site.nativeChatBody();
