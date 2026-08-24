@@ -1,4 +1,4 @@
-# Friendly Chat Merge
+# FriendlyChatExtension
 
 A Chrome extension that puts [Friendly Chat](https://github.com/JRBlaze/FriendlyChat)'s merged
 chat feed directly on the page you are already watching.
