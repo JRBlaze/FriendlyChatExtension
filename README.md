@@ -8,7 +8,7 @@ streamer is also live on Kick, the overlay says so and offers to add the Kick ch
 feed. Open a Kick channel and it works the other way round.
 
 ![Platform](https://img.shields.io/badge/Chrome-MV3-blue)
-![Version](https://img.shields.io/badge/version-1.4.2-green)
+![Version](https://img.shields.io/badge/version-1.4.3-green)
 
 ## What it does
 
@@ -71,7 +71,7 @@ feed. Open a Kick channel and it works the other way round.
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.4.2.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.4.3.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and a folder named `FriendlyChatExtension-main`. The
@@ -102,7 +102,6 @@ so its button is always visible for quick settings.
 | The card loaded but no overlay on a channel | Reload the Twitch or Kick tab. The extension only attaches to pages opened after it was installed. |
 | No overlay, and you are on a directory or settings page | The overlay only appears on an actual channel page, not on browse, search or settings pages. |
 | Nothing at all after a Chrome restart | Developer-mode extensions stay installed, but Chrome may prompt you to keep them. Re-enable it on `chrome://extensions`. |
-| A control the site has is missing from the overlay | Open the overlay's settings, scroll to **Diagnostics**, and press *Copy diagnostics*. That is the report worth attaching to a bug — it lists what the overlay found and everything in the chat's footer that it did not. |
 
 ### Updating or removing it
 
@@ -946,8 +945,7 @@ was never going to see in a friendly test:
   thing and is not: it opens a page for buying Kicks. The balance button is preferred and the
   purchase link is a last resort, which is the difference between opening the shop and opening
   the till. `kick.nativeControls()` in `src/content/sites.js` is the one function to update if
-  Kick moves them, and *Copy diagnostics* under **Diagnostics** in the overlay's settings
-  produces exactly what is needed to update it.
+  Kick moves them.
 - **The Opacity setting can take contrast below AA.** The palette is built to clear 4.5:1 at the
   default 96%. Below roughly 90% the panel starts blending enough of the page underneath to erode
   that, and how far depends on what is behind it. Nothing is stopping you — it is a deliberate

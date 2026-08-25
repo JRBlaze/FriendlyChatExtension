@@ -991,20 +991,6 @@
             <label>Highlight these names<small>Comma separated</small></label>
             <input type="text" data-set="highlightNames" placeholder="yourname, your_other_name">
           </div>
-
-          <div class="fcm-section-title">Diagnostics</div>
-          <div class="fcm-field fcm-field-col">
-            <label>Something not being found?
-              <small>Copies what the overlay can and cannot see in this page's chat — which
-                controls it found, and everything in the chat's footer that it did not. Paste it
-                into a bug report. It includes what those controls display, such as a balance,
-                so read it before sending it anywhere.</small>
-            </label>
-          </div>
-          <div class="fcm-field">
-            <label>&nbsp;</label>
-            <button class="fcm-btn" data-act="copy-diagnostics">Copy diagnostics</button>
-          </div>
         </div>
       `;
       panel.appendChild(sheet);
@@ -1047,7 +1033,6 @@
 
       sheet.querySelector('[data-act="close-sheet"]').addEventListener('click', closeSheet);
       sheet.querySelector('[data-act="reset-placement"]').addEventListener('click', resetPlacement);
-      sheet.querySelector('[data-act="copy-diagnostics"]').addEventListener('click', copyDiagnostics);
       sheet.querySelector('[data-act="save-link"]').addEventListener('click', () => {
         const value = FCM.normalizeChannel(sheet.querySelector('[data-link-input]').value);
         onCommand({ cmd: 'setLink', target: value });
@@ -1150,52 +1135,6 @@
       }
       applyNativeChatVisibility();
       if (next) syncPlacement();
-    }
-
-    /**
-     * Puts a picture of what the adapters found on this page onto the
-     * clipboard, so a control that is not being picked up can be reported
-     * without anyone having to open a developer console.
-     */
-    async function copyDiagnostics() {
-      if (!sheet) return;
-      let text;
-      try {
-        text = JSON.stringify(FCM.nativeDiagnostics(site, native), null, 2);
-      } catch (e) {
-        toast('Could not read this page');
-        return;
-      }
-
-      // The text is put on screen first and the clipboard tried second, rather
-      // than the other way round. A page can refuse clipboard access for
-      // reasons the viewer can do nothing about, and being told "could not
-      // copy" with nothing to copy is a dead end — a box they can select is
-      // never worse and always works.
-      let area = sheet.querySelector('.fcm-diag');
-      if (!area) {
-        area = document.createElement('textarea');
-        area.className = 'fcm-diag';
-        area.readOnly = true;
-        area.spellcheck = false;
-        sheet.querySelector('[data-act="copy-diagnostics"]').closest('.fcm-field').after(area);
-      }
-      area.value = text;
-      area.focus({ preventScroll: true });
-      area.select();
-
-      try {
-        await navigator.clipboard.writeText(text);
-        toast('Diagnostics copied — paste them into a bug report');
-        return;
-      } catch (e) { /* fall through to the box, which is already selected */ }
-      try {
-        if (document.execCommand('copy')) {
-          toast('Diagnostics copied — paste them into a bug report');
-          return;
-        }
-      } catch (e) { /* same */ }
-      toast('Select the box below and press Ctrl+C');
     }
 
     function refreshSendNote() {

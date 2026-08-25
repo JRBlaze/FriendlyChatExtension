@@ -314,9 +314,8 @@
      * their old test selectors, `bits-balance-string` and `copo-balance-string`
      * ("copo" being Twitch's own name for community points).
      */
-    // Where the site keeps its balance controls. Named separately so a
-    // diagnostics report can list everything in it, which is the one thing
-    // worth having when a control cannot be found.
+    // Where the site keeps its balance controls, resolved separately so the
+    // search for each individual control has somewhere small to look.
     nativeFooter() {
       return firstMatch([
         '[data-test-selector="chat-input-buttons-container"]',
