@@ -67,6 +67,10 @@
   FCM.TWITCH_HISTORY_LIMIT = 60;
   FCM.KICK_HISTORY_LIMIT   = 60;
 
+  // How many favourites are kept. Enough to never be the reason someone runs
+  // out, small enough that the settings blob stays a settings blob.
+  FCM.FAVOURITE_EMOTE_LIMIT = 100;
+
   FCM.MAX_MESSAGES_DEFAULT = 400;
   FCM.MAX_MESSAGES_MIN     = 100;
   FCM.MAX_MESSAGES_MAX     = 3000;
@@ -115,6 +119,9 @@
     showBadges: true,
     thirdPartyEmotes: true,
     highlightNames: '',
+    // Emote names kept to hand, newest first. Names rather than urls, because
+    // the same emote can arrive from a different provider tomorrow.
+    favouriteEmotes: [],
     hideNativeChat: false,      // collapse the site's own chat while merged
     // The site's own chat furniture, which the overlay would otherwise cover.
     revealHighlights: true,     // shrink so hype trains, polls, predictions and

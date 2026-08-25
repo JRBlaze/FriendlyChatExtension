@@ -470,6 +470,56 @@ suites.compose = function () {
   FCM.rememberChatter('twitch', 'Alice');
   const alices = FCM.recentChatters().filter((c) => c.name.toLowerCase() === 'alice');
   eq(alices.length, 2, 'compose: the same name on two platforms is two chatters');
+
+  // ── Looking an emote up by name alone ──────────────────────────────────────
+  //
+  // The message box draws emotes as they are typed, and it does not know which
+  // platform the message is going to, so a name is drawn if either side has it.
+  ok(FCM.findEmote('Kappa'), 'compose: an emote is found by name');
+  eq(FCM.findEmote('Kappa').url, 'https://t/kappa.png',
+    'compose: and the native store still wins');
+  ok(FCM.findEmote('emojiKEK'), 'compose: including one from the other platform');
+  eq(FCM.findEmote('nothing'), null, 'compose: an unknown name finds nothing');
+  eq(FCM.findEmote(''), null, 'compose: and so does no name at all');
+};
+
+// Emotes kept to hand. Stored by name rather than by url, because the same
+// emote can arrive from a different provider tomorrow.
+suites.favourites = function () {
+  const sandbox = makeSandbox({
+    chrome: { storage: { sync: { get: async () => ({}) } } },
+    document: { ...stubDocument(), querySelector: () => null },
+  });
+  const FCM = load(sandbox, ...SHARED, 'src/content/render.js', 'src/content/compose.js');
+
+  eq(FCM.DEFAULT_SETTINGS.favouriteEmotes, [], 'favourites: none to begin with');
+  ok(FCM.FAVOURITE_EMOTE_LIMIT > 0, 'favourites: the list is bounded');
+
+  // The ordering the picker and the autocomplete both read.
+  const order = (list, names) => {
+    FCM.setViewSettings({ ...FCM.DEFAULT_SETTINGS, favouriteEmotes: list });
+    const isFav = (n) => (FCM.view.settings.favouriteEmotes || []).indexOf(n) !== -1;
+    return names.slice().sort((a, b) => {
+      const fa = isFav(a);
+      const fb = isFav(b);
+      if (fa !== fb) return fa ? -1 : 1;
+      return a.localeCompare(b);
+    });
+  };
+  eq(order([], ['Kappa', 'KappaPride', 'KappaRoss']), ['Kappa', 'KappaPride', 'KappaRoss'],
+    'favourites: alphabetical when nothing is starred');
+  eq(order(['KappaRoss'], ['Kappa', 'KappaPride', 'KappaRoss']),
+    ['KappaRoss', 'Kappa', 'KappaPride'],
+    'favourites: a starred emote sorts ahead of the rest');
+  eq(order(['KappaRoss', 'Kappa'], ['Kappa', 'KappaPride', 'KappaRoss']),
+    ['Kappa', 'KappaRoss', 'KappaPride'],
+    'favourites: several starred ones keep their own alphabetical order');
+
+  // Settings round-trip, which is what makes them survive a reload.
+  FCM.setViewSettings({ ...FCM.DEFAULT_SETTINGS, favouriteEmotes: ['A', 'B'] });
+  eq(FCM.view.settings.favouriteEmotes, ['A', 'B'], 'favourites: they reach the view settings');
+  FCM.setViewSettings({ ...FCM.DEFAULT_SETTINGS });
+  eq(FCM.view.settings.favouriteEmotes, [], 'favourites: and clear again');
 };
 
 // A reply has to land in the chat the person actually spoke in. The routing

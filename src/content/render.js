@@ -167,6 +167,21 @@
       : null;
   };
 
+  /**
+   * An emote by name, from whichever platform has one. The composer can send to
+   * either, so a name is drawn if either side knows it.
+   */
+  FCM.findEmote = function (name) {
+    if (!name) return null;
+    for (const platform of FCM.PLATFORMS) {
+      const sets = view.emotes[platform];
+      if (!sets) continue;
+      const hit = sets.native[name] || sets.thirdparty[name];
+      if (hit && hit.url) return hit;
+    }
+    return null;
+  };
+
   function lookupEmote(platform, name) {
     const sets = view.emotes[platform];
     if (!sets) return null;

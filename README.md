@@ -8,7 +8,7 @@ streamer is also live on Kick, the overlay says so and offers to add the Kick ch
 feed. Open a Kick channel and it works the other way round.
 
 ![Platform](https://img.shields.io/badge/Chrome-MV3-blue)
-![Version](https://img.shields.io/badge/version-1.2.6-green)
+![Version](https://img.shields.io/badge/version-1.3.0-green)
 
 ## What it does
 
@@ -40,6 +40,11 @@ feed. Open a Kick channel and it works the other way round.
   muted rows so they never look like something a viewer typed.
 - **A full composer**: an emote picker grouped by source with search, `:emote` and `@name`
   autocomplete with Tab completion, and click-a-username for reply.
+- **Emotes appear as you type them.** Finish an emote name, press space, and it is drawn in the
+  message box — so what you are about to send is what you can see. The message still goes out as
+  text, because that is what chat is.
+- **Favourite emotes.** Star one in the picker and it gets a row of its own at the top, and sorts
+  first in `:` autocomplete.
 - **Send to both platforms at once**, or either one — the same target chips the desktop app has.
 - **System and event rows** render exactly as they do in the desktop app: a `SYSTEM`/`EVENT` tag,
   a chip naming the source, then the body, in a muted style that never reads like a viewer's
@@ -62,7 +67,7 @@ feed. Open a Kick channel and it works the other way round.
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.2.6.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.3.0.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and a folder named `FriendlyChatExtension-main`. The
@@ -273,6 +278,32 @@ and saturation are untouched, so a blue name stays blue. A colour that already r
 passed through byte for byte. Both a dark-theme and a light-theme value are emitted per name, so
 switching theme under an already-rendered row still lands on a readable one.
 
+## The message box
+
+Emotes are drawn where they are typed. Finish a name, press space, and the name becomes the
+picture — so a message with six emotes in it can be read before it is sent rather than after.
+
+An `<input>` cannot hold an image, so the box is a contenteditable. Nothing else in the composer
+had to learn that. The autocomplete, the emote picker, the reply bar and the send path all treat
+it as an input, and they are right to: `value`, `selectionStart` and `setSelectionRange` are the
+whole vocabulary they need, so those three are defined over the contenteditable and every one of
+those call sites carries on unchanged.
+
+What makes that work is that **an emote is worth exactly its own name**. An `<img>` counts as
+`alt.length` characters both when reading the value and when counting to the caret, so `Kappa`
+typed and `Kappa` shown as a picture occupy the same offsets. Code that slices the value around
+the cursor has no idea anything changed, and the message that goes out is still plain text.
+
+The trigger is the separator rather than the name, so typing through a longer name that starts
+with a shorter one is never interrupted — `KappaPride` does not turn into `Kappa` halfway
+through. Drawing only happens when a name is actually finished; typing itself never rewrites the
+box, because replacing its contents on every keystroke would take the caret with it.
+
+**Favourites** are stored by name rather than by url, because the same emote can arrive from a
+different provider tomorrow. Starring one puts it in a row of its own at the top of the picker,
+newest first, and sorts it ahead of the alphabet in `:` autocomplete — which is the point of
+starring it, rather than scrolling past everything else sharing its first two letters.
+
 ## Moderating
 
 If you are a moderator or the broadcaster in a channel, clicking a name in the feed adds a
@@ -467,7 +498,10 @@ src/
   content/         everything that touches the page
     boot.js          channel detection, SPA navigation, the port
     overlay.js       the shadow-DOM panel, prompt, targets and settings sheet
-    compose.js       emote picker, : and @ autocomplete, the username menu
+    compose.js       emote picker, : and @ autocomplete, favourites, the
+                     username menu
+    emote-input.js   the message box: draws emotes as they are typed, and
+                     presents an input's interface over a contenteditable
     native.js        the site's own cards, balances and menus: measuring,
                      reading and driving them
     render.js        message tokenising and row building
@@ -612,7 +646,7 @@ DOM, so nothing in the page's layout or stacking contexts has to be fought with.
 node tests/run.js
 ```
 
-781 assertions, no network. It drives the real parsers with real payload shapes: IRC lines with
+793 assertions, no network. It drives the real parsers with real payload shapes: IRC lines with
 tags and emote positions, Kick Pusher events, emote sets from every provider, and the
 counterpart matcher against stubbed platform APIs — including the cases that matter most, like a
 manual mapping beating a same-name guess and a failing emote provider not taking the others down.

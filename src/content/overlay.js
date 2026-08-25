@@ -82,6 +82,7 @@
     let peekTimers = [];
     let peekHoldUntil = 0;
     let peekStartedAt = 0;
+    let focusTimers = [];
     // Until when a full look for one of the site's menus is worth doing, and how
     // many quiet ticks have passed since the last one.
     let dialogScanUntil = 0;
@@ -144,7 +145,8 @@
           <div class="fcm-targets"><span class="fcm-targets-label">Send to</span></div>
           <div class="fcm-composer-row">
             <button class="fcm-emote-btn" title="Emotes (or type : in the box)">&#9786;</button>
-            <input class="fcm-input" type="text" maxlength="480">
+            <div class="fcm-input" contenteditable="true" role="textbox"
+              aria-multiline="false" spellcheck="false"></div>
             <button class="fcm-send">Send</button>
           </div>
         </div>
@@ -177,6 +179,11 @@
     // Held by reference: the settings sheet grows a Reset button of its own, and
     // a selector would then be picking between two.
     const resetBtn = $('.fcm-actions [data-act="reset-placement"]');
+
+    // The box draws emotes as they are typed, and presents the small part of an
+    // input's interface the rest of the composer speaks: value, selectionStart
+    // and setSelectionRange.
+    FCM.makeEmoteInput(inputEl, { maxLength: 480 });
 
     const feed = FCM.createFeed(feedEl, () => settings);
     feed.onCount((n) => { countEl.textContent = `${n} message${n === 1 ? '' : 's'}`; });
@@ -1368,13 +1375,44 @@
       error: (name) => `Something went wrong handing the message to ${name}.`,
     };
 
-    function focusInput() {
+    function clearFocusTimers() {
+      focusTimers.forEach(clearTimeout);
+      focusTimers = [];
+    }
+
+    /**
+     * Puts the caret back in the message box.
+     *
+     * `hold` keeps it there. Sending drives the site's own chat box, and both
+     * sites put focus back into it a moment later on their own account — after
+     * we have already handed it back — so a single call was being quietly
+     * undone and the next thing typed went nowhere. Re-asserting for a few
+     * hundred milliseconds wins that, and only takes focus from the page's own
+     * composer or from nothing at all, so a viewer who has deliberately clicked
+     * elsewhere keeps what they clicked on.
+     */
+    function focusInput(hold) {
       if (destroyed || !panel.isConnected) return;
-      try {
-        inputEl.focus({ preventScroll: true });
-        const end = inputEl.value.length;
-        inputEl.setSelectionRange(end, end);
-      } catch (e) { /* the panel was torn down mid-send */ }
+      const put = () => {
+        try {
+          inputEl.focus({ preventScroll: true });
+          const end = inputEl.value.length;
+          inputEl.setSelectionRange(end, end);
+        } catch (e) { /* the panel was torn down mid-send */ }
+      };
+      put();
+      if (!hold) return;
+      clearFocusTimers();
+      focusTimers = [60, 160, 320, 600].map((ms) => setTimeout(() => {
+        if (destroyed || !panel.isConnected) return;
+        const active = document.activeElement;
+        if (active === host) return;
+        const nativeBox = site.composer && site.composer();
+        if (active === document.body || active === document.documentElement
+          || (nativeBox && (active === nativeBox || nativeBox.contains(active)))) {
+          put();
+        }
+      }, ms));
     }
 
     // Resolved by the background worker's sendResult message.
@@ -1453,7 +1491,7 @@
         // Always end up back in the box. Clicking Send moves focus to the
         // button, and the native-composer route moves it into the page's own
         // chat box, so without this the next thing typed goes nowhere visible.
-        focusInput();
+        focusInput(true);
       }
 
       if (!delivered && !inputEl.value) inputEl.value = text;
@@ -1498,7 +1536,12 @@
       // is open, so it gets first refusal on every key.
       if (compose && compose.handleKey(e)) return;
       if (e.key === 'Escape' && replyTo.size) { e.preventDefault(); clearReplyTo(); return; }
-      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSend(); }
+      if (e.key === 'Enter') {
+        // Both, not just the unshifted one: a contenteditable would happily
+        // take Shift+Enter as a new line, and this box is a single line.
+        e.preventDefault();
+        if (!e.shiftKey) doSend();
+      }
     });
     inputEl.addEventListener('keyup', (e) => e.stopPropagation());
     // Twitch and Kick both bind single-key shortcuts to the document.
@@ -1525,6 +1568,10 @@
         compose = FCM.createCompose({
           panel, inputEl, feedEl, emoteBtn, toast,
           onReplyTo: setReplyTo,
+          onFavourites: async (list) => {
+            settings = await FCM.saveSettings({ favouriteEmotes: list });
+            FCM.setViewSettings(settings);
+          },
           canModerate: (platform) => !!canModerate[platform],
           onModerate: (platform, action, opts) => {
             onCommand({ cmd: 'moderate', id: `m${++sendSeq}`, platform, action, opts });
@@ -1555,6 +1602,7 @@
         pendingSends.clear();
         clearInterval(placementTimer);
         clearPeekTimers();
+        clearFocusTimers();
         window.removeEventListener('resize', syncPlacement);
         window.removeEventListener('scroll', syncPlacement, true);
         document.removeEventListener('click', schedulePeekCheck, true);

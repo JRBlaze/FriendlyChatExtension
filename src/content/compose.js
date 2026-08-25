@@ -54,6 +54,7 @@
   FCM.createCompose = function (ctx) {
     const { panel, inputEl, feedEl, emoteBtn, toast } = ctx;
     const onReplyTo = ctx.onReplyTo || function () {};
+    const onFavourites = ctx.onFavourites || function () {};
     const onModerate = ctx.onModerate || function () {};
     // Asked fresh each time the menu opens: whether this viewer can moderate
     // changes as connections come and go.
@@ -102,6 +103,15 @@
     // so no per-item inline handler — and no user-controlled string in an
     // onclick attribute — is ever generated.
     popup.addEventListener('mousedown', (e) => {
+      // The star sits inside the cell, so it gets asked first — otherwise
+      // favouriting an emote would also insert it.
+      const star = e.target.closest('[data-fav]');
+      if (star) {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleFavourite(star.dataset.fav);
+        return;
+      }
       const target = e.target.closest('[data-index]');
       if (!target) return;
       // mousedown, not click: the input must not lose focus before we write to it.
@@ -110,11 +120,52 @@
       if (Number.isFinite(index)) applyAutocomplete(index);
     });
 
+    // ── Favourites ────────────────────────────────────────────────────────────
+
+    function favourites() {
+      const list = FCM.view.settings.favouriteEmotes;
+      return Array.isArray(list) ? list : [];
+    }
+
+    function isFavourite(name) {
+      return favourites().indexOf(name) !== -1;
+    }
+
+    function toggleFavourite(name) {
+      const list = favourites().slice();
+      const at = list.indexOf(name);
+      if (at === -1) {
+        // Newest first, so the ones just reached for stay easiest to reach for.
+        list.unshift(name);
+        if (list.length > FCM.FAVOURITE_EMOTE_LIMIT) list.length = FCM.FAVOURITE_EMOTE_LIMIT;
+      } else {
+        list.splice(at, 1);
+      }
+      // Applied here as well as saved, so the picker redraws from the new list
+      // rather than waiting for the round trip through storage.
+      FCM.view.settings = { ...FCM.view.settings, favouriteEmotes: list };
+      onFavourites(list);
+      if (AC.browse) renderPickerBody(pickerQuery);
+    }
+
     // ── Emote picker ──────────────────────────────────────────────────────────
 
     let pickerAll = [];
+    let pickerQuery = '';
+
+    function cellHtml(item, index) {
+      const fav = isFavourite(item.name);
+      return `<div class="fcm-emote-cell" data-index="${index}" title="${esc(item.name)}">`
+        + `<img src="${esc(item.url)}" alt="${esc(item.name)}" loading="lazy">`
+        + `<button class="fcm-emote-fav${fav ? ' fcm-emote-fav-on' : ''}"`
+        + ` data-fav="${esc(item.name)}" tabindex="-1"`
+        + ` title="${fav ? 'Remove from favourites' : 'Add to favourites'}"`
+        + ` aria-label="${fav ? 'Remove' : 'Add'} ${esc(item.name)} ${fav ? 'from' : 'to'} favourites"`
+        + '>★</button></div>';
+    }
 
     function renderPickerBody(query) {
+      pickerQuery = query || '';
       const q = String(query || '').trim().toLowerCase();
       const matches = q ? pickerAll.filter((e) => e.lower.includes(q)) : pickerAll;
       // Index by position in AC.items, which is what applyAutocomplete reads.
@@ -132,23 +183,30 @@
       }
 
       const groups = new Map();
+      const favs = [];
+      const order = favourites();
       matches.forEach((item, index) => {
+        if (isFavourite(item.name)) favs.push({ item, index });
         const key = item.source || 'Emotes';
         if (!groups.has(key)) groups.set(key, []);
         groups.get(key).push({ item, index });
       });
+      // In the order they were starred, not the order the providers list them.
+      favs.sort((a, b) => order.indexOf(a.item.name) - order.indexOf(b.item.name));
 
-      body.innerHTML = [...groups.entries()].map(([source, entries]) => {
-        const shown = entries.slice(0, EMOTE_PICKER_PER_GROUP);
+      const block = (title, entries, cap) => {
+        const shown = cap ? entries.slice(0, cap) : entries;
         const hidden = entries.length - shown.length;
-        return `<div class="fcm-ac-header">${esc(source)} (${entries.length})</div>`
+        return `<div class="fcm-ac-header">${title} (${entries.length})</div>`
           + '<div class="fcm-emote-grid">'
-          + shown.map(({ item, index }) => `<div class="fcm-emote-cell" data-index="${index}"`
-            + ` title="${esc(item.name)}"><img src="${esc(item.url)}" alt="${esc(item.name)}"`
-            + ' loading="lazy"></div>').join('')
+          + shown.map(({ item, index }) => cellHtml(item, index)).join('')
           + '</div>'
           + (hidden > 0 ? `<div class="fcm-ac-more">+${hidden} more — type to search</div>` : '');
-      }).join('');
+      };
+
+      body.innerHTML = (favs.length ? block('★ Favourites', favs, 0) : '')
+        + [...groups.entries()].map(([source, entries]) =>
+          block(esc(source), entries, EMOTE_PICKER_PER_GROUP)).join('');
     }
 
     function toggleEmotePicker() {
@@ -219,7 +277,14 @@
           if (at === 0) prefix.push(all[i]);
           else if (at > 0 && prefix.length < AC_MAX_EMOTES) elsewhere.push(all[i]);
         }
-        const byName = (a, b) => a.name.localeCompare(b.name);
+        // Favourites first, then alphabetical: the point of starring one is not
+        // having to scroll past everything that shares its first two letters.
+        const byName = (a, b) => {
+          const fa = isFavourite(a.name);
+          const fb = isFavourite(b.name);
+          if (fa !== fb) return fa ? -1 : 1;
+          return a.name.localeCompare(b.name);
+        };
         prefix.sort(byName);
         if (prefix.length >= AC_MAX_EMOTES) {
           items = prefix.slice(0, AC_MAX_EMOTES);
