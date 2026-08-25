@@ -112,7 +112,13 @@ function makeSink(session, platform) {
         send(session, { type: 'auth', accounts: await FCM.auth.summary() });
       });
     },
-    joined: (chatroomId) => { onJoined(session, platform, chatroomId); },
+    joined: (chatroomId) => {
+      // Kept, not just passed on: it is what a later replay needs to ask Kick
+      // for this channel's history again, and there is no second chance to
+      // learn it without reopening the socket.
+      if (chatroomId) conn.chatroomId = chatroomId;
+      onJoined(session, platform, chatroomId);
+    },
   };
 }
 
@@ -391,6 +397,24 @@ chrome.runtime.onConnect.addListener((port) => {
         });
 
         if (!channel) break;
+
+        // A reload is a new page on the same channel. The sockets in here carry
+        // on regardless, so nothing re-joins — and history, badges and emotes
+        // only ever happened on a join. The tab was reconnecting to a live chat
+        // and showing nothing that arrived before it loaded, with an empty
+        // emote picker. Everything a fresh page needs is sent again.
+        //
+        // Safe to repeat: the feed drops messages it has already seen, emote
+        // stores merge rather than replace, and badges are a straight swap. A
+        // page that already had all of it ends up exactly where it was.
+        if (!changedChannel) {
+          FCM.PLATFORMS.forEach((p) => {
+            const live = session.conns[p];
+            if (!live.channel || live.state !== 'connected') return;
+            live.announcedEmotes = false;
+            Promise.resolve(onJoined(session, p, live.chatroomId)).catch(() => {});
+          });
+        }
 
         if (changedChannel) {
           await refreshCounterpart(session, { announce: true });

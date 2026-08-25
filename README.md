@@ -8,7 +8,7 @@ streamer is also live on Kick, the overlay says so and offers to add the Kick ch
 feed. Open a Kick channel and it works the other way round.
 
 ![Platform](https://img.shields.io/badge/Chrome-MV3-blue)
-![Version](https://img.shields.io/badge/version-1.4.0-green)
+![Version](https://img.shields.io/badge/version-1.4.1-green)
 
 ## What it does
 
@@ -69,7 +69,7 @@ feed. Open a Kick channel and it works the other way round.
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.4.0.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.4.1.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and a folder named `FriendlyChatExtension-main`. The
@@ -680,7 +680,7 @@ DOM, so nothing in the page's layout or stacking contexts has to be fought with.
 node tests/run.js
 ```
 
-814 assertions, no network. It drives the real parsers with real payload shapes: IRC lines with
+827 assertions, no network. It drives the real parsers with real payload shapes: IRC lines with
 tags and emote positions, Kick Pusher events, emote sets from every provider, and the
 counterpart matcher against stubbed platform APIs — including the cases that matter most, like a
 manual mapping beating a same-name guess and a failing emote provider not taking the others down.
@@ -702,10 +702,11 @@ Two suites exist specifically to break things rather than to confirm they work:
   request failing, unparseable JSON, a channel with no chatroom, junk arriving on both sockets,
   and malformed commands from the page.
 
-Run one suite with `node tests/run.js <name>` (`irc`, `kick`, `render`, `settings`, `compose`,
-`reply`, `authpages`, `sites`, `native`, `discovery`, `emotes`, `theme`, `auth`, `send`,
+Run one suite with `node tests/run.js <name>` (
+`irc`, `kick`, `render`, `settings`, `compose`, `favourites`, `reply`, `authpages`,
+`sites`, `discovery`, `twitchEmotes`, `emotes`, `theme`, `native`, `auth`, `send`,
 `resilience`, `errors`, `feed`, `navigation`, `moderation`, `channelswitch`, `endtoend`,
-`multitab`, `background`).
+`reload`, `multitab`, `background`).
 
 The **`native`** suite covers the part of the overlay that reads the page rather than a protocol:
 splitting the message list's siblings into the cards above and the bar below against both sites'
@@ -844,6 +845,19 @@ the send path.
   finish last and connect to the wrong channel. Sockets now carry a generation and joins a
   sequence number; anything superseded stands down. Reverting either fix makes the `endtoend`
   suite fail on socket count and on a reported drop.
+
+- **Reloading a channel page came back to an empty overlay.** A reload is a new page on the same
+  channel, and the worker's sockets are not part of the page: they carry on. Nothing re-joined,
+  and history, badges and emotes only ever ran on a join — so the fresh tab reattached to a live
+  chat with nothing above the first message that happened to arrive next, and an empty emote
+  picker. The worker now re-sends everything a new page needs whenever a tab says hello about a
+  channel it is already connected to, without touching the socket. Repeating it is safe by
+  construction: the feed drops messages it has already seen, emote stores merge rather than
+  replace, and badges are a straight swap. Kick needed one more thing — replaying its history
+  takes the chatroom id, which is only learnt when the socket subscribes, so that id is now kept
+  on the connection instead of being passed straight through. The `reload` suite is the whole
+  sequence against the real worker: join, confirm, reload, and assert the second page is told
+  everything the first one was, on one unbroken socket.
 
 - **Switching channels flipped back to the previous one.** Each channel change opened a new port
   to the background worker without closing the old one, so the channel being left kept delivering

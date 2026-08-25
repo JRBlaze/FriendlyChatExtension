@@ -3431,6 +3431,104 @@ suites.endtoend = function () {
   })();
 };
 
+// Reloading the page. The sockets in the worker carry on, so nothing re-joins —
+// and history, badges and emotes only ever happened on a join.
+suites.reload = function () {
+  const { bootWorker, wait } = require('./background.js');
+
+  return (async () => {
+    // ── Twitch ──
+    {
+      const w = bootWorker();
+      try {
+        w.connect();
+        w.send({ cmd: 'hello', site: 'twitch', channel: 'alpha', hints: [] });
+        await wait(60);
+        w.send({ cmd: 'join', platform: 'twitch', channel: 'alpha' });
+        await wait(120);
+        const irc = w.socketFor('irc-ws');
+        ok(irc.sent.includes('JOIN #alpha'), 'reload: joined to begin with');
+        // 366 is Twitch saying the join completed, which is what triggers the
+        // first load of history, badges and emotes.
+        irc.push('@room-id=99 :tmi.twitch.tv ROOMSTATE #alpha');
+        irc.push(':justinfan!justinfan@tmi.twitch.tv 366 justinfan #alpha :End of /NAMES list');
+        await wait(250);
+        ok(w.of('badges').length > 0, 'reload: the first load sends the page its badges');
+        const wanted = /7tv|betterttv|frankerfacez|recent-messages/i;
+        ok(w.fetchCalls.some((c) => wanted.test(c.url)),
+          'reload: and goes looking for history and emotes');
+
+        // The page reloads: a new port, the same channel, the socket untouched.
+        const before = w.fetchCalls.length;
+        w.clear();
+        w.connect();
+        w.send({ cmd: 'hello', site: 'twitch', channel: 'alpha', hints: [] });
+        await wait(300);
+
+        const live = w.socketsFor('irc-ws').filter((sock) => !sock.closed);
+        eq(live.length, 1, 'reload: the socket is not dropped and reopened');
+        eq(live[0].sent.filter((l) => l === 'JOIN #alpha').length, 1,
+          'reload: and the channel is not joined a second time');
+
+        // What the fresh page could not have kept, and could not ask for itself:
+        // nothing re-joins, so only the worker can start this again.
+        ok(w.of('badges').length > 0, 'reload: badges are sent again');
+        ok(w.fetchCalls.slice(before).some((c) => wanted.test(c.url)),
+          'reload: history and emotes are fetched again for the new page');
+        ok(w.of('ready').length > 0, 'reload: and the page is told what is connected');
+      } finally { w.teardown(); }
+    }
+
+    // ── Kick, where replaying history needs an id learnt at join time ──
+    {
+      const w = bootWorker();
+      try {
+        w.connect();
+        w.send({ cmd: 'hello', site: 'kick', channel: 'alpha', hints: [] });
+        await wait(60);
+        w.send({ cmd: 'join', platform: 'kick', channel: 'alpha' });
+        await wait(150);
+        const pusher = w.socketFor('pusher.com');
+        pusher.push(JSON.stringify({ event: 'pusher:connection_established', data: '{}' }));
+        await wait(300);
+        pusher.push(JSON.stringify({ event: 'pusher_internal:subscription_succeeded', channel: 'chatrooms.1.v2', data: '{}' }));
+        await wait(300);
+        const firstEmotes = w.of('emotes').length + w.of('needKickEmotes').length;
+        ok(firstEmotes > 0, 'reload: kick asks for its emotes on the first join');
+
+        w.clear();
+        w.connect();
+        w.send({ cmd: 'hello', site: 'kick', channel: 'alpha', hints: [] });
+        await wait(300);
+
+        const live = w.socketsFor('pusher.com').filter((sock) => !sock.closed);
+        eq(live.length, 1, 'reload: kick keeps its one socket');
+        ok(w.of('emotes').length + w.of('needKickEmotes').length > 0,
+          'reload: and asks for its emotes again for the new page');
+      } finally { w.teardown(); }
+    }
+
+    // ── Moving to a different channel still tears down, as it always did ──
+    {
+      const w = bootWorker();
+      try {
+        w.connect();
+        w.send({ cmd: 'hello', site: 'twitch', channel: 'alpha', hints: [] });
+        await wait(60);
+        w.send({ cmd: 'join', platform: 'twitch', channel: 'alpha' });
+        await wait(120);
+        w.clear();
+        w.send({ cmd: 'hello', site: 'twitch', channel: 'bravo', hints: [] });
+        await wait(200);
+        const live = w.socketsFor('irc-ws').filter((sock) => !sock.closed);
+        ok(live.length <= 1, 'reload: a real channel change still leaves one socket');
+        ok(!live.length || !live[0].sent.includes('JOIN #alpha'),
+          'reload: and it is not the channel that was left');
+      } finally { w.teardown(); }
+    }
+  })();
+};
+
 suites.multitab = function () {
   const { bootWorker, wait } = require('./background.js');
 
