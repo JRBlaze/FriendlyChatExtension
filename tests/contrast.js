@@ -77,7 +77,9 @@ window.__auditContrast = function (roots) {
 
   const out = [];
   const seen = new Set();
-  roots.forEach((root) => {
+  // Called with nothing, audit the page: that is what the options page and the
+  // popup need, and they have no shadow root to hand in.
+  (roots && roots.length ? roots : [document]).forEach((root) => {
     root.querySelectorAll('*').forEach((el) => {
       if (seen.has(el)) return;
       seen.add(el);

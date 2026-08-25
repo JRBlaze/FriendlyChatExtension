@@ -8,7 +8,7 @@ streamer is also live on Kick, the overlay says so and offers to add the Kick ch
 feed. Open a Kick channel and it works the other way round.
 
 ![Platform](https://img.shields.io/badge/Chrome-MV3-blue)
-![Version](https://img.shields.io/badge/version-1.4.1-green)
+![Version](https://img.shields.io/badge/version-1.4.2-green)
 
 ## What it does
 
@@ -58,7 +58,9 @@ feed. Open a Kick channel and it works the other way round.
 - **Readable at WCAG AA throughout.** Every piece of text in the overlay, the options page and
   the popup clears 4.5:1 against what is actually painted behind it, in both themes. Event rows
   and timestamps follow the *Text size* setting rather than sitting at a fixed 10px, and a name
-  colour the platform hands over is nudged until it is readable while keeping its hue.
+  colour the platform hands over is nudged until it is readable while keeping its hue. Connection
+  state is carried by shape and words as well as colour, and every animation stops when the system
+  asks for reduced motion.
 - **Moderation tools** in the username menu, for the channels you actually moderate.
 - **Follows the site's own theme.** Twitch or Kick in dark mode gets a dark overlay, light mode
   gets a light one, and it switches the moment you change it on the site.
@@ -69,7 +71,7 @@ feed. Open a Kick channel and it works the other way round.
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.4.1.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.4.2.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and a folder named `FriendlyChatExtension-main`. The
@@ -267,6 +269,18 @@ toward whatever is behind it and was quietly taking values that computed as 4.79
 The palette is chosen with that margin built in. Turning the *Opacity* slider down further will
 erode contrast — that is the point of the setting, and it is your call, but it is worth knowing
 the default is the level the palette is designed around.
+
+**Nothing is said in colour alone.** Whether a chat is connecting, connected, disconnected or not
+connected at all was a coloured dot and nothing else — amber, green, red or grey — which is no
+information at all to a viewer who cannot separate those. Each state now has its own *shape* as
+well: a filled disc when connected, a hollow ring while connecting, a square when it has dropped,
+and a dim ring when there is nothing there. The chip's tooltip and its accessible name say the
+same thing in words, so it reads correctly out loud too.
+
+**Motion is optional.** The pulsing dots run for as long as the panel is open, and new messages
+fade in. Every one of those is decoration on top of something already said in text or shape, so
+`prefers-reduced-motion: reduce` stops all of it rather than trying to be clever about which parts
+are safe.
 
 **Brand colours are split in two.** Twitch purple on its own tinted chip is 3.1:1: fine for a
 border, not fine for a label. `--twitch` and `--kick` still draw dots, edges and the brand mark,
@@ -680,7 +694,7 @@ DOM, so nothing in the page's layout or stacking contexts has to be fought with.
 node tests/run.js
 ```
 
-827 assertions, no network. It drives the real parsers with real payload shapes: IRC lines with
+859 assertions, no network. It drives the real parsers with real payload shapes: IRC lines with
 tags and emote positions, Kick Pusher events, emote sets from every provider, and the
 counterpart matcher against stubbed platform APIs — including the cases that matter most, like a
 manual mapping beating a same-name guess and a failing emote provider not taking the others down.
@@ -705,8 +719,8 @@ Two suites exist specifically to break things rather than to confirm they work:
 Run one suite with `node tests/run.js <name>` (
 `irc`, `kick`, `render`, `settings`, `compose`, `favourites`, `reply`, `authpages`,
 `sites`, `discovery`, `twitchEmotes`, `emotes`, `theme`, `native`, `auth`, `send`,
-`resilience`, `errors`, `feed`, `navigation`, `moderation`, `channelswitch`, `endtoend`,
-`reload`, `multitab`, `background`).
+`states`, `resilience`, `errors`, `feed`, `navigation`, `moderation`, `channelswitch`,
+`endtoend`, `reload`, `multitab`, `background`).
 
 The **`native`** suite covers the part of the overlay that reads the page rather than a protocol:
 splitting the message list's siblings into the cards above and the bar below against both sites'
@@ -845,6 +859,24 @@ the send path.
   finish last and connect to the wrong channel. Sockets now carry a generation and joins a
   sequence number; anything superseded stands down. Reverting either fix makes the `endtoend`
   suite fail on socket count and on a reported drop.
+
+- **A message deleted the instant it arrived stayed on screen for good.** Rows are batched and
+  attached on the next animation frame, and every operation that changed the feed — a deletion, a
+  ban, a platform filter, leaving a chat — looked only at what was already attached. Twitch sends
+  a message and the CLEARMSG that deletes it down the same socket, often in the same read, so the
+  delete landed while the message was still in the queue, found nothing, and the message flushed a
+  moment later looking perfectly ordinary. The overlay then showed a message the platform had
+  removed, permanently. Everything that changes rows now sees the queued ones too, and leaving a
+  chat drops its queued messages rather than drawing them after the leave. The `feed` suite holds
+  each case open across the flush.
+
+- **Renaming the markup quietly switched off "hide the site's own chat".** The overlay finds the
+  chat column by climbing from the message list, so a site redrawing itself leaves the panel
+  correctly placed — but the block to hide was looked up by name alone, and when the name went it
+  returned nothing and the setting simply stopped working, with nothing to say so. It now falls
+  back to the same climb: the block one short of the column. Cards are still forced visible
+  through it, so a hype train stays on screen either way. The `sites` suite runs both platforms
+  with every hook but one renamed.
 
 - **Reloading a channel page came back to an empty overlay.** A reload is a new page on the same
   channel, and the worker's sockets are not part of the page: they carry on. Nothing re-joined,

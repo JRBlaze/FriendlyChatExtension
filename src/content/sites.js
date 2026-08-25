@@ -110,6 +110,28 @@
   }
 
   /**
+   * The block that holds a site's own chat, worked out from where its messages
+   * are rather than from what it calls things.
+   *
+   * The named selectors are still tried first — they are exact when they match.
+   * But a site renaming its markup is a matter of when, not if, and when it
+   * happens every other part of the overlay carries on: the column is already
+   * found by climbing from the message list. Hiding the site's chat was the one
+   * thing that quietly stopped working instead, with nothing to show for it.
+   *
+   * The climb stops one short of the column, which is the block holding the
+   * messages and the composer. Hiding it can take the site's cards with it, and
+   * that is fine: the cards are put back explicitly by whatever is hiding this,
+   * because a descendant can turn visibility back on.
+   */
+  function bodyFromMessages(list, column) {
+    if (!list || !column || !column.contains(list) || column === list) return null;
+    let el = list;
+    while (el.parentElement && el.parentElement !== column) el = el.parentElement;
+    return el;
+  }
+
+  /**
    * The thing to click for a control, which is not always the thing that shows
    * its value. Kick's Kicks balance is a `<div>`, and clicking a div does
    * nothing at all — which is exactly what it did.
@@ -270,7 +292,7 @@
         'section[data-test-selector="chat-room-component-layout"]',
         'div[data-test-selector="chat-room-component-layout"]',
         'div[data-a-target="right-column-chat-bar"] > div',
-      ]);
+      ]) || bodyFromMessages(this.messageList(), this.chatContainer());
     },
 
     // The scrolling list of messages, and the anchor everything the site draws
@@ -409,7 +431,7 @@
         '#chatroom-messages',
         '#chatroom',
         '[data-testid="chat-container"]',
-      ]);
+      ]) || bodyFromMessages(this.messageList(), this.chatContainer());
     },
 
     messageList() {

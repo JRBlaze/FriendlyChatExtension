@@ -198,15 +198,32 @@
   border-color: var(--kick-border); background: var(--kick-dim); color: var(--kick-text);
 }
 
+/* Connection state, told twice over.
+   Colour alone would leave the four states indistinguishable to anyone who
+   cannot separate amber from green from red, so each one also has its own
+   shape: a filled disc when connected, a hollow ring while connecting, a
+   square when it has failed, and a dim ring when there is nothing to show.
+   The wording in the chip's tooltip says the same thing a third time. */
 .fcm-live-dot {
-  width: 6px; height: 6px; border-radius: 50%;
-  background: var(--text-dim);
+  width: 7px; height: 7px; border-radius: 50%;
+  background: transparent;
+  border: 1.5px solid var(--text-dim);
+  box-sizing: border-box;
   flex-shrink: 0;
 }
-.fcm-live-dot[data-state="connected"] { background: currentColor; box-shadow: 0 0 6px currentColor; }
-.fcm-live-dot[data-state="connecting"] { background: #ffb400; animation: fcm-pulse 1s ease-in-out infinite; }
+.fcm-live-dot[data-state="connected"] {
+  background: currentColor; border-color: currentColor;
+  box-shadow: 0 0 6px currentColor;
+}
+.fcm-live-dot[data-state="connecting"] {
+  background: transparent; border-color: #ffb400;
+  animation: fcm-pulse 1s ease-in-out infinite;
+}
 .fcm-live-dot[data-state="disconnected"],
-.fcm-live-dot[data-state="error"] { background: var(--danger-edge); }
+.fcm-live-dot[data-state="error"] {
+  background: var(--danger-edge); border-color: var(--danger-edge);
+  border-radius: 1px;
+}
 
 @keyframes fcm-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
 
@@ -262,6 +279,19 @@
   width: 6px; height: 6px; border-radius: 50%;
   background: currentColor;
   animation: fcm-pulse 1.6s ease-in-out infinite;
+}
+
+/* Nothing here is worth making someone unwell. Every animation in the overlay
+   is decoration on top of something already said in text or shape, so when the
+   system asks for less motion there is nothing to lose by stopping all of it —
+   including the pulses, which otherwise run for as long as the panel is open. */
+@media (prefers-reduced-motion: reduce) {
+  .fcm-root *, .fcm-root *::before, .fcm-root *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 .fcm-prompt-title { font-size: 12.5px; color: var(--text); font-weight: 500; }

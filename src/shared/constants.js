@@ -147,6 +147,21 @@
     kickRedirect: 'shared',
   };
 
+  // Every state a connection can be in, and how each one reads.
+  //
+  // The status dot tells them apart by colour and by shape; this is the same
+  // fact in words, for the chip's tooltip and for a screen reader, so the state
+  // is never something only a sighted user can work out. Every state the
+  // background worker can report has to appear here.
+  FCM.CONNECTION_STATES = ['connecting', 'connected', 'disconnected', 'error', 'idle'];
+  FCM.CONNECTION_STATE_WORDS = {
+    connecting: 'connecting',
+    connected: 'connected',
+    disconnected: 'disconnected — trying again',
+    error: 'disconnected — trying again',
+    idle: 'not connected',
+  };
+
   // Platforms a typed message can be sent to.
   FCM.SEND_PLATFORMS = ['twitch', 'kick'];
 

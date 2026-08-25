@@ -694,11 +694,16 @@
         btn.className = 'fcm-chip-btn';
         btn.dataset.platform = platform;
         btn.dataset.on = String(connected && filter.has(platform));
+        // The dot's colour and shape say what the connection is doing; the
+        // wording says it again for anyone reading rather than looking.
         btn.title = connected
-          ? `${FCM.PLATFORM_META[platform].name}: click to show/hide in the feed`
+          ? `${FCM.PLATFORM_META[platform].name}: ${FCM.CONNECTION_STATE_WORDS[conn.state] || conn.state}. Click to show/hide in the feed.`
           : (counterpart && platform === otherPlatform && counterpart.exists
             ? `${counterpart.displayName} on ${FCM.PLATFORM_META[platform].name} — ${counterpart.live ? 'live now' : 'offline'}. Click to connect.`
             : `Connect ${FCM.PLATFORM_META[platform].name} chat`);
+        btn.setAttribute('aria-label', `${chipLabel(platform)} — ${connected
+          ? (FCM.CONNECTION_STATE_WORDS[conn.state] || conn.state)
+          : 'not connected'}`);
 
         const dot = document.createElement('span');
         dot.className = isCounterpartLive ? 'fcm-live-pip' : 'fcm-live-dot';

@@ -175,8 +175,14 @@ function bootPair(startPath) {
     get href() { return 'https://www.twitch.tv' + this.pathname; },
   };
   const overlays = [];
-  const pollers = [];
+  // A page reload is a second content script against the same worker, so the
+  // whole content half is built by a function rather than once inline.
+  let pollers = [];
+  let livePorts = [];
 
+  function makeContent() {
+  pollers = [];
+  livePorts = [];
   const contentSandbox = {
     console, URL, URLSearchParams,
     ...track,
@@ -198,6 +204,7 @@ function bootPair(startPath) {
           const { contentEnd, workerEnd } = makePort(1);
           // The worker sees the connection the way Chrome delivers it.
           workerListeners.connect(workerEnd);
+          livePorts.push(contentEnd);
           return contentEnd;
         },
       },
@@ -227,9 +234,15 @@ function bootPair(startPath) {
   contentSandbox.FCM.createOverlay = (opts) => {
     const o = {
       channel: opts.channel, destroyed: false, statuses: [],
+      // What the page was actually given, which is the whole question a reload
+      // asks: a fresh page gets none of this unless the worker sends it again.
+      batches: [], emoteSets: [], badgeSets: [],
       mount: async () => o,
       destroy() { o.destroyed = true; },
-      sys() {}, event() {}, chat() {}, batch() {}, setEmotes() {}, setBadges() {},
+      sys() {}, event() {}, chat() {},
+      batch(rows) { o.batches.push(rows || []); },
+      setEmotes(platform, kind, store) { o.emoteSets.push({ platform, kind, store }); },
+      setBadges(platform, badges) { o.badgeSets.push({ platform, badges }); },
       deleteMessage() {}, deleteUser() {}, setCounterpart() {}, setAccounts() {},
       setModerator() {}, modResult() {}, sendResult() {}, applyStoredSettings() {}, toast() {},
       setStatus(platform, state, channel) { o.statuses.push({ platform, state, channel }); },
@@ -240,6 +253,9 @@ function bootPair(startPath) {
 
   vm.runInContext(fs.readFileSync(path.join(ROOT, 'src/content/boot.js'), 'utf8'),
     contentSandbox, { filename: 'boot.js' });
+  }
+
+  makeContent();
 
   return {
     sockets, overlays, portLog, location,
@@ -247,6 +263,17 @@ function bootPair(startPath) {
       location.pathname = pathname;
       pollers.forEach((fn) => fn());
       await wait(150);
+    },
+    /**
+     * Reloads the page: the document goes away, taking its port with it, and a
+     * new content script starts against the same worker — whose sockets never
+     * noticed. Nothing re-joins, which is what makes this worth testing.
+     */
+    async reloadPage() {
+      livePorts.forEach((p) => { try { p.disconnect(); } catch (e) { /* already gone */ } });
+      makeContent();
+      await wait(400);
+      return overlays[overlays.length - 1];
     },
     ircSockets() { return sockets.filter((s) => s.url.includes('irc-ws')); },
     joins() {

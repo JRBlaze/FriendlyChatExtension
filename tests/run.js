@@ -391,6 +391,43 @@ suites.render = function () {
   })();
 };
 
+// Whether a connection is up is told three ways: the dot's colour, the dot's
+// shape, and words. Colour on its own would leave the states indistinguishable
+// to anyone who cannot separate amber from green from red — so what matters
+// here is that no state the worker can report is left without wording.
+suites.states = function () {
+  const sandbox = makeSandbox({});
+  const FCM = load(sandbox, 'src/shared/namespace.js', 'src/shared/constants.js');
+
+  FCM.CONNECTION_STATES.forEach((state) => {
+    const word = FCM.CONNECTION_STATE_WORDS[state];
+    ok(typeof word === 'string' && word.length > 2,
+      `states: "${state}" reads as something, not just a colour`);
+  });
+
+  // The worker is the one that decides what a state can be, so the list is
+  // checked against the worker's own source rather than against itself.
+  const fs = require('fs');
+  const path = require('path');
+  const emitted = new Set();
+  ['service-worker', 'twitch-source', 'kick-source'].forEach((file) => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src/background', `${file}.js`), 'utf8');
+    const re = /(?:status\(|state: |state = )'([a-z-]+)'/g;
+    let m;
+    while ((m = re.exec(src))) emitted.add(m[1]);
+  });
+  emitted.delete('status');
+  emitted.forEach((state) => {
+    ok(FCM.CONNECTION_STATE_WORDS[state],
+      `states: the worker reports "${state}", so the overlay has words for it`);
+  });
+  ok(emitted.size >= 4, 'states: the worker source was actually read');
+
+  // Distinct wording for the states a viewer needs to tell apart.
+  const distinct = new Set(['connecting', 'connected', 'idle'].map((s) => FCM.CONNECTION_STATE_WORDS[s]));
+  eq(distinct.size, 3, 'states: connecting, connected and not connected each read differently');
+};
+
 suites.settings = function () {
   // Two toggles flipped in quick succession must both survive: the second save
   // has to see the first one's result, not the state from before it.
@@ -711,6 +748,82 @@ suites.sites = function () {
       eq(S.SITES[id].channelFromUrl(), expected, `sites: ${id} ${pathname}`);
     });
   });
+
+  // ── When the site renames its markup ──
+  //
+  // The overlay already finds the chat column by climbing from the message
+  // list, so a rename leaves it placed correctly. Hiding the site's own chat
+  // was the one thing that went by name alone: it returned nothing, said
+  // nothing, and the setting simply stopped working. Now it climbs too.
+  ['twitch', 'kick'].forEach((id) => {
+    const node = (name, rect, kids) => {
+      const n = {
+        name, nodeType: 1, isConnected: true, style: {}, children: kids || [],
+        parentElement: null, dataset: {}, className: name,
+        getAttribute: () => null,
+        getBoundingClientRect: () => ({
+          top: rect[0], height: rect[1], bottom: rect[0] + rect[1],
+          left: 900, right: 900 + rect[2], width: rect[2],
+        }),
+        contains(other) {
+          for (let p = other; p; p = p.parentElement) if (p === n) return true;
+          return false;
+        },
+        querySelectorAll: () => [],
+        querySelector: () => null,
+      };
+      n.children.forEach((k) => { k.parentElement = n; });
+      return n;
+    };
+
+    // A chat column the way both sites build one: messages inside a body,
+    // inside the column — and nothing carrying a name we recognise.
+    const messages = node('messages', [120, 500, 340], []);
+    const body = node('body', [100, 540, 340], [messages]);
+    const column = node('column', [50, 620, 340], [body]);
+
+    const survivor = id === 'twitch'
+      ? 'div[data-a-target="chat-scroller"]'
+      : '[data-testid="chat-message-list"]';
+
+    const sandbox = makeSandbox({
+      location: { hostname: id === 'twitch' ? 'www.twitch.tv' : 'kick.com', pathname: '/somechannel' },
+      document: {
+        body: node('page-body', [0, 900, 1280], []),
+        documentElement: node('html', [0, 900, 1280], []),
+        // One hook out of all of them still matches, and it is on the message
+        // list — which is the state a rename actually leaves behind.
+        querySelectorAll: (sel) => (sel === survivor ? [messages] : []),
+        querySelector: (sel) => (sel === survivor ? messages : null),
+      },
+      window: {},
+      getComputedStyle: () => ({ position: 'static', display: 'block', visibility: 'visible' }),
+    });
+    const S = load(sandbox, ...SHARED, 'src/content/sites.js');
+    const site = S.SITES[id];
+
+    // Identity, not equality: these nodes point at each other.
+    ok(site.messageList() === messages, `sites: ${id} still finds the message list`);
+    ok(site.chatContainer() === column, `sites: ${id} still finds the column by climbing`);
+    ok(site.nativeChatBody() === body,
+      `sites: ${id} works out the chat body from the messages when the names are gone`);
+  });
+
+  // Nothing to climb from is still nothing, rather than something wrong.
+  {
+    const sandbox = makeSandbox({
+      location: { hostname: 'www.twitch.tv', pathname: '/somechannel' },
+      document: {
+        body: null, documentElement: null,
+        querySelectorAll: () => [], querySelector: () => null,
+      },
+      window: {},
+      getComputedStyle: () => ({ position: 'static' }),
+    });
+    const S = load(sandbox, ...SHARED, 'src/content/sites.js');
+    eq(S.SITES.twitch.nativeChatBody(), null,
+      'sites: a page with no chat on it hides nothing');
+  }
 };
 
 suites.discovery = function () {
@@ -2513,6 +2626,19 @@ suites.feed = function () {
         if (this.parentNode) this.parentNode.removeChild(this);
       },
       querySelector(sel) { return this.querySelectorAll(sel)[0] || null; },
+      // Detached rows are tested one at a time, so this has to answer for a
+      // single node the way querySelectorAll answers for a list — including
+      // that a bare [data-platform] means the attribute is actually there,
+      // which is what keeps system rows out of a platform filter.
+      matches(sel) {
+        const platform = (/data-platform="([^"]+)"/.exec(sel) || [])[1];
+        const msgId = (/data-msg-id="([^"]+)"/.exec(sel) || [])[1];
+        if (sel.includes('.fcm-msg') && !String(this.className).includes('fcm-msg')) return false;
+        if (sel.includes('[data-platform') && !this.dataset.platform) return false;
+        if (platform && this.dataset.platform !== platform) return false;
+        if (msgId && this.dataset.msgId !== msgId) return false;
+        return true;
+      },
       querySelectorAll(sel) {
         // Only the shapes feed.js actually uses.
         const platform = (/data-platform="([^"]+)"/.exec(sel) || [])[1];
@@ -2805,6 +2931,67 @@ suites.feed = function () {
     // Firing the cancelled timer too must not double-flush or throw.
     t.fireTimers();
     eq(t.feedEl.childElementCount, 1, 'feed: a cancelled timer does nothing if it fires anyway');
+  }
+
+  // ── Rows waiting in the queue are still rows ──
+  //
+  // Everything that changes the feed used to look only at what was attached,
+  // and a message spends up to a frame in the queue first. Twitch sends a
+  // message and the CLEARMSG that deletes it down one socket, so a delete
+  // landing in that window found nothing and the message flushed a moment
+  // later looking perfectly ordinary — the overlay then showed a message the
+  // platform had removed, permanently.
+  {
+    const t = drainRig({});
+    t.feed.addMessage({ platform: 'twitch', author: 'doomed', text: 'delete me', messageId: 'q1' }, filter);
+    t.feed.markMessageDeleted('twitch', 'q1');
+    t.fireFrames();
+    const row = t.feedEl.children[0];
+    ok(row.classList.contains('fcm-deleted'),
+      'feed: a message deleted before it was drawn arrives deleted');
+  }
+
+  {
+    const t = drainRig({});
+    t.feed.addMessage({ platform: 'twitch', author: 'Banned', text: 'one', messageId: 'q2' }, filter);
+    t.feed.addMessage({ platform: 'twitch', author: 'banned', text: 'two', messageId: 'q3' }, filter);
+    t.feed.addMessage({ platform: 'twitch', author: 'other', text: 'three', messageId: 'q4' }, filter);
+    t.feed.markUserDeleted('twitch', 'banned');
+    t.fireFrames();
+    const dimmed = t.feedEl.children.filter((c) => c.classList.contains('fcm-deleted'));
+    eq(dimmed.length, 2, 'feed: a ban catches queued messages from that user too');
+    ok(!t.feedEl.children[2].classList.contains('fcm-deleted'),
+      'feed: and leaves everyone else alone');
+  }
+
+  {
+    const t = drainRig({});
+    t.feed.addMessage({ platform: 'kick', author: 'a', text: 'x', messageId: 'q5' }, filter);
+    t.feed.applyFilter(new Set(['twitch']));
+    t.fireFrames();
+    ok(t.feedEl.children[0].classList.contains('fcm-hide'),
+      'feed: a filter set while a row was queued still applies to it');
+  }
+
+  {
+    const t = drainRig({});
+    t.feed.addMessage({ platform: 'kick', author: 'a', text: 'x', messageId: 'q6' }, filter);
+    t.feed.addMessage({ platform: 'twitch', author: 'b', text: 'y', messageId: 'q7' }, filter);
+    t.feed.dropPlatform('kick');
+    t.fireFrames();
+    eq(t.feedEl.childElementCount, 1,
+      'feed: leaving a chat drops its queued messages instead of drawing them after the leave');
+    eq(t.feedEl.children[0].dataset.platform, 'twitch', 'feed: and keeps the other platform');
+  }
+
+  // System rows carry no platform, and a platform filter must not hide them.
+  {
+    const t = drainRig({});
+    t.feed.addSys('Connected to Twitch');
+    t.feed.applyFilter(new Set(['twitch']));
+    t.fireFrames();
+    ok(!t.feedEl.children[0].classList.contains('fcm-hide'),
+      'feed: a queued status line is not caught by a platform filter');
   }
 };
 
@@ -3356,6 +3543,34 @@ suites.endtoend = function () {
           'e2e: and it is on the channel now being watched');
         ok(!t.liveIrc()[0].sent.includes('JOIN #alpha'),
           'e2e: never back on the channel that was left');
+      } finally { t.teardown(); }
+    }
+
+    // ── Reloading the page ──
+    // The sockets live in the worker, so a reload does not disturb them and
+    // nothing re-joins. The new page starts with an empty feed and an empty
+    // emote picker, and only the worker can fill them.
+    {
+      const t = bootPair('/alpha');
+      try {
+        await wait(400);
+        const irc = t.liveIrc()[0];
+        irc.push('@room-id=99 :tmi.twitch.tv ROOMSTATE #alpha');
+        irc.push(':justinfan!justinfan@tmi.twitch.tv 366 justinfan #alpha :End of /NAMES list');
+        await wait(400);
+        const first = t.overlays[t.overlays.length - 1];
+        ok(first.badgeSets.length > 0, 'e2e: the first page is given its badges');
+
+        const fresh = await t.reloadPage();
+        await wait(600);
+
+        ok(fresh !== first, 'e2e: a reload builds a new overlay');
+        eq(t.joins(), ['JOIN #alpha'], 'e2e: and does not re-join the channel');
+        eq(t.liveIrc().length, 1, 'e2e: the socket carries on through the reload');
+        ok(fresh.statuses.some((s) => s.state === 'connected'),
+          'e2e: the new page is told the chat is already connected');
+        ok(fresh.badgeSets.length > 0,
+          'e2e: and is given the badges it could not have kept');
       } finally { t.teardown(); }
     }
 

@@ -100,6 +100,22 @@
       schedule();
     }
 
+    /**
+     * Visits every row this feed owns, attached or not.
+     *
+     * A row sits in the queue for up to a frame before it is attached, and a
+     * deletion, a filter change or a leave can all land inside that window.
+     * Twitch in particular sends a message and the CLEARMSG that deletes it
+     * down the same socket, often in the same read — so the delete would find
+     * nothing, the message would flush a moment later undeleted, and the feed
+     * would go on showing a message the platform had removed. Anything that
+     * changes rows has to see the ones not yet on screen.
+     */
+    function eachRow(selector, fn) {
+      pending.forEach((el) => { if (el.matches && el.matches(selector)) fn(el); });
+      feedEl.querySelectorAll(selector).forEach(fn);
+    }
+
     // Bounded so a long session cannot grow the dedupe set without limit.
     function rememberSeen(platform, messageId) {
       const key = `${platform}:${messageId}`;
@@ -137,25 +153,33 @@
       markUserDeleted(platform, username) {
         const lower = String(username || '').toLowerCase();
         if (!lower) return;
-        feedEl.querySelectorAll(`.fcm-msg[data-platform="${platform}"]`).forEach((el) => {
+        eachRow(`.fcm-msg[data-platform="${platform}"]`, (el) => {
           if (el.dataset.user === lower) el.classList.add('fcm-deleted');
         });
       },
 
       markMessageDeleted(platform, messageId) {
         const id = String(messageId).replace(/["\\]/g, '\\$&');
-        const el = feedEl.querySelector(`.fcm-msg[data-platform="${platform}"][data-msg-id="${id}"]`);
-        if (el) el.classList.add('fcm-deleted');
+        eachRow(
+          `.fcm-msg[data-platform="${platform}"][data-msg-id="${id}"]`,
+          (el) => el.classList.add('fcm-deleted'),
+        );
       },
 
       applyFilter(activeFilter) {
-        feedEl.querySelectorAll('[data-platform]').forEach((el) => {
+        eachRow('[data-platform]', (el) => {
           el.classList.toggle('fcm-hide', !activeFilter.has(el.dataset.platform));
         });
       },
 
       // Drops every row belonging to one platform, used when its chat is left.
       dropPlatform(platform) {
+        // Including the ones still queued: flushing them after the leave would
+        // put that platform's messages back into a feed that has left it.
+        for (let i = pending.length - 1; i >= 0; i--) {
+          const el = pending[i];
+          if (el.matches && el.matches(`[data-platform="${platform}"]`)) pending.splice(i, 1);
+        }
         feedEl.querySelectorAll(`[data-platform="${platform}"]`).forEach((el) => el.remove());
         // The dedupe set has to forget them too, or rejoining the channel would
         // silently discard the replayed history as "already seen".
