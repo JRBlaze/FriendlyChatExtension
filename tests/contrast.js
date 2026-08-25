@@ -10,9 +10,16 @@
 //
 //     __auditContrast([shadowRootOrDocument])   -> [] when everything passes
 //
-// Anything it returns is text below 4.5:1 (or 3:1 for large text). Disable
-// transitions before measuring — a colour mid-transition reads as its start
-// value, and in a window that is not compositing it never finishes at all.
+// Anything it returns is text below 4.5:1 (or 3:1 for large text).
+//
+// Transitions are suspended for the duration of the measurement and restored
+// afterwards. This used to be the caller's job and it was the wrong place for
+// it: a colour mid-transition reads as its start value, and in a window that is
+// not compositing it never finishes at all — so a transitioned property reads
+// as the browser default forever. That is not a subtle failure. It reported the
+// overlay's balance chips at 1.07:1 against a white background they have never
+// been drawn on, and the instruction to prevent it lived only in this comment,
+// where a caller had to notice it and act on it.
 window.__auditContrast = function (roots) {
   const parse = (c) => {
     const m = /rgba?\(([\d.]+),\s*([\d.]+),\s*([\d.]+)(?:,\s*([\d.]+))?\)/.exec(c || '');
@@ -75,11 +82,36 @@ window.__auditContrast = function (roots) {
     return t.replace(/\s+/g, ' ').trim();
   }
 
+  /**
+   * Stops every transition and animation in a root for the duration of the
+   * measurement, and hands back the undo.
+   *
+   * Reading a transitioned colour is reading wherever the transition has got
+   * to, which in a window that is not compositing is nowhere at all.
+   */
+  function freeze(roots) {
+    const added = [];
+    roots.forEach((root) => {
+      const target = root.nodeType === 9 ? root.head || root.documentElement : root;
+      if (!target || !target.appendChild) return;
+      const style = (root.ownerDocument || document).createElement('style');
+      style.textContent = '*,*::before,*::after{transition:none!important;animation:none!important}';
+      target.appendChild(style);
+      added.push(style);
+    });
+    // Force the recalculation now, so the first element measured is already
+    // reading its settled colour rather than the one it was mid-way to.
+    if (document.documentElement) void document.documentElement.offsetHeight;
+    return () => added.forEach((style) => style.remove());
+  }
+
   const out = [];
   const seen = new Set();
   // Called with nothing, audit the page: that is what the options page and the
   // popup need, and they have no shadow root to hand in.
-  (roots && roots.length ? roots : [document]).forEach((root) => {
+  const targets = (roots && roots.length ? roots : [document]);
+  const thaw = freeze(targets);
+  targets.forEach((root) => {
     root.querySelectorAll('*').forEach((el) => {
       if (seen.has(el)) return;
       seen.add(el);
@@ -112,6 +144,7 @@ window.__auditContrast = function (roots) {
       });
     });
   });
+  thaw();
   out.sort((a, b) => a.got - b.got);
   return out;
 };

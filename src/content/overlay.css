@@ -47,13 +47,17 @@
   --badge-verified: #c4b8ff;
   --link: #7c9fff;
   --link-hover: #a8bfff;
-  --sys-bg: #08080a;
-  --sys-border: #32323e;
-  --sys-text: #8686a0;
+  /* Status and event rows used to sit in a well darker than the feed itself,
+     which read as switched-off rather than quiet. They are still quieter than a
+     chat line — a notice is not something a viewer said — but the row now sits
+     level with the feed and the words on it clear 7:1 instead of 5.6:1. */
+  --sys-bg: #101014;
+  --sys-border: #3f3f4e;
+  --sys-text: #9e9eb8;
   --mention-bg: rgba(124, 107, 255, 0.28);
   --mention-text: #d3caff;
-  --sys-label-bg: #2b2b36;
-  --sys-label-text: #9a9ab4;
+  --sys-label-bg: #2f2f3c;
+  --sys-label-text: #b0b0cc;
   --shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
 
   font-family: var(--fcm-font);
@@ -436,32 +440,39 @@
 .fcm-sys {
   margin: 3px 8px;
   padding: 4px 8px;
-  display: flex;
-  align-items: flex-start;
-  gap: 7px;
+  /* Inline, not flex, for the same reason the chat rows are: as a flex row the
+     body became a narrow column beside the tags and a long status line wrapped
+     inside it, a few words to a line. Flowing inline lets it wrap back to the
+     left edge of the row underneath them, the way a chatter's message wraps
+     under their name. */
   background: var(--sys-bg);
   border: 1px solid var(--border);
   border-left: 2px solid var(--sys-border);
   border-radius: 5px;
   font-family: var(--fcm-mono);
   font-size: max(11px, calc(var(--fcm-size) - 1px));
+  line-height: 1.45;
 }
 .fcm-sys-error { border-left-color: var(--danger-edge); }
 .fcm-sys-event { border-left-color: var(--accent); }
-.fcm-sys-time { color: var(--sys-text); flex-shrink: 0; min-width: 5ch; }
+.fcm-sys-time {
+  display: inline-block; color: var(--sys-text); min-width: 5ch;
+  margin-right: 7px; vertical-align: middle;
+}
 .fcm-sys-tag {
   display: inline-flex; align-items: center; min-height: 17px; padding: 1px 6px;
   border-radius: 3px; background: var(--sys-label-bg); color: var(--sys-label-text);
   font-size: max(9px, calc(var(--fcm-size) - 3.5px));
   font-weight: 700; letter-spacing: 0.08em; line-height: 1;
-  flex-shrink: 0; font-style: normal;
+  font-style: normal; margin-right: 7px; vertical-align: middle;
 }
 .fcm-sys-label {
   display: inline-flex; align-items: center; min-height: 17px; padding: 1px 6px;
   border-radius: 3px; border: 1px solid var(--border); background: var(--surface2);
   color: var(--text-muted); font-size: max(9px, calc(var(--fcm-size) - 3.5px));
   font-weight: 700;
-  letter-spacing: 0.04em; line-height: 1; flex-shrink: 0; text-transform: uppercase;
+  letter-spacing: 0.04em; line-height: 1; text-transform: uppercase;
+  margin-right: 7px; vertical-align: middle;
 }
 .fcm-sys-twitch { border-color: var(--twitch-border); background: var(--twitch-dim); color: var(--twitch-text); }
 .fcm-sys-kick { border-color: var(--kick-border); background: var(--kick-dim); color: var(--kick-text); }
@@ -904,6 +915,30 @@
   margin-left: auto; font-family: var(--fcm-mono);
   font-size: 8.5px; text-transform: uppercase; color: var(--text-dim);
 }
+/* What is publicly known about the chatter, under their name. Quieter than the
+   actions below it: it is context for the decision, not one of the things you
+   can do. */
+.fcm-um-profile {
+  padding: 2px 11px 6px;
+  margin-bottom: 3px;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--fcm-mono);
+  font-size: 10px;
+  color: var(--text-dim);
+}
+.fcm-um-profile[data-state="loading"],
+.fcm-um-profile[data-state="empty"] { font-style: italic; }
+.fcm-um-fact { display: flex; align-items: baseline; gap: 8px; padding: 1px 0; }
+.fcm-um-fact-key { color: var(--text-dim); }
+.fcm-um-fact-val {
+  margin-left: auto; color: var(--text-muted); font-weight: 600;
+  text-align: right; word-break: break-word;
+}
+/* A reason standing in for a value, which must not read as one. */
+.fcm-um-fact-quiet .fcm-um-fact-val {
+  color: var(--text-dim); font-weight: 400; font-style: italic;
+}
+
 .fcm-um-action {
   display: flex; align-items: center; gap: 8px; width: 100%;
   padding: 7px 11px; border: 0; background: transparent;
@@ -933,12 +968,30 @@
   text-transform: uppercase;
   color: var(--text-dim);
 }
-.fcm-um-timeouts {
+.fcm-um-timeouts,
+.fcm-um-tiers {
   display: flex;
   gap: 4px;
   padding: 2px 11px 6px;
   flex-wrap: wrap;
 }
+/* Gifting opens the site's own checkout, so these are drawn as a way in rather
+   than as a moderation control: the platform's colour, not the danger red. */
+.fcm-um-tier {
+  flex: 1 1 auto;
+  min-width: 48px;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 5px;
+  border: 1px solid var(--twitch-border);
+  background: var(--twitch-dim);
+  color: var(--twitch-text);
+  font-family: var(--fcm-mono);
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.fcm-um-tier:hover { border-color: var(--twitch); color: var(--text); }
 .fcm-um-timeout {
   flex: 1 1 auto;
   min-width: 34px;

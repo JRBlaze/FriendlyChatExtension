@@ -59,6 +59,16 @@
     // Asked fresh each time the menu opens: whether this viewer can moderate
     // changes as connections come and go.
     const canModerate = ctx.canModerate || function () { return false; };
+    // Opens the site's own card for a viewer. Returns false when their name is
+    // not in the site's own chat to press — both sites virtualise, so someone
+    // who scrolled away is genuinely not there.
+    const onUserCard = ctx.onUserCard || function () { return false; };
+    const onProfile = ctx.onProfile || function () { return Promise.resolve(null); };
+    const canGift = ctx.canGift || function () { return false; };
+    const onGift = ctx.onGift || function () { return Promise.resolve(false); };
+    // Which site the panel is sitting on. The site's own card only exists for
+    // the chat that page is actually showing.
+    const hostPlatform = ctx.hostPlatform || '';
 
     const popup = document.createElement('div');
     popup.className = 'fcm-ac fcm-hidden';
@@ -435,6 +445,90 @@
       menu.appendChild(btn);
     }
 
+    // Why the follow date is missing. Worth saying rather than leaving the line
+    // out, because "no date" and "not allowed to see the date" are different
+    // facts and only one of them means the person does not follow.
+    const FOLLOW_REASONS = {
+      'not-a-moderator': 'only shown to mods',
+      'not-connected': 'connect an account',
+      refused: 'unavailable',
+      'no-channel': 'chat not connected',
+    };
+
+    // Why a lookup came back with nothing, in words that say what to do about
+    // it rather than naming the failure.
+    const PROFILE_REASONS = {
+      'not-connected': 'Connect an account in settings to see profile details',
+      'not-found': 'No account found by that name',
+      timeout: 'Could not reach the platform',
+      failed: 'Could not load their profile',
+      closed: '',
+      'bad-request': '',
+    };
+
+    /**
+     * Fills in the profile line once the worker answers.
+     *
+     * Rebuilt against the name it was asked about, because a menu opened for
+     * someone else in the meantime must not be handed this answer — clicking
+     * quickly through a busy chat does exactly that.
+     */
+    async function fillProfile(platform, name) {
+      const profile = await onProfile(platform, name);
+      const row = menu.querySelector('.fcm-um-profile');
+      if (!row || menu.classList.contains('fcm-hidden')) return;
+      const head = menu.querySelector('.fcm-um-head b');
+      if (!head || head.textContent !== name) return;
+
+      const facts = [];
+      const created = FCM.shortDate(profile && profile.createdAt);
+      if (created) facts.push({ key: 'Account created', value: created });
+
+      const followed = FCM.shortDate(profile && profile.followedAt);
+      if (followed) {
+        facts.push({ key: 'Following since', value: followed });
+      } else if (profile && FOLLOW_REASONS[profile.followedReason]) {
+        facts.push({ key: 'Following since', value: FOLLOW_REASONS[profile.followedReason], quiet: true });
+      }
+
+      if (profile && profile.subscribedMonths) {
+        const m = profile.subscribedMonths;
+        facts.push({ key: 'Subscribed', value: `${m} month${m === 1 ? '' : 's'}` });
+      }
+      if (profile && profile.accountType) {
+        facts.push({ key: 'Account', value: String(profile.accountType) });
+      }
+
+      if (!facts.length) {
+        const why = profile && PROFILE_REASONS[profile.reason];
+        row.dataset.state = 'empty';
+        // An empty row with nothing to say is worse than no row at all.
+        if (!why) { row.remove(); return; }
+        row.textContent = why;
+        return;
+      }
+
+      row.dataset.state = 'ready';
+      row.textContent = '';
+      facts.forEach((fact) => {
+        const line = document.createElement('div');
+        // A reason rather than a value is set apart, so a glance down the column
+        // does not read "Following since unavailable" as a date.
+        line.className = `fcm-um-fact${fact.quiet ? ' fcm-um-fact-quiet' : ''}`;
+        if (fact.title) line.title = fact.title;
+        const k = document.createElement('span');
+        k.className = 'fcm-um-fact-key';
+        k.textContent = fact.key;
+        const v = document.createElement('span');
+        v.className = 'fcm-um-fact-val';
+        // Set as text: every one of these came off a platform response.
+        v.textContent = fact.value;
+        line.appendChild(k);
+        line.appendChild(v);
+        row.appendChild(line);
+      });
+    }
+
     function openMenu(event, authorEl) {
       event.preventDefault();
       event.stopPropagation();
@@ -453,12 +547,31 @@
       };
 
       menu.innerHTML = `<div class="fcm-um-head"><span class="fcm-dot fcm-dot-${esc(platform)}"></span>`
-        + `<b>${esc(name)}</b><span>${esc(meta.name)}</span></div>`;
+        + `<b>${esc(name)}</b><span>${esc(meta.name)}</span></div>`
+        + '<div class="fcm-um-profile" data-state="loading">Looking them up…</div>';
+      fillProfile(platform, name);
 
       addAction(`Reply on ${meta.name}`, {
         hint: `@${name}`,
         run: () => { insertMention(name, platform); closeMenu(); },
       });
+      // The site's own card, which carries what only a logged-in session can
+      // see — badges, when they followed, the gift button on Twitch, the join
+      // date and level on Kick. Offered only for the chat this page is showing,
+      // because that is the only one with a card to open.
+      if (platform === hostPlatform) {
+        addAction(`Open ${meta.name}'s user card`, {
+          hint: 'profile, badges, follow date',
+          run: () => {
+            const opened = onUserCard(platform, name);
+            closeMenu();
+            if (!opened) {
+              toast(`${meta.name} has not drawn ${name}'s name where it can be opened `
+                + '— scroll their chat to a message from them');
+            }
+          },
+        });
+      }
       addAction('Copy username', {
         run: () => { navigator.clipboard.writeText(name).catch(() => {}); closeMenu(); },
       });
@@ -473,6 +586,38 @@
           closeMenu();
         },
       });
+
+      // ── Gifting a subscription ────────────────────────────────────────────
+      //
+      // These open Twitch's own checkout and nothing else. No money moves
+      // through this extension: Twitch draws the price and the confirm button
+      // and takes the payment itself, exactly as if the viewer had used the
+      // gift button on Twitch's own card. Shown only when the page has actually
+      // handed over a way to open it.
+      if (canGift(platform)) {
+        const heading = document.createElement('div');
+        heading.className = 'fcm-um-section';
+        heading.textContent = `Gift a sub to ${name}`;
+        menu.appendChild(heading);
+
+        const tiers = document.createElement('div');
+        tiers.className = 'fcm-um-tiers';
+        [['1000', 'Tier 1'], ['2000', 'Tier 2'], ['3000', 'Tier 3']].forEach(([tier, label]) => {
+          const btn = document.createElement('button');
+          btn.className = 'fcm-um-tier';
+          btn.textContent = label;
+          btn.title = `Open ${meta.name}'s own checkout to gift ${name} a ${label} sub`;
+          btn.addEventListener('click', async () => {
+            closeMenu();
+            const opened = await onGift(platform, tier, name);
+            toast(opened
+              ? `Opening ${meta.name}'s checkout to gift ${name} a ${label} sub`
+              : `${meta.name} did not offer a gift option here`);
+          });
+          tiers.appendChild(btn);
+        });
+        menu.appendChild(tiers);
+      }
 
       // ── Moderation, shown only where this viewer actually holds the badge ──
       if (canModerate(platform)) {

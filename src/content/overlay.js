@@ -58,7 +58,14 @@
     // Whether this viewer holds a moderator (or broadcaster) badge in each
     // connected channel. The platforms tell us; we never assume.
     const canModerate = { twitch: false, kick: false };
+    // The Cheermote prefixes this channel accepts, sent by the worker after the
+    // Twitch join. Empty until then, which falls back to the global list — the
+    // ones people actually type are all in it, so a Cheer typed in the first
+    // second is still recognised.
+    let cheermotes = [];
     const pendingSends = new Map();
+    // Profile lookups still waiting on the worker, keyed the same way.
+    const pendingProfiles = new Map();
     let sendSeq = 0;
     let compose = null;
     let themeWatcher = null;
@@ -69,12 +76,43 @@
     // even if the overlay goes away before the mouse comes back up.
     let endDrag = null;
     let manualPlacement = false;
+    // The box the viewer actually chose, kept apart from what is on the panel
+    // right now: a panel standing aside for a hype train is a temporary shape,
+    // and saving that as their choice would make the dodge permanent.
+    let manualRect = null;
     let collapsed = false;
     let destroyed = false;
     let visible = true;
     // Reads and drives the site's own chat: the cards above the message list,
     // and the bits and channel-points controls below it.
     const native = FCM.createNativeBridge(site);
+    // Talks to the part of the extension running in the page's own world, which
+    // exists only on Twitch and only when the viewer has switched it on. Held
+    // as null until then, and every caller copes with null — that is what keeps
+    // the setting being off from being a special case anywhere else.
+    let pageBridge = null;
+    // What that world says it can actually do here, re-asked on each channel.
+    let pageCan = { relationship: false, gifting: false };
+
+    function refreshPageBridge() {
+      const wanted = hostPlatform === 'twitch' && settings.usePageSession === true;
+      if (!wanted) {
+        if (pageBridge) { pageBridge.close(); pageBridge = null; }
+        pageCan = { relationship: false, gifting: false };
+        return;
+      }
+      if (pageBridge) return;
+      // Guarded because this whole feature is meant to fail closed: if the
+      // bridge module is not there, the overlay carries on without it rather
+      // than throwing part-way through applying settings.
+      if (typeof FCM.createPageBridge !== 'function') return;
+      pageBridge = FCM.createPageBridge();
+      pageBridge.capabilities().then((can) => {
+        // Torn down while the page was being asked.
+        if (!pageBridge) return;
+        pageCan = can;
+      });
+    }
     // Set while one of the site's own menus is open where the panel would cover
     // it — the rewards panel, the cheer menu. The panel steps aside until it
     // closes rather than painting over a menu the user just opened.
@@ -218,6 +256,9 @@
     // The cards found by the last structural search, and the inset they came to.
     let cardEls = [];
     let lastCardInset = 0;
+    // The block the cards came to as one box, kept so a panel the viewer placed
+    // by hand can be asked whether it is sitting on top of them.
+    let lastCards = null;
 
     /**
      * Re-runs the search for the site's cards.
@@ -230,6 +271,7 @@
      */
     function refreshCards() {
       const found = settings.revealHighlights === false ? null : native.cards();
+      lastCards = found;
       const next = found ? found.elements : [];
       const changed = next.length !== cardEls.length
         || next.some((el, i) => el !== cardEls[i]);
@@ -270,8 +312,62 @@
       return lastCardInset;
     }
 
+    /**
+     * Keeps a dragged panel where the viewer put it, except when the site draws
+     * a card underneath it.
+     *
+     * Placing the panel by hand used to switch card-dodging off altogether, so
+     * a hype train or a pinned message arriving under a moved panel was simply
+     * covered. Moving the panel is a statement about where it belongs, though,
+     * not a request to sit on top of the stream's own cards.
+     *
+     * So the box the viewer chose is the one that gets applied, unless it
+     * actually overlaps the cards — and then only the top edge gives way, the
+     * bottom edge stays where they left it, and the panel goes straight back
+     * the moment the card ends. A panel dragged somewhere else entirely never
+     * overlaps and is never touched.
+     */
+    function syncManualPlacement() {
+      if (!manualRect) return;
+      // Mid-drag the viewer is the one moving it. Standing aside underneath
+      // their mouse would fight them for the panel.
+      if (endDrag) return;
+
+      const box = { ...manualRect };
+      const cards = settings.revealHighlights === false ? null : lastCards;
+      if (cards && overlapsCards(box, cards)) {
+        const bottom = box.top + box.height;
+        // The bottom edge is theirs and stays put, so the panel gives up height
+        // rather than walking down the page. It gives up no more than it can
+        // spare: a partial dodge still shows most of the card.
+        const top = Math.max(box.top, Math.min(cards.bottom, bottom - MIN_PANEL_HEIGHT));
+        box.top = Math.round(top);
+        box.height = Math.round(bottom - top);
+      }
+
+      if (collapsed) {
+        // Auto-height while collapsed, so the height is not ours to set.
+        panel.style.left = `${Math.round(box.left)}px`;
+        panel.style.top = `${Math.round(box.top)}px`;
+        panel.style.width = `${Math.round(box.width)}px`;
+        return;
+      }
+      applyRect(box);
+    }
+
+    // Whether a box the viewer chose is sitting over the site's own cards.
+    // Checked in both directions: a panel dragged off to the side of the page,
+    // or below the card block, has nothing to move for.
+    function overlapsCards(box, cards) {
+      const right = box.left + box.width;
+      const bottom = box.top + box.height;
+      if (right <= cards.left + 2 || box.left >= cards.right - 2) return false;
+      return bottom > cards.top + 2 && box.top < cards.bottom - 2;
+    }
+
     function syncPlacement() {
-      if (destroyed || manualPlacement) return;
+      if (destroyed) return;
+      if (manualPlacement) { syncManualPlacement(); return; }
       const target = site.chatContainer();
       if (!target) { dockRight(); return; }
 
@@ -555,6 +651,9 @@
         const geo = (stored[GEOMETRY_KEY] || {})[hostPlatform];
         if (geo && geo.manual) {
           manualPlacement = true;
+          manualRect = {
+            left: geo.left, top: geo.top, width: geo.width, height: geo.height,
+          };
           panel.style.left = `${geo.left}px`;
           panel.style.top = `${geo.top}px`;
           panel.style.width = `${geo.width}px`;
@@ -581,6 +680,7 @@
     function resetPlacement() {
       const wasManual = manualPlacement;
       manualPlacement = false;
+      manualRect = null;
       saveGeometry();
       refreshResetButton();
       syncPlacement();
@@ -597,15 +697,30 @@
       try {
         const stored = await chrome.storage.local.get(GEOMETRY_KEY);
         const all = stored[GEOMETRY_KEY] || {};
-        all[hostPlatform] = manualPlacement ? {
-          manual: true,
-          left: parseInt(panel.style.left, 10) || 0,
-          top: parseInt(panel.style.top, 10) || 0,
-          width: parseInt(panel.style.width, 10) || 320,
-          height: parseInt(panel.style.height, 10) || 520,
-        } : { manual: false };
+        // From the remembered box rather than the panel, which may be standing
+        // aside for a card right now — saving that would make the dodge stick.
+        all[hostPlatform] = manualPlacement && manualRect
+          ? { manual: true, ...manualRect }
+          : { manual: false };
         await chrome.storage.local.set({ [GEOMETRY_KEY]: all });
       } catch (e) { /* geometry is a convenience */ }
+    }
+
+    /**
+     * Takes the panel's current box to be the one the viewer chose.
+     *
+     * Only ever called from a drag or a resize, which are the two things that
+     * make a box theirs. Anything applied to stand aside for a card is written
+     * to the panel without coming back through here, so a dodge can never be
+     * mistaken for a placement and saved as one.
+     */
+    function rememberManualRect() {
+      manualRect = {
+        left: parseInt(panel.style.left, 10) || 0,
+        top: parseInt(panel.style.top, 10) || 0,
+        width: parseInt(panel.style.width, 10) || 320,
+        height: parseInt(panel.style.height, 10) || 520,
+      };
     }
 
     function enableDragAndResize() {
@@ -629,6 +744,9 @@
             // The way back appears the moment the panel stops tracking the chat.
             refreshResetButton();
           }
+          // Recorded as they drag, so a card arriving mid-drag is measured
+          // against where the panel is going rather than where it began.
+          rememberManualRect();
           if (mode === 'move') {
             panel.style.left = `${Math.max(0, Math.min(window.innerWidth - 80, start.left + dx))}px`;
             panel.style.top = `${Math.max(0, Math.min(window.innerHeight - 40, start.top + dy))}px`;
@@ -643,7 +761,11 @@
           window.removeEventListener('mousemove', move);
           window.removeEventListener('mouseup', up);
           endDrag = null;
+          rememberManualRect();
           saveGeometry();
+          // The drag is over, so a card that arrived under it is now free to
+          // move the panel off itself.
+          syncPlacement();
         };
         // Held so that tearing the overlay down mid-drag — a channel switch
         // while the mouse is still held — cannot leave these on window.
@@ -940,6 +1062,15 @@
             </label>
             <input type="checkbox" data-set="showNativeStats">
           </div>
+          ${hostPlatform === 'twitch' ? `<div class="fcm-field">
+            <label>Use this page's Twitch session
+              <small>Adds follow dates and Tier 1/2/3 gift buttons to the menu that
+                opens when you click a name. Twitch tells its own page things it will
+                not tell an API token, so this asks the page. Gifting opens Twitch's
+                own checkout — nothing is bought here.</small>
+            </label>
+            <input type="checkbox" data-set="usePageSession">
+          </div>` : ''}
           <div class="fcm-field">
             <label>Theme<small>Follows the site's own dark or light mode</small></label>
             <select data-set="theme">
@@ -1070,6 +1201,9 @@
       sendTargets = new Set(stored.filter((p) => FCM.SEND_PLATFORMS.includes(p)));
       if (!sendTargets.size) sendTargets = new Set(FCM.SEND_PLATFORMS);
       applyTheme();
+      // Switched on or off from the settings sheet or another tab, so the
+      // bridge follows the setting rather than only the mount.
+      refreshPageBridge();
       root.dataset.animate = String(!!settings.animations);
       root.dataset.timestamps = String(settings.timestamps !== false);
       root.dataset.badges = String(settings.showBadges !== false);
@@ -1397,6 +1531,25 @@
       const replying = replyTo.size > 0;
       const chosen = FCM.SEND_PLATFORMS.filter((p) => active.has(p));
       const routes = new Map(chosen.map((p) => [p, routeFor(p)]));
+
+      // A Cheer cannot go through the API. Twitch has no endpoint that spends
+      // Bits, so the connected account would post "Cheer100" as plain text and
+      // take nothing from the balance — the message would look sent and the
+      // streamer would receive nothing. The page's own chat box is the only
+      // thing that actually cheers, so the message is routed through it
+      // instead, exactly as it would be if it had been typed there by hand.
+      const cheer = FCM.findCheer(text, cheermotes);
+      if (cheer && chosen.includes('twitch')) {
+        if (hostPlatform !== 'twitch') {
+          // No Twitch chat box on this page to hand it to, and posting it
+          // anyway would quietly cost the viewer nothing and the streamer
+          // nothing. Better to say so than to send dead text.
+          toast('Cheers can only be sent from a Twitch page — this one is Kick');
+          return;
+        }
+        routes.set('twitch', 'native');
+      }
+
       const apiTargets = chosen.filter((p) => routes.get(p) === 'api');
       const nativeTargets = chosen.filter((p) => routes.get(p) === 'native');
 
@@ -1444,6 +1597,11 @@
             else failures.push({ platform: p, reason: r.reason });
           }));
         });
+        // Said once, as the Cheer goes out, because it is the one case where the
+        // message deliberately does not go the way the Send button says it will.
+        if (cheer && nativeTargets.includes('twitch')) {
+          toast(`Cheering ${cheer.total} Bits through Twitch's own chat box`);
+        }
         await Promise.all(work);
       } finally {
         sendEl.disabled = false;
@@ -1532,6 +1690,67 @@
             FCM.setViewSettings(settings);
           },
           canModerate: (platform) => !!canModerate[platform],
+          hostPlatform,
+          // What is publicly known about a chatter, for the head of their menu.
+          // The menu opens before this resolves and fills in when it lands, so
+          // a slow or failed lookup never delays the actions.
+          onProfile: async (platform, name) => {
+            const id = `p${++sendSeq}`;
+            const fromWorker = await new Promise((resolve) => {
+              const timer = setTimeout(() => {
+                pendingProfiles.delete(id);
+                resolve({ reason: 'timeout' });
+              }, 8000);
+              pendingProfiles.set(id, (profile) => {
+                clearTimeout(timer);
+                resolve(profile || { reason: 'failed' });
+              });
+              onCommand({ cmd: 'profile', id, platform, username: name });
+            });
+
+            // The page's own session knows the things the API will not say.
+            // Asked second and merged over the top, so switching it off leaves
+            // exactly what the worker found.
+            if (platform !== 'twitch' || !pageBridge || !pageCan.relationship) return fromWorker;
+            const roomId = status.twitch && status.twitch.roomId;
+            const extra = await pageBridge.relationship(name, roomId || '');
+            if (!extra) return fromWorker;
+            const merged = { ...fromWorker };
+            if (extra.createdAt) merged.createdAt = extra.createdAt;
+            if (extra.followedAt) {
+              merged.followedAt = extra.followedAt;
+              merged.followedReason = '';
+            }
+            if (extra.subscriptionMonths) merged.subscribedMonths = extra.subscriptionMonths;
+            if (extra.subscriptionTier) merged.subscriptionTier = extra.subscriptionTier;
+            return merged;
+          },
+          // Whether the gift buttons are worth drawing at all here.
+          canGift: (platform) => platform === hostPlatform && platform === 'twitch'
+            && !!pageBridge && pageCan.gifting,
+          // Opens Twitch's own gift checkout. This extension never takes a
+          // payment: Twitch draws the price and the confirm button, and the
+          // viewer finishes it there or closes it.
+          onGift: async (platform, tier, recipient) => {
+            if (!pageBridge || !pageCan.gifting) return false;
+            const opened = await pageBridge.giftSub(tier, recipient);
+            if (opened) {
+              setPeek(true);
+              schedulePeekCheck();
+            }
+            return opened;
+          },
+          // Opening the site's own card means the site draws something over its
+          // own chat, which the panel is sitting on top of — so it has to step
+          // aside the same way it does for the site's own menus.
+          onUserCard: (platform, name) => {
+            if (platform !== hostPlatform) return false;
+            native.expectMenu();
+            if (!native.openUserCard(name)) return false;
+            setPeek(true);
+            schedulePeekCheck();
+            return true;
+          },
           onModerate: (platform, action, opts) => {
             onCommand({ cmd: 'moderate', id: `m${++sendSeq}`, platform, action, opts });
             const who = opts.username;
@@ -1559,6 +1778,13 @@
         destroyed = true;
         if (compose) compose.closeAll();
         pendingSends.clear();
+        // Their timers are cleared by resolving them; a menu torn down mid-look
+        // would otherwise keep a callback alive pointing at a dead panel.
+        pendingProfiles.forEach((resolve) => resolve({ reason: 'closed' }));
+        pendingProfiles.clear();
+        // Its listener is on the page's window, which outlives this overlay —
+        // a channel switch would otherwise leave one behind on every hop.
+        if (pageBridge) { pageBridge.close(); pageBridge = null; }
         clearInterval(placementTimer);
         clearPeekTimers();
         clearFocusTimers();
@@ -1587,8 +1813,11 @@
 
       batch(rows) { rows.forEach((row) => feed.addMessage(row, filter)); },
 
-      setStatus(platform, state, chan) {
-        status[platform] = { state, channel: chan || null };
+      setStatus(platform, state, chan, roomId) {
+        // The id is kept across a status that does not carry one: it arrives
+        // after the join, and a later "connected" with no id must not erase it.
+        const had = status[platform] && status[platform].roomId;
+        status[platform] = { state, channel: chan || null, roomId: roomId || (chan ? had : null) || null };
         if (state === 'idle') feed.dropPlatform(platform);
         if (chan) filter.add(platform);
         renderChips();
@@ -1628,6 +1857,21 @@
         if (can) {
           feed.addSys(`[Merged] Moderation tools enabled for ${FCM.PLATFORM_META[platform].name}`);
         }
+      },
+
+      // Answers a profile lookup the user menu is waiting on.
+      profileResult(id, platform, username, profile) {
+        const waiting = pendingProfiles.get(id);
+        if (!waiting) return;
+        pendingProfiles.delete(id);
+        waiting(profile);
+      },
+
+      // The Cheermotes this channel accepts, including the broadcaster's own.
+      // Only used to tell a Cheer apart from a word ending in digits, so a list
+      // that never arrives costs nothing but the rarer custom prefixes.
+      setCheermotes(prefixes) {
+        if (Array.isArray(prefixes) && prefixes.length) cheermotes = prefixes;
       },
 
       // The worker already writes the outcome into the feed; this surfaces a

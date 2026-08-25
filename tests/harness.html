@@ -101,9 +101,22 @@
       <header>STREAM CHAT (native)</header>
       <section data-test-selector="chat-room-component-layout">
         <div class="cards"></div>
+        <!-- Twitch stamps the login onto the name itself, which is what the
+             overlay presses to open the site's own viewer card. The mock rows
+             carry it so that handoff can be exercised here. -->
         <div class="msgs" data-test-selector="chat-scrollable-area__message-container">
           the site's own chat sits underneath the overlay
+          <div class="native-row">
+            <span class="chat-author__display-name" data-a-target="chat-message-username"
+              data-a-user="viewer_one">viewer_one</span>: hello from the page's own chat
+          </div>
+          <div class="native-row">
+            <span class="chat-author__display-name" data-a-target="chat-message-username"
+              data-a-user="viewer_two">viewer_two</span>: and another
+          </div>
         </div>
+        <!-- Stands in for the card Twitch opens when one of those is clicked. -->
+        <div class="viewer-card" id="native-viewer-card" hidden></div>
         <div class="box">
           <div id="native-composer" contenteditable="true" role="textbox" data-a-target="chat-input"></div>
           <button id="native-send" data-a-target="chat-send-button" disabled>Chat</button>
@@ -332,6 +345,19 @@ mockComposer(document.querySelector('.kickcol .editor-input'), document.getEleme
     e.currentTarget.hidden = true;
   });
   /**
+   * The site's own viewer card, opened by clicking a name in the site's own
+   * chat — which is exactly how the overlay opens it, rather than drawing a
+   * copy. Twitch binds this through React, so the mock listens for a plain
+   * click the same way React's delegated listener does.
+   */
+  document.querySelector('.msgs').addEventListener('click', (e) => {
+    const name = e.target.closest('[data-a-user]');
+    if (!name) return;
+    const card = document.getElementById('native-viewer-card');
+    card.hidden = false;
+    card.textContent = `${name.getAttribute('data-a-user')} — the site's own viewer card`;
+  });
+  /**
    * Kick's own panels: drawn inside the chat column, announced with data-state
    * and nothing else, and — the part that broke it — opened on pointerdown
    * rather than on click, which is what Radix does.
@@ -398,6 +424,7 @@ const SOURCES = [
   '/src/content/feed.js',
   '/src/content/emote-input.js',
   '/src/content/compose.js',
+  '/src/content/page-bridge.js',
   '/src/content/native.js',
   '/src/content/overlay.js',
   '/src/content/sites.js',
@@ -428,6 +455,20 @@ function loadSources(bust) {
       (window.commands = window.commands || []).push(c);
       if (c.cmd === 'send' && window.autoSendResult) {
         setTimeout(() => overlay.sendResult(c.id, window.autoSendResult), 40);
+      }
+      // The worker's profile lookup, answered from a canned record so the user
+      // menu's account-age line can be seen without a network or a token.
+      if (c.cmd === 'profile') {
+        setTimeout(() => overlay.profileResult(
+          c.id, c.platform, c.username,
+          window.autoProfile === null ? { reason: 'not-connected' }
+            : (window.autoProfile || {
+              displayName: c.username,
+              createdAt: '2017-03-14T09:12:00Z',
+              followedAt: '2023-06-17T14:42:34.000000Z',
+              accountType: 'affiliate',
+            })
+        ), 60);
       }
     },
   });

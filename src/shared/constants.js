@@ -42,10 +42,23 @@
   FCM.TWITCH_AUTH_URL = 'https://id.twitch.tv/oauth2/authorize';
   FCM.TWITCH_VALIDATE_URL = 'https://id.twitch.tv/oauth2/validate';
   FCM.TWITCH_HELIX = 'https://api.twitch.tv/helix';
+  // Twitch's own GraphQL, which its website runs on. Used for one thing only:
+  // the day an account was created, which it answers for anyone with no token
+  // at all. Helix wants a connected account for the same fact, and the day
+  // someone joined Twitch is not worth putting behind a sign-in.
+  FCM.TWITCH_GQL = 'https://gql.twitch.tv/gql';
+  // The client id Twitch's own web player uses. Public, in every request the
+  // site makes, and the only one this endpoint accepts.
+  FCM.TWITCH_GQL_CLIENT_ID = 'kimne78kx3ncx6brgo4mv6wki5h1ko';
   FCM.TWITCH_SCOPES = [
     'chat:read', 'chat:edit', 'user:write:chat', 'user:read:emotes',
     // Moderation, so a mod or the broadcaster can act from the overlay.
     'moderator:manage:banned_users', 'moderator:manage:chat_messages',
+    // When someone started following. Twitch will only answer this for the
+    // broadcaster or a moderator of the channel, so for everyone else the scope
+    // is carried and the answer still withheld — that is Twitch's rule, not a
+    // missing permission.
+    'moderator:read:followers',
   ].join(' ');
 
   FCM.KICK_AUTH_URL = 'https://id.kick.com/oauth/authorize';
@@ -128,6 +141,12 @@
                                 // pinned messages stay visible above the panel
     showNativeStats: true,      // read bits, Kicks and channel points off the
                                 // page, and open the site's own rewards menu
+    // Ask the Twitch page's own signed-in session for the things Twitch will
+    // not tell an API token: when a viewer started following, and the gift
+    // buttons, which open Twitch's own checkout. Off by default because it is
+    // the one part of this extension that runs code in the page's own world —
+    // with it off, the extension behaves exactly as it did before it existed.
+    usePageSession: false,
     // Composer
     sendTargets: ['twitch', 'kick'],  // which platforms a typed message goes to
     // Credentials the OAuth flows use. Defaults are the desktop app's, and can
@@ -189,4 +208,58 @@
     'login', 'signup', 'logout', 'oauth', 'oauth2', 'authorize', 'connect',
     'account', 'verify', 'password', 'checkout', 'subscribe', 'admin', 'user',
   ]);
+
+  // ── Cheers ───────────────────────────────────────────────────────────────────────
+
+  // Twitch's global Cheermote prefixes. A Cheer is a prefix with an amount
+  // stuck to it — "Cheer100", "uni500" — and the prefix is what tells one apart
+  // from an ordinary word that happens to end in digits.
+  //
+  // The live list for a channel is fetched on join and includes whatever
+  // Cheermotes the broadcaster has of their own; this is the fallback for when
+  // that call has not landed yet or was refused, and on its own it covers the
+  // ones almost everybody actually types.
+  FCM.GLOBAL_CHEERMOTES = [
+    'Cheer', 'BibleThump', 'cheerwhal', 'Corgo', 'uni', 'ShowLove', 'Party',
+    'SeemsGood', 'Pride', 'Kappa', 'FrankerZ', 'HeyGuys', 'DansGame', 'EleGiggle',
+    'TriHard', 'Kreygasm', '4Head', 'SwiftRage', 'NotLikeThis', 'VoHiYoo',
+    'KappaPride', 'MrDestructoid', 'bday', 'RIPCheer', 'Shamrock', 'Streamlabs',
+    'Muxy', 'HolidayCheer', 'Anon', 'Charity',
+  ];
+
+  /**
+   * The Cheer in a message, if there is one.
+   *
+   * Twitch has no API for spending Bits — the Helix endpoint the overlay sends
+   * through posts "Cheer100" as dead text and takes nothing from the balance —
+   * so a message carrying one has to go through the page's own chat box
+   * instead, which is the only thing that actually cheers. Finding it is what
+   * lets that decision be made before the message goes to the wrong place.
+   *
+   * @param {string} text the typed message
+   * @param {string[]|Set<string>} [prefixes] the Cheermotes this channel knows,
+   *   defaulting to the global ones
+   * @returns {{prefix: string, amount: number, total: number, tokens: number}|null}
+   */
+  FCM.findCheer = function (text, prefixes) {
+    const supplied = prefixes && (prefixes.length || prefixes.size) ? prefixes : null;
+    const known = new Set([...(supplied || FCM.GLOBAL_CHEERMOTES)]
+      .map((name) => String(name).toLowerCase()));
+    let first = null;
+    let total = 0;
+    let tokens = 0;
+    String(text || '').split(/\s+/).forEach((word) => {
+      // Anchored, so "notacheer100x" and a bare "100" are both left alone.
+      const m = /^([A-Za-z][A-Za-z0-9_]*?)([0-9]+)$/.exec(word);
+      if (!m) return;
+      if (!known.has(m[1].toLowerCase())) return;
+      const amount = Number(m[2]);
+      if (!Number.isSafeInteger(amount) || amount < 1) return;
+      if (!first) first = { prefix: m[1], amount };
+      total += amount;
+      tokens++;
+    });
+    if (!first) return null;
+    return { prefix: first.prefix, amount: first.amount, total, tokens };
+  };
 })(self.FCM);

@@ -234,6 +234,40 @@ suites.render = function () {
   const bracketed = FCM.renderMessageBody('twitch', '(https://example.com)', {});
   contains(bracketed.html, 'href="https://example.com"', 'render: trailing bracket is not part of the link');
 
+  // Links people actually paste: nobody types the scheme.
+  const bare = FCM.renderMessageBody('twitch', 'watch kick.com/somestreamer later', {});
+  contains(bare.html, 'href="https://kick.com/somestreamer"', 'render: bare host gets a scheme');
+  contains(bare.html, '>kick.com/somestreamer</a>', 'render: bare link still reads as typed');
+  const sentence = FCM.renderMessageBody('twitch', 'it is on youtu.be/xY_z9.', {});
+  contains(sentence.html, 'href="https://youtu.be/xY_z9"', 'render: the full stop ending the sentence is not part of the link');
+  const www = FCM.renderMessageBody('twitch', 'www.internal-thing.zzz works', {});
+  contains(www.html, 'href="https://www.internal-thing.zzz"', 'render: www. is a link whatever the tail says');
+
+  // A dotted word is not automatically an address.
+  const filename = FCM.renderMessageBody('twitch', 'check node.js and README.md and run.sh', {});
+  missing(filename.html, '<a ', 'render: filenames are not links');
+  const decimal = FCM.renderMessageBody('twitch', 'about 3.5 seconds', {});
+  missing(decimal.html, '<a ', 'render: a decimal is not a link');
+  const email = FCM.renderMessageBody('twitch', 'mail someone@example.com now', {});
+  missing(email.html, '<a ', 'render: an address inside an email is not a link');
+  const abbrev = FCM.renderMessageBody('twitch', 'e.g. that one', {});
+  missing(abbrev.html, '<a ', 'render: an abbreviation is not a link');
+
+  // Only http(s) ever reaches an href.
+  const scripted = FCM.renderMessageBody('twitch', 'javascript:alert(1) data:text/html,x', {});
+  missing(scripted.html, '<a ', 'render: no scheme but http(s) becomes a link');
+
+  // Status and event rows carry links too, and are still escaped.
+  const sysLink = FCM.buildSysEl('[Account] Sign in again at https://id.twitch.tv/oauth2 to fix this');
+  contains(sysLink.innerHTML, 'href="https://id.twitch.tv/oauth2"', 'render: a status line links what it names');
+  contains(sysLink.innerHTML, 'rel="noopener noreferrer"', 'render: status-line links are safe to click');
+  const sysXss = FCM.buildSysEl('[Account] <img src=x onerror=alert(1)>');
+  missing(sysXss.innerHTML, '<img src=x', 'render: a status line cannot inject markup');
+  const eventLink = FCM.buildEventEl('kick', 'raided from kick.com/otherstreamer', null);
+  contains(eventLink.innerHTML, 'href="https://kick.com/otherstreamer"', 'render: an event row links what it names');
+  const eventXss = FCM.buildEventEl('kick', '<script>alert(1)</script>', null);
+  missing(eventXss.innerHTML, '<script>', 'render: an event row cannot inject markup');
+
   // Mentions.
   const mention = FCM.renderMessageBody('twitch', 'hey @MyName how are you', {});
   ok(mention.mentioned, 'render: mention detected');
@@ -483,6 +517,63 @@ suites.compose = function () {
   });
   const FCM = load(sandbox, ...SHARED, 'src/content/render.js', 'src/content/compose.js');
   FCM.setViewSettings(FCM.DEFAULT_SETTINGS);
+
+  // ── Dates on the user menu ──────────────────────────────────────────────────
+  //
+  // The menu shows the day an account was made and the day someone started
+  // following, as dates. Not "9 years ago": the day itself is the thing being
+  // asked for, and a summary of it answers a different question.
+  {
+    // Parsed as local time, so the formatted day matches the day asked for
+    // wherever this runs. A UTC instant near midnight is a different date
+    // either side of the line, and that is a property of the timestamp rather
+    // than of the formatting.
+    const shown = FCM.shortDate('2017-03-14T12:00:00');
+    ok(/2017/.test(shown), 'date: the year is there');
+    ok(/14/.test(shown), 'date: the day of the month is there');
+    ok(/Mar/i.test(shown), 'date: and the month, by name rather than a number');
+
+    // Both shapes the platforms send.
+    ok(/2023/.test(FCM.shortDate('2023-06-17T14:42:34.000000Z')),
+      "date: Kick's microsecond timestamps parse");
+    ok(/2017/.test(FCM.shortDate('2017-03-14T09:12:00Z')),
+      "date: Twitch's timestamps parse");
+
+    // Everything that is not a date renders as nothing, so the menu drops the
+    // line rather than showing "Invalid Date".
+    eq(FCM.shortDate(''), '', 'date: nothing from an empty value');
+    eq(FCM.shortDate(null), '', 'date: nothing from a missing value');
+    eq(FCM.shortDate(undefined), '', 'date: nothing from an absent value');
+    eq(FCM.shortDate('not a date'), '', 'date: nothing from a value that is not one');
+    eq(FCM.shortDate(0), '', 'date: nothing from a zero');
+  }
+
+  // ── Cheers ──────────────────────────────────────────────────────────────────
+  //
+  // Twitch has no API that spends Bits, so a Cheer has to be recognised before
+  // the message is sent or the connected account posts "Cheer100" as dead text
+  // and the streamer receives nothing. Everything here is about telling a real
+  // Cheer apart from a word that merely ends in digits.
+  const cheer = (t, p) => FCM.findCheer(t, p);
+  eq(cheer('Cheer100').amount, 100, 'cheer: the amount is read off the token');
+  eq(cheer('Cheer100').prefix, 'Cheer', 'cheer: and the prefix with it');
+  eq(cheer('nice clutch Cheer100 gg').amount, 100, 'cheer: found anywhere in the message');
+  eq(cheer('cheer250').amount, 250, 'cheer: prefixes are matched case-insensitively');
+  eq(cheer('uni500 Cheer50').total, 550, 'cheer: several in one message add up');
+  eq(cheer('uni500 Cheer50').tokens, 2, 'cheer: and are counted');
+
+  ok(!cheer('hello123'), 'cheer: a word ending in digits is not a Cheer');
+  ok(!cheer('100'), 'cheer: a bare number is not a Cheer');
+  ok(!cheer('Cheer0'), 'cheer: zero Bits is not a Cheer');
+  ok(!cheer('Cheer100x'), 'cheer: the digits have to end the word');
+  ok(!cheer('xCheer100'), 'cheer: and the prefix has to start it');
+  ok(!cheer(''), 'cheer: an empty message has none');
+  ok(!cheer('SquadW250'), 'cheer: an unknown prefix is not a Cheer');
+  eq(cheer('SquadW250', ['SquadW']).amount, 250,
+    "cheer: until the channel says it is one of the broadcaster's own");
+  // The channel list must not lose the global prefixes everyone types.
+  eq(cheer('Cheer100', [...FCM.GLOBAL_CHEERMOTES, 'SquadW']).amount, 100,
+    'cheer: a channel list merged with the globals still knows Cheer');
 
   FCM.setEmotes('twitch', 'native', { Kappa: { url: 'https://t/kappa.png', source: 'Twitch' } });
   FCM.setEmotes('twitch', 'thirdparty', {
@@ -1380,6 +1471,171 @@ suites.theme = function () {
     'theme: hyphenated markers still resolve sensibly');
 };
 
+// The isolated world's side of the bridge to the page's own world.
+//
+// Everything crossing it was produced somewhere this extension does not
+// control — the page, or any other extension sharing that world — so these are
+// mostly about what happens when the answers are hostile rather than when they
+// are well-formed.
+suites.pagebridge = async function () {
+  // A window that delivers postMessage to its own listeners the way a real one
+  // does: asynchronously, with source and origin attached.
+  function fakeWindow(origin = 'https://www.twitch.tv') {
+    const listeners = [];
+    const win = {
+      location: { origin },
+      addEventListener(type, fn) { if (type === 'message') listeners.push(fn); },
+      removeEventListener(type, fn) {
+        const i = listeners.indexOf(fn);
+        if (i !== -1) listeners.splice(i, 1);
+      },
+      postMessage(data) {
+        setTimeout(() => listeners.slice().forEach((fn) => {
+          fn({ source: win, origin, data });
+        }), 0);
+      },
+      // Lets a test post as something other than this window.
+      inject(event) { listeners.slice().forEach((fn) => fn(event)); },
+      listenerCount() { return listeners.length; },
+    };
+    return win;
+  }
+
+  function makeBridge(respond, origin) {
+    const win = fakeWindow(origin);
+    const sandbox = makeSandbox({
+      window: win,
+      location: win.location,
+      crypto: { getRandomValues: (arr) => { arr.forEach((_, i) => { arr[i] = i; }); return arr; } },
+    });
+    const FCM = load(sandbox, 'src/shared/namespace.js', 'src/content/page-bridge.js');
+    // Stands in for main-world.js: answers requests it recognises.
+    win.addEventListener('message', (event) => {
+      const msg = event.data;
+      if (!msg || msg.channel !== 'fcm-page-request') return;
+      const reply = respond(msg);
+      if (reply === undefined) return;
+      win.postMessage({ channel: 'fcm-page-reply', nonce: msg.nonce, id: msg.id, ...reply });
+    });
+    return { bridge: FCM.createPageBridge(), win };
+  }
+
+  const good = {
+    ok: true,
+    data: {
+      displayName: 'Viewer One',
+      createdAt: '2017-03-14T09:12:00Z',
+      followedAt: '2023-06-17T14:42:34.000000Z',
+      subscriptionTier: '2000',
+      subscriptionMonths: 14,
+    },
+  };
+
+  // The ordinary case.
+  {
+    const { bridge } = makeBridge(() => good);
+    const rel = await bridge.relationship('viewer_one', '411377640');
+    eq(rel.followedAt, '2023-06-17T14:42:34.000000Z', 'bridge: the follow date comes back');
+    eq(rel.subscriptionMonths, 14, 'bridge: and the sub length as a number');
+    bridge.close();
+  }
+
+  // A reply carrying somebody else's handle is not this bridge's answer. The
+  // handle is not a secret — anything in that world can read it off the
+  // request — but it does stop one bridge being fed another's replies.
+  {
+    let realReply = null;
+    const { bridge, win } = makeBridge((msg) => {
+      realReply = { channel: 'fcm-page-reply', nonce: msg.nonce, id: msg.id, ...good };
+      // Something else in the page answers first, under a handle of its own.
+      win.postMessage({
+        channel: 'fcm-page-reply', nonce: 'someone-elses', id: msg.id,
+        ok: true, data: { followedAt: 'FORGED' },
+      });
+      setTimeout(() => win.postMessage(realReply), 0);
+      return undefined;
+    });
+    const rel = await bridge.relationship('viewer_one', '1');
+    eq(rel.followedAt, '2023-06-17T14:42:34.000000Z',
+      'bridge: a reply under another handle is ignored');
+    bridge.close();
+  }
+
+  // A reply from another origin is not answered either.
+  {
+    const { bridge, win } = makeBridge((msg) => {
+      win.inject({
+        source: win, origin: 'https://evil.example',
+        data: { channel: 'fcm-page-reply', nonce: msg.nonce, id: msg.id,
+          ok: true, data: { followedAt: 'FORGED' } },
+      });
+      return good;
+    });
+    const rel = await bridge.relationship('viewer_one', '1');
+    eq(rel.followedAt, '2023-06-17T14:42:34.000000Z',
+      'bridge: a reply from another origin is ignored');
+    bridge.close();
+  }
+
+  // Whatever the page sends, what comes out is bounded and the right type.
+  {
+    const huge = 'A'.repeat(5000);
+    const { bridge } = makeBridge(() => ({
+      ok: true,
+      data: {
+        displayName: huge, createdAt: huge, followedAt: huge,
+        subscriptionTier: { not: 'a string' }, subscriptionMonths: 'not-a-number',
+      },
+    }));
+    const rel = await bridge.relationship('viewer_one', '1');
+    eq(rel.followedAt.length, 120, 'bridge: an enormous string is clamped');
+    eq(rel.subscriptionTier, '', 'bridge: a value of the wrong type becomes empty');
+    eq(rel.subscriptionMonths, 0, 'bridge: and a number that is not one becomes zero');
+    bridge.close();
+  }
+
+  // A reply that is not an object at all.
+  {
+    const { bridge } = makeBridge(() => ({ ok: true, data: 'just a string' }));
+    eq(await bridge.relationship('viewer_one', '1'), null,
+      'bridge: a reply that is not a record is no answer');
+    bridge.close();
+  }
+
+  // Capabilities are booleans whatever the page claims.
+  {
+    const { bridge } = makeBridge(() => ({ ok: true, data: { relationship: 'yes', gifting: 0 } }));
+    const can = await bridge.capabilities();
+    eq(can.relationship, true, 'bridge: a truthy claim is a capability');
+    eq(can.gifting, false, 'bridge: and a falsy one is not');
+    bridge.close();
+  }
+
+  // Gifting reports only what the page actually confirmed it opened.
+  {
+    const { bridge } = makeBridge(() => ({ ok: true, data: { opened: true } }));
+    eq(await bridge.giftSub('2000', 'viewer_one'), true, 'bridge: an opened checkout is reported');
+    bridge.close();
+  }
+  {
+    const { bridge } = makeBridge(() => ({ ok: false, error: 'no-checkout' }));
+    eq(await bridge.giftSub('2000', 'viewer_one'), false,
+      'bridge: a refusal is not reported as opened');
+    bridge.close();
+  }
+
+  // A closed bridge answers nothing and leaves no listener behind.
+  {
+    const { bridge, win } = makeBridge(() => good);
+    await bridge.relationship('viewer_one', '1');
+    const before = win.listenerCount();
+    bridge.close();
+    eq(win.listenerCount(), before - 1, 'bridge: closing removes its listener');
+    eq(await bridge.relationship('viewer_one', '1'), null,
+      'bridge: and a call after it resolves to nothing rather than hanging');
+  }
+};
+
 suites.native = function () {
   // A fake page just detailed enough for the region code: boxes, parents and
   // children. Every rect is [top, height]; width and left are fixed, because
@@ -1561,6 +1817,60 @@ suites.native = function () {
       'native: a banner whose content is an image counts too');
   }
 
+  // ── Twitch's shape: a card drawn through a wrapper that measures nothing ──
+  //
+  // Taken from the live page. Twitch draws its community highlight — the hype
+  // train, the pinned message, the poll — inside a chain of wrappers that
+  // collapse to zero height, so the sibling beside the message list measures
+  // 0px while an 83px card is painted through it. Measuring the sibling found
+  // nothing and the overlay sat straight over the card.
+  {
+    const list = el({ rect: [333, 172] });
+    const leaderboard = el({ rect: [262, 71], text: "daleburnshart67 1,200" });
+    const emptySlot = el({ rect: [333, 0] });
+    // The collapsed chain, card five levels down, exactly as Twitch nests it.
+    const card = el({ rect: [333, 83], text: "Hype Train Level 3" });
+    const inner = el({ rect: [333, 0], kids: [card] });
+    const outer = el({ rect: [333, 0], kids: [inner] });
+    const collapsed = el({ rect: [333, 0], kids: [outer] });
+    const input = el({ rect: [505, 158], text: "Send a message" });
+    const viewerCard = el({ rect: [262, 401] });
+    const content = el({
+      rect: [262, 458],
+      kids: [leaderboard, emptySlot, collapsed, list, input, viewerCard],
+    });
+    const split = bridgeFor(page(content), {}).FCM.splitChatSiblings(list);
+    ok(split.above.includes(card),
+      "native: a card drawn through a zero-height wrapper is still found");
+    ok(!split.above.includes(collapsed),
+      "native: and it is the card that is measured, not the wrapper around it");
+    ok(split.above.includes(leaderboard),
+      "native: the card in flow above the list is found alongside it");
+    ok(!split.above.includes(emptySlot),
+      "native: a wrapper with nothing drawn through it is still nothing");
+    ok(!split.above.includes(viewerCard) && !split.below.includes(viewerCard),
+      "native: the viewer-card layer is still not a card");
+    ok(split.below.includes(input), "native: the composer is still below");
+
+    // The reason the share is measured against the column. This card cleared
+    // the old bar by three pixels; a taller one on the same page did not,
+    // because every card the site adds shortens the list it was judged against.
+    const taller = el({ rect: [333, 150], text: "Hype Train Level 5" });
+    inner.children = [taller];
+    taller.parentElement = inner;
+    const split2 = bridgeFor(page(content), {}).FCM.splitChatSiblings(list);
+    ok(split2.above.includes(taller),
+      "native: a taller card on a short list is a card, not a covering layer");
+
+    // And the layer it must still be told apart from: one running to the foot
+    // of the messages is covering them, whatever it measures.
+    const layer = el({ rect: [333, 172], text: "viewer card" });
+    inner.children = [layer];
+    layer.parentElement = inner;
+    const split3 = bridgeFor(page(content), {}).FCM.splitChatSiblings(list);
+    ok(!split3.above.includes(layer),
+      "native: something reaching the bottom of the messages is not a card");
+  }
   // A message list with no siblings anywhere around it.
   const lonely = el({ rect: [100, 300] });
   const lonelyWrap = el({ rect: [100, 300], kids: [lonely] });

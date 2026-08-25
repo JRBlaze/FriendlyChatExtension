@@ -39,6 +39,50 @@
   // finds a panel wherever it is drawn rather than only at the end of <body>.
   const OPEN_STATE_SELECTOR = '[data-state="open"]';
 
+  // How far inside a sibling to look for the card it is drawing. Twitch stacks
+  // four or five wrappers between the chat column and the card itself; nothing
+  // either site draws needs more than this, and the bound is what keeps the
+  // search cheap enough to run on the tick.
+  const CARD_DESCENT = 5;
+
+  /**
+   * The element next to the message list that is actually drawing something,
+   * starting from the sibling and descending through anything that measures
+   * nothing itself.
+   *
+   * This is what a hype train and a pinned message on Twitch turn on. The site
+   * draws its community highlight through a chain of wrappers that collapse to
+   * zero height — the sibling of the message list measures 0px tall while an
+   * 83px card is painted through it — so measuring the sibling and stopping
+   * there found nothing, and the overlay sat straight over the card. Asking
+   * what is being drawn rather than what the sibling measures is the whole
+   * difference.
+   *
+   * The search is bounded by the box it started in. Both sites park
+   * screen-reader text at coordinates like -99142, and a union of everything
+   * underneath a wrapper would otherwise make one of those "the card" and push
+   * the overlay off the page.
+   *
+   * @returns the element to measure the card from, or null for a wrapper that
+   *   really is empty
+   */
+  function paintedCard(el, bounds, depth) {
+    const r = el.getBoundingClientRect();
+    // Big enough to be a card on its own: the common case, and the one that
+    // must not cost a descent. This runs for every sibling on every tick.
+    if (r.height >= MIN_CARD_HEIGHT && r.width >= MIN_CARD_WIDTH) return el;
+    if (depth <= 0 || !el.children || !el.children.length) return null;
+    for (const child of el.children) {
+      const cr = child.getBoundingClientRect();
+      // Drawn outside the column it lives in, so it is scaffolding rather than
+      // anything a viewer can see here.
+      if (cr.bottom < bounds.top - 1 || cr.top > bounds.bottom + 1) continue;
+      if (cr.right < bounds.left - 1 || cr.left > bounds.right + 1) continue;
+      const found = paintedCard(child, bounds, depth - 1);
+      if (found) return found;
+    }
+    return null;
+  }
   /**
    * Splits the message list's own siblings into what sits above it and what
    * sits below it.
@@ -54,10 +98,15 @@
    * sites park absolutely-positioned layers over the messages — viewer cards,
    * the jump-to-bottom pill — and those are not cards to make room for.
    *
-   * The exception is a banner pinned to the top of the list, which is how Kick
-   * draws a pinned message: it floats over the messages rather than pushing
-   * them down, but it is still a card the overlay must not cover. See
-   * `isTopBanner` for how the two are told apart.
+   * The exception is a banner pinned to the top of the list, which is how both
+   * sites draw a pinned message and how Twitch draws its community highlight:
+   * it floats over the messages rather than pushing them down, but it is still
+   * a card the overlay must not cover. See `isTopBanner` for how the two are
+   * told apart.
+   *
+   * What each sibling contributes is resolved by `paintedCard` rather than
+   * measured off the sibling itself, because on Twitch the sibling is an empty
+   * wrapper and the card is several levels inside it.
    */
   function splitSiblings(list) {
     let node = list;
@@ -65,15 +114,19 @@
       const parent = node.parentElement;
       if (!parent || parent === document.body || parent === document.documentElement) break;
       const own = node.getBoundingClientRect();
+      const bounds = parent.getBoundingClientRect();
       const above = [];
       const below = [];
       for (const sib of parent.children) {
         if (sib === node) continue;
-        const r = sib.getBoundingClientRect();
-        if (r.height < MIN_CARD_HEIGHT || r.width < MIN_CARD_WIDTH) continue;
-        if (r.bottom <= own.top + 2) above.push(sib);
-        else if (r.top >= own.bottom - 2) below.push(sib);
-        else if (isTopBanner(sib, r, own)) above.push(sib);
+        // Not the sibling, but whatever inside it is actually being drawn: on
+        // Twitch the sibling is an empty wrapper and the card is five levels in.
+        const card = paintedCard(sib, bounds, CARD_DESCENT);
+        if (!card) continue;
+        const r = card.getBoundingClientRect();
+        if (r.bottom <= own.top + 2) above.push(card);
+        else if (r.top >= own.bottom - 2) below.push(card);
+        else if (isTopBanner(card, r, own, bounds)) above.push(card);
       }
       if (above.length || below.length) return { above, below };
       node = parent;
@@ -94,13 +147,23 @@
    * Whether an element overlapping the message list is a card drawn over the
    * top of it rather than a layer covering it.
    *
-   * Three things have to hold: it hugs the top of the list, it covers only a
-   * small part of it, and it actually has something in it.
+   * Four things have to hold: it hugs the top of the list, it stops short of
+   * the bottom of it, it covers only a small part of the chat column, and it
+   * actually has something in it.
    */
-  function isTopBanner(el, r, own) {
+  function isTopBanner(el, r, own, bounds) {
     if (r.top > own.top + 4) return false;
     if (r.height < MIN_BANNER_HEIGHT) return false;
-    if (r.bottom >= own.top + own.height * MAX_BANNER_SHARE) return false;
+    // A card sits at the top of the messages; a layer covering them runs to the
+    // bottom. That is the difference, and it holds whatever either is sized at.
+    if (r.bottom >= own.bottom - 4) return false;
+    // The share is measured against the chat column rather than the message
+    // list, because the list is the thing the cards have already shrunk. Judging
+    // a card against it means the more room the site takes for its own cards,
+    // the less willing this was to admit there were any — which is backwards,
+    // and on a short window it rejected a hype train by three pixels.
+    const room = Math.max(own.height, (bounds && bounds.height) || 0);
+    if (r.bottom >= own.top + room * MAX_BANNER_SHARE) return false;
     return hasContent(el);
   }
 
@@ -268,7 +331,13 @@
     const bridge = {
       /**
        * The block of the site's own cards above the message list, as one box.
-       * @returns {{elements: Element[], top: number, bottom: number, height: number}|null}
+       *
+       * The horizontal edges are carried as well as the vertical ones, because
+       * a panel the viewer has dragged somewhere of their own choosing has to
+       * be asked whether it is over the cards at all before it moves for them.
+       *
+       * @returns {{elements: Element[], top: number, bottom: number,
+       *   left: number, right: number, height: number}|null}
        */
       cards() {
         const list = site.messageList && site.messageList();
@@ -277,13 +346,17 @@
         if (!above.length) return null;
         let top = Infinity;
         let bottom = -Infinity;
+        let left = Infinity;
+        let right = -Infinity;
         above.forEach((el) => {
           const r = el.getBoundingClientRect();
           top = Math.min(top, r.top);
           bottom = Math.max(bottom, r.bottom);
+          left = Math.min(left, r.left);
+          right = Math.max(right, r.right);
         });
         if (!(bottom > top)) return null;
-        return { elements: above, top, bottom, height: bottom - top };
+        return { elements: above, top, bottom, left, right, height: bottom - top };
       },
 
       /**
@@ -340,6 +413,38 @@
        */
       expectMenu() {
         snapshot();
+      },
+
+      /**
+       * Opens the site's own card for a viewer, by pressing their name in the
+       * site's own chat.
+       *
+       * The card is the site's, not a copy: Twitch's carries the badges, the
+       * mod tools and the gift button that only it can offer, and Kick's shows
+       * when the account joined and when they followed. Neither could be
+       * rebuilt here honestly — they are built from things only a logged-in
+       * session can see — so the overlay asks for the real one instead.
+       *
+       * Fails rather than guesses. Both sites virtualise their message lists,
+       * so someone who has scrolled out of the site's own chat is genuinely not
+       * there to press, and pressing the wrong name would open the wrong card.
+       *
+       * @returns {boolean} whether there was a name to press
+       */
+      openUserCard(username) {
+        if (!site.chatUsername) return false;
+        let el = null;
+        try { el = site.chatUsername(username); } catch (e) { return false; }
+        if (!onScreen(el)) return false;
+        // The card is anchored to where the name is, so it has to be somewhere
+        // the viewer can see before it is worth opening.
+        try { el.scrollIntoView({ block: 'nearest' }); } catch (e) { /* not essential */ }
+        // Pressed directly rather than climbing to a button ancestor. Twitch's
+        // name is a bare span with the handler on it and its nearest ancestor
+        // button is something else entirely, so climbing would open the wrong
+        // thing on the one site where it matters most.
+        try { press(el); } catch (e) { return false; }
+        return true;
       },
 
       /**
