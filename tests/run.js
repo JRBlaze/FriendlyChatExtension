@@ -80,6 +80,8 @@ const SHARED = [
 
 // ── Suites ────────────────────────────────────────────────────────────────────
 
+const FCM_LINKS_KEY = 'fcm_channel_links_v1';
+
 const suites = {};
 
 suites.irc = function () {
@@ -968,6 +970,86 @@ suites.discovery = function () {
       });
       eq(found.channel, 'chosen', 'discovery: manual mapping wins');
       eq(found.match, 'manual', 'discovery: manual match reason');
+    }
+
+    // 5b. Typing the name in records the pair from both ends.
+    //
+    // The case this is for: twitch.tv/chefsteve330 and kick.com/chefsteve are
+    // one person under two names. Saying so once, from either side, has to be
+    // enough — and the reverse entry is also what stops kick.com/chefsteve
+    // falling through to the same-name guess and merging twitch.tv/chefsteve,
+    // who is somebody else.
+    {
+      const { FCM, store } = build({
+        kickChannels: { chefsteve: kickChannel('chefsteve', 'ChefSteve', true) },
+        twitchUsers: {
+          chefsteve330: {
+            id: '7', login: 'chefsteve330', displayName: 'ChefSteve',
+            profileImageURL: '', stream: null,
+          },
+          // The other person, who happens to have the Kick name on Twitch.
+          chefsteve: {
+            id: '8', login: 'chefsteve', displayName: 'Someone Else',
+            profileImageURL: '', stream: null,
+          },
+        },
+      });
+
+      await FCM.links.setManual('twitch', 'chefsteve330', 'chefsteve');
+      const links = store[FCM.STORAGE_KEYS.links];
+      eq(links['twitch:chefsteve330'].channel, 'chefsteve', 'links: the way it was typed');
+      eq(links['kick:chefsteve'].channel, 'chefsteve330', 'links: and the way back');
+      eq(links['kick:chefsteve'].manual, true, 'links: the reverse counts as manual too');
+
+      // Arriving from the Kick side now finds the right person.
+      const back = await FCM.resolveCounterpart({ platform: 'kick', channel: 'chefsteve', hints: [] });
+      eq(back.channel, 'chefsteve330', 'links: kick.com/chefsteve resolves to the linked Twitch channel');
+      eq(back.match, 'manual', 'links: and says it was set by hand');
+
+      // Undoing it from either end takes both halves.
+      await FCM.links.clearPair('kick', 'chefsteve');
+      ok(!links['kick:chefsteve'] && !store[FCM.STORAGE_KEYS.links]['kick:chefsteve'],
+        'links: clearing removes the entry');
+      ok(!store[FCM.STORAGE_KEYS.links]['twitch:chefsteve330'],
+        'links: and the half pointing back at it');
+    }
+
+    // 5c. "No counterpart" says nothing about anybody else, so nothing is
+    //     written the other way.
+    {
+      const { FCM, store } = build({});
+      await FCM.links.setManual('twitch', 'solochannel', '');
+      const links = store[FCM.STORAGE_KEYS.links];
+      eq(links['twitch:solochannel'].none, true, 'links: an empty target means no counterpart');
+      eq(Object.keys(links).length, 1, 'links: and writes nothing else');
+    }
+
+    // 5d. Undoing a link takes its own half and no one else's.
+    {
+      const { FCM, store } = build({});
+      await FCM.links.setManual('twitch', 'alpha', 'alphakick');
+      // Something else that points at alpha without being its other half —
+      // the sort of thing the automatic lookup leaves behind.
+      await FCM.links.set('kick', 'bystander', { channel: 'alpha', match: 'same-name' });
+
+      await FCM.links.clearPair('twitch', 'alpha');
+      const links = store[FCM.STORAGE_KEYS.links];
+      ok(!links['twitch:alpha'], 'links: the link being undone is gone');
+      ok(!links['kick:alphakick'], 'links: along with the half that pointed back');
+      eq(links['kick:bystander'].channel, 'alpha',
+        'links: a mapping that merely points here is left alone');
+    }
+
+    // 5e. Correcting a link does not leave the old channel pointing back.
+    {
+      const { FCM, store } = build({});
+      await FCM.links.setManual('twitch', 'streamer', 'wrongname');
+      await FCM.links.setManual('twitch', 'streamer', 'rightname');
+      const links = store[FCM.STORAGE_KEYS.links];
+      eq(links['twitch:streamer'].channel, 'rightname', 'links: the correction sticks');
+      eq(links['kick:rightname'].channel, 'streamer', 'links: with its own way back');
+      ok(!links['kick:wrongname'],
+        'links: and the channel it used to point at stops pointing back');
     }
 
     // 6. A manual "no counterpart" mapping suppresses the lookup entirely.
@@ -3586,8 +3668,15 @@ suites.endtoend = function () {
 
         eq(t.joins(), ['JOIN #bravo'],
           'e2e: interrupting a join mid-flight joins only the channel landed on');
-        eq(t.ircSockets().length, 1, 'e2e: and opens only one socket');
-        eq(t.liveIrc().length, 1, 'e2e: which stays open');
+        // A join overtaken inside its two storage reads may already have got as
+        // far as opening a socket, depending on which side of ~24ms the
+        // navigation lands. Demanding it never opened one made this flake about
+        // once in ten runs; what actually matters is that an abandoned socket
+        // is abandoned — closed, and never used to join anything.
+        const abandoned = t.ircSockets().filter((sock) => sock.closed);
+        ok(abandoned.every((sock) => !sock.sent.some((line) => line.startsWith('JOIN '))),
+          'e2e: a join that was overtaken never joins anything');
+        eq(t.liveIrc().length, 1, 'e2e: and exactly one socket is left open');
 
         // The churn the loop showed up as: connecting, dropping, connecting again.
         const statuses = t.portLog
@@ -3741,6 +3830,118 @@ suites.reload = function () {
           'reload: and it is not the channel that was left');
       } finally { w.teardown(); }
     }
+  })();
+};
+
+// Typing in a channel name to merge two that are not called the same thing.
+// Driven through the real worker, over the port, the way the overlay does it.
+suites.linking = function () {
+  const { bootWorker, wait } = require('./background.js');
+
+  // Asked for "the Kick channel", people paste the address of it. Every shape
+  // below is one somebody could reasonably hand over, and they all mean the
+  // same channel.
+  {
+    const FCM = load(makeSandbox(), 'src/shared/namespace.js', 'src/shared/constants.js', 'src/shared/util.js');
+    [
+      ['chefsteve', 'chefsteve'],
+      ['ChefSteve', 'chefsteve'],
+      ['@chefsteve', 'chefsteve'],
+      ['  chefsteve  ', 'chefsteve'],
+      ['https://kick.com/chefsteve', 'chefsteve'],
+      ['https://kick.com/chefsteve/', 'chefsteve'],
+      ['https://kick.com/chefsteve?si=abc', 'chefsteve'],
+      ['https://kick.com/chefsteve#chat', 'chefsteve'],
+      ['kick.com/chefsteve', 'chefsteve'],
+      ['https://www.twitch.tv/chefsteve330', 'chefsteve330'],
+      ['twitch.tv/chefsteve330', 'chefsteve330'],
+      // A link to something on the channel still names the channel.
+      ['https://www.twitch.tv/chefsteve330/videos', 'chefsteve330'],
+      // Nothing usable is nothing, not a channel called "kick.com".
+      ['https://kick.com/', ''],
+      ['', ''],
+      ['   ', ''],
+    ].forEach(([input, expected]) => {
+      eq(FCM.channelFromInput(input), expected, `linking: "${input}" reads as "${expected}"`);
+    });
+  }
+
+  return (async () => {
+    const w = bootWorker();
+    try {
+      w.connect();
+      // Watching a Twitch channel whose Kick name is different.
+      w.send({ cmd: 'hello', site: 'twitch', channel: 'chefsteve330', hints: [] });
+      await wait(250);
+
+      w.clear();
+      w.send({ cmd: 'setLink', target: 'chefsteve' });
+      await wait(400);
+
+      const links = w.storage.local[FCM_LINKS_KEY] || {};
+      eq((links['twitch:chefsteve330'] || {}).channel, 'chefsteve',
+        'linking: the name typed in is saved against the channel being watched');
+      eq((links['kick:chefsteve'] || {}).channel, 'chefsteve330',
+        'linking: and the same pair is saved from the Kick side');
+
+      const told = w.of('counterpart');
+      ok(told.length > 0, 'linking: the page is told straight away, without a reload');
+
+      // Correcting a link while merged with the channel it used to name.
+      {
+        const c = bootWorker();
+        try {
+          c.connect();
+          c.send({ cmd: 'hello', site: 'twitch', channel: 'chefsteve330', hints: [] });
+          await wait(200);
+          // Merged with the channel the same-name guess found.
+          c.send({ cmd: 'join', platform: 'kick', channel: 'wrongsteve' });
+          await wait(300);
+          ok(c.socketsFor('pusher.com').some((sock) => !sock.closed),
+            'linking: connected to the channel that was guessed');
+
+          c.clear();
+          c.send({ cmd: 'setLink', target: 'chefsteve' });
+          await wait(500);
+
+          const idle = c.of('status').filter((m) => m.platform === 'kick' && m.state === 'idle');
+          ok(idle.length > 0, 'linking: correcting the link leaves the chat it used to name');
+          ok(c.of('sys').some((m) => /Left Kick/.test(m.text || '')),
+            'linking: and says so rather than doing it quietly');
+        } finally { c.teardown(); }
+      }
+
+      // Linking to the channel already merged leaves it alone.
+      {
+        const c = bootWorker();
+        try {
+          c.connect();
+          c.send({ cmd: 'hello', site: 'twitch', channel: 'chefsteve330', hints: [] });
+          await wait(200);
+          c.send({ cmd: 'join', platform: 'kick', channel: 'chefsteve' });
+          await wait(300);
+          c.clear();
+          c.send({ cmd: 'setLink', target: 'chefsteve' });
+          await wait(500);
+          const idle = c.of('status').filter((m) => m.platform === 'kick' && m.state === 'idle');
+          eq(idle.length, 0, 'linking: confirming the channel already merged does not drop it');
+        } finally { c.teardown(); }
+      }
+
+      // Undoing it from the other side takes both halves.
+      w.clear();
+      w.send({ cmd: 'hello', site: 'kick', channel: 'chefsteve', hints: [] });
+      await wait(250);
+      w.send({ cmd: 'clearLink' });
+      await wait(400);
+      const after = w.storage.local[FCM_LINKS_KEY] || {};
+      // Reset means "go back to guessing", so an automatic entry landing here
+      // again straight afterwards is the point. What must not survive is the
+      // mapping that was typed in.
+      ok(!(after['kick:chefsteve'] || {}).manual,
+        'linking: reset drops the mapping that was typed in');
+      ok(!after['twitch:chefsteve330'], 'linking: and the half pointing back at it');
+    } finally { w.teardown(); }
   })();
 };
 

@@ -755,8 +755,8 @@
         onCommand({ cmd: 'join', platform, channel: counterpart.channel });
         return;
       }
-      toast(`No ${FCM.PLATFORM_META[platform].name} channel matched — set one in settings`);
-      openSheet();
+      toast(`No ${FCM.PLATFORM_META[platform].name} channel matched — type it in below`);
+      openSheet('link');
     }
 
     // ── The cross-platform prompt ─────────────────────────────────────────────
@@ -830,7 +830,13 @@
       if (sheet) { sheet.remove(); sheet = null; }
     }
 
-    function openSheet() {
+    /**
+     * Opens the settings sheet, optionally on the thing that sent you there.
+     *
+     * "Set one in settings" is not much help against a sheet this long, so the
+     * caller can name the field it means and it is scrolled to and focused.
+     */
+    function openSheet(landOn) {
       if (sheet) { closeSheet(); return; }
       sheet = document.createElement('div');
       sheet.className = 'fcm-sheet';
@@ -1031,10 +1037,19 @@
         });
       });
 
+      if (landOn === 'link') {
+        const input = sheet.querySelector('[data-link-input]');
+        if (input) {
+          input.scrollIntoView({ block: 'center' });
+          input.focus({ preventScroll: true });
+          input.select();
+        }
+      }
+
       sheet.querySelector('[data-act="close-sheet"]').addEventListener('click', closeSheet);
       sheet.querySelector('[data-act="reset-placement"]').addEventListener('click', resetPlacement);
       sheet.querySelector('[data-act="save-link"]').addEventListener('click', () => {
-        const value = FCM.normalizeChannel(sheet.querySelector('[data-link-input]').value);
+        const value = FCM.channelFromInput(sheet.querySelector('[data-link-input]').value);
         onCommand({ cmd: 'setLink', target: value });
         toast(value ? `Linked to ${FCM.PLATFORM_META[otherPlatform].name}/${value}` : 'Link cleared');
         closeSheet();

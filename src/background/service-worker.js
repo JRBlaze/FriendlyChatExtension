@@ -526,23 +526,26 @@ chrome.runtime.onConnect.addListener((port) => {
       }
 
       case 'setLink': {
-        // A manual mapping wins over every guess, for good.
+        // A manual mapping wins over every guess, for good, and is recorded
+        // from both ends so the same pair works whichever side you arrive on.
         const target = FCM.normalizeChannel(msg.target);
-        if (target) {
-          await FCM.links.set(session.site, session.hostChannel, {
-            channel: target, match: 'manual', manual: true,
-          });
-        } else {
-          await FCM.links.set(session.site, session.hostChannel, {
-            none: true, manual: true,
-          });
-        }
+        await FCM.links.setManual(session.site, session.hostChannel, target);
+
+        // Correcting a link while merged with the channel it used to name
+        // would leave the wrong chat in the feed and the right one offered in
+        // a prompt beside it. The only thing ever joined on the other platform
+        // is the counterpart, so a counterpart that has just changed is reason
+        // enough to leave — and saying so, rather than doing it quietly.
+        const other = FCM.otherPlatform(session.site);
+        const conn = session.conns[other];
+        if (conn.channel && conn.channel !== target) leaveChannel(session, other);
+
         await refreshCounterpart(session, { announce: true });
         break;
       }
 
       case 'clearLink':
-        await FCM.links.clear(session.site, session.hostChannel);
+        await FCM.links.clearPair(session.site, session.hostChannel);
         await refreshCounterpart(session, { announce: true });
         break;
 

@@ -21,6 +21,32 @@
       .toLowerCase();
   };
 
+  /**
+   * A channel name out of whatever someone pasted.
+   *
+   * Asked for "the Kick channel", people paste the address of it — which is
+   * the most reliable thing they could give us, and used to be stored verbatim
+   * as a channel name that could never match anything. A bare name, an @name,
+   * a full URL and a bare `kick.com/name` all mean the same thing here.
+   *
+   * Only the first path segment is taken, so a link to a clip or a video still
+   * yields the channel it belongs to.
+   */
+  FCM.channelFromInput = function (input) {
+    const raw = String(input || '').trim();
+    if (!raw) return '';
+    // Anything with a slash in it is treated as an address, with or without a
+    // scheme: "kick.com/name" is what you get from copying the address bar of
+    // a browser that hides the https.
+    const path = /^[a-z]+:\/\//i.test(raw)
+      ? raw.replace(/^[a-z]+:\/\/[^/]*/i, '')
+      : (raw.includes('/') ? raw.replace(/^[^/]*\.[^/]*/, '') : '');
+    const candidate = path
+      ? (path.split(/[?#]/)[0].split('/').filter(Boolean)[0] || '')
+      : raw;
+    return FCM.normalizeChannel(candidate);
+  };
+
   FCM.clampNumber = function (value, min, max, fallback) {
     const n = Number(value);
     if (!Number.isFinite(n)) return fallback;

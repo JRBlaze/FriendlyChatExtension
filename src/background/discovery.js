@@ -309,6 +309,76 @@
       await writeLinkStore(store);
     },
 
+    /**
+     * Records a mapping the viewer typed in — in both directions.
+     *
+     * Saying "this Twitch channel is that Kick channel" says exactly the same
+     * thing about the Kick channel, and someone who has told us once should not
+     * have to go and tell us again from the other side.
+     *
+     * It is also what stops the wrong merge. Where the names differ,
+     * kick.com/chefsteve would otherwise fall through to the same-name guess
+     * and connect twitch.tv/chefsteve, who is a different person entirely. The
+     * reverse entry is what makes that channel already spoken for.
+     *
+     * Where this contradicts a mapping set earlier from the other side, the
+     * newest one wins: two manual links that disagree cannot both be honoured,
+     * and the one just typed is the one being looked at.
+     *
+     * An empty target says "this channel has no counterpart", which says
+     * nothing about any other channel, so nothing is written the other way.
+     */
+    async setManual(platform, channel, target) {
+      const self = FCM.normalizeChannel(channel);
+      if (!self) return;
+      const to = FCM.normalizeChannel(target);
+      const other = FCM.otherPlatform(platform);
+      const store = await readLinkStore();
+      const at = Date.now();
+      const key = FCM.links.key(platform, self);
+
+      // Correcting a link that pointed somewhere else leaves that channel still
+      // pointing back here. Retire that half first, or the store ends up
+      // holding two mappings that disagree about the same pair.
+      const previous = store[key];
+      if (previous && previous.channel && FCM.normalizeChannel(previous.channel) !== to) {
+        const staleKey = FCM.links.key(other, previous.channel);
+        const stale = store[staleKey];
+        if (stale && FCM.normalizeChannel(stale.channel) === self) delete store[staleKey];
+      }
+
+      store[key] = to
+        ? { channel: to, match: 'manual', manual: true, at }
+        : { none: true, manual: true, at };
+      if (to) {
+        store[FCM.links.key(other, to)] = { channel: self, match: 'manual', manual: true, at };
+      }
+      await writeLinkStore(store);
+    },
+
+    /**
+     * Forgets a manual mapping and the half of it pointing back here.
+     *
+     * Only that half. A link from the other channel to somewhere else is a
+     * separate decision somebody made, and undoing this one is no reason to
+     * throw it away.
+     */
+    async clearPair(platform, channel) {
+      const self = FCM.normalizeChannel(channel);
+      if (!self) return;
+      const store = await readLinkStore();
+      const key = FCM.links.key(platform, self);
+      const record = store[key];
+      delete store[key];
+
+      if (record && record.channel) {
+        const otherKey = FCM.links.key(FCM.otherPlatform(platform), record.channel);
+        const back = store[otherKey];
+        if (back && FCM.normalizeChannel(back.channel) === self) delete store[otherKey];
+      }
+      await writeLinkStore(store);
+    },
+
     async all() {
       return readLinkStore();
     },
