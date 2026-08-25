@@ -40,8 +40,6 @@
     return null;
   }
 
-  FCM.twitchEmoteSource = twitchEmoteSource;
-
   FCM.emoteLoader = {
     /**
      * 7TV for both platforms, BTTV and FFZ for Twitch.

@@ -618,9 +618,14 @@ function loadSources(bust) {
       inner.innerHTML = ''; inner.style.height = '0px';
       document.querySelector('.kickcol .kick-banner > div').innerHTML = '';
     },
+    // Takes Kick's balance controls off the page, so the overlay's own stats
+    // bar has nothing to read and has to cope with that. It named an id that
+    // has never existed, so it threw instead of hiding anything.
     'kick-balance-off': () => {
-      const b = document.getElementById('kick-balance');
-      b.style.display = b.style.display === 'none' ? '' : 'none';
+      ['kick-points', 'kick-kicks', 'kick-get'].forEach((id) => {
+        const b = document.getElementById(id);
+        if (b) b.style.display = b.style.display === 'none' ? '' : 'none';
+      });
     },
 
     // The cards Twitch stacks above its message list. The overlay is meant to

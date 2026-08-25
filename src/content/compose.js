@@ -447,6 +447,7 @@
     // out, because "no date" and "not allowed to see the date" are different
     // facts and only one of them means the person does not follow.
     const FOLLOW_REASONS = {
+      'not-following': 'not following',
       'not-a-moderator': 'only shown to mods',
       'not-connected': 'connect an account',
       refused: 'unavailable',

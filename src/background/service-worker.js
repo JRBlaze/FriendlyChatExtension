@@ -495,7 +495,12 @@ chrome.runtime.onConnect.addListener((port) => {
         // asks for rather than one being converted into the other.
         const on = session.conns[msg.platform] || {};
         const where = msg.platform === 'twitch' ? on.roomId : on.channel;
-        const profile = await FCM.lookupProfile(msg.platform, msg.username, where);
+        // Whether this viewer moderates here decides how an empty follow list
+        // is read: "they do not follow" for a mod, "not allowed to know" for
+        // anyone else. The two are opposite answers in the same shape.
+        const profile = await FCM.lookupProfile(
+          msg.platform, msg.username, where, !!on.canModerate
+        );
         send(session, {
           type: 'profile',
           id: msg.id,

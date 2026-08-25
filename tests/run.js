@@ -615,6 +615,149 @@ suites.compose = function () {
 
 // Emotes kept to hand. Stored by name rather than by url, because the same
 // emote can arrive from a different provider tomorrow.
+// Who a chatter is, as the worker answers it.
+//
+// Mostly about the two ways Twitch can say nothing. An empty follower list
+// means "they do not follow" to a moderator and "you may not know" to everyone
+// else, and the endpoint returns the same shape for both.
+suites.profile = async function () {
+  function build({ token = null, users = null, followers = null, gql = null, kick = null } = {}) {
+    const calls = [];
+    const sandbox = makeSandbox({
+      fetch: async () => ({ ok: false }),
+    });
+    const FCM = load(sandbox, 'src/shared/namespace.js', 'src/shared/constants.js',
+      'src/shared/util.js');
+    FCM.auth = { get: async () => token };
+    FCM.kickApi = { channel: async () => kick };
+    FCM.getJson = async (url, init) => {
+      calls.push(url);
+      if (url.includes('gql.twitch.tv')) return gql;
+      if (url.includes('/users?login=')) return users;
+      if (url.includes('/channels/followers')) return followers;
+      if (url.includes('kick.com/api/v2/channels')) return kick;
+      return null;
+    };
+    load(sandbox, 'src/background/profile.js');
+    return { FCM, calls };
+  }
+
+  const TOKEN = { accessToken: 't', clientId: 'c', userId: '1' };
+  const USER = { data: [{ id: '99', login: 'viewer', display_name: 'Viewer',
+    created_at: '2017-03-14T09:12:00Z', broadcaster_type: 'affiliate' }] };
+
+  // A moderator looking at somebody who does not follow is told exactly that.
+  {
+    const { FCM } = build({ token: TOKEN, users: USER, followers: { total: 5000, data: [] } });
+    const p = await FCM.lookupProfile('twitch', 'viewer', '123', true);
+    eq(p.followedReason, 'not-following',
+      'profile: an empty list means they do not follow, to someone who can see the list');
+    eq(p.followedAt, '', 'profile: and carries no date');
+  }
+
+  // The same empty list to somebody who cannot moderate means nothing at all.
+  {
+    const { FCM } = build({ token: TOKEN, users: USER, followers: { total: 5000, data: [] } });
+    const p = await FCM.lookupProfile('twitch', 'viewer', '123', false);
+    eq(p.followedReason, 'not-a-moderator',
+      'profile: the same empty list tells a non-moderator nothing');
+  }
+
+  // A real follow date is read straight through.
+  {
+    const { FCM } = build({
+      token: TOKEN, users: USER,
+      followers: { total: 5000, data: [{ followed_at: '2021-11-05T00:00:00Z' }] },
+    });
+    const p = await FCM.lookupProfile('twitch', 'viewer', '123', false);
+    eq(p.followedAt, '2021-11-05T00:00:00Z', 'profile: a follow date is reported');
+    eq(p.followedReason, '', 'profile: with no reason alongside it');
+  }
+
+  // An entry with no date in it must not read as a silent success.
+  {
+    const { FCM } = build({ token: TOKEN, users: USER, followers: { total: 1, data: [{}] } });
+    const p = await FCM.lookupProfile('twitch', 'viewer', '123', true);
+    eq(p.followedAt, '', 'profile: a malformed entry yields no date');
+    ok(p.followedReason, 'profile: and still says why the line is empty');
+  }
+
+  // With a token, Helix carries the join date, so GraphQL is not called at all.
+  {
+    const { FCM, calls } = build({ token: TOKEN, users: USER, followers: { total: 0, data: [] } });
+    await FCM.lookupProfile('twitch', 'viewer', '123', false);
+    ok(!calls.some((u) => u.includes('gql.twitch.tv')),
+      'profile: a connected account costs one lookup, not two');
+  }
+
+  // Without one, GraphQL still gives the join date.
+  {
+    const { FCM, calls } = build({
+      gql: { data: { user: { login: 'viewer', displayName: 'Viewer', createdAt: '2016-01-02T00:00:00Z' } } },
+    });
+    const p = await FCM.lookupProfile('twitch', 'viewer', '123', false);
+    eq(p.createdAt, '2016-01-02T00:00:00Z', 'profile: the join date needs no account');
+    eq(p.followedReason, 'not-connected', 'profile: the follow date says it does');
+    ok(calls.some((u) => u.includes('gql.twitch.tv')), 'profile: and it came from GraphQL');
+  }
+
+  // Nobody by that name.
+  {
+    const { FCM } = build({ gql: { data: { user: null } } });
+    eq((await FCM.lookupProfile('twitch', 'nobody', '123', false)).reason, 'not-found',
+      'profile: an unknown name is reported as such');
+  }
+
+  // Answers that stop being true must not be remembered. Signing in should not
+  // leave the menu telling you to sign in for the next half hour.
+  {
+    const { FCM, calls } = build({
+      gql: { data: { user: { login: 'viewer', createdAt: '2016-01-02T00:00:00Z' } } },
+    });
+    await FCM.lookupProfile('twitch', 'viewer', '123', false);
+    const first = calls.length;
+    await FCM.lookupProfile('twitch', 'viewer', '123', false);
+    ok(calls.length > first, 'profile: a not-connected answer is asked again, not cached');
+  }
+
+  // A complete answer is cached, so clicking through a conversation is cheap.
+  {
+    const { FCM, calls } = build({
+      token: TOKEN, users: USER,
+      followers: { total: 1, data: [{ followed_at: '2021-11-05T00:00:00Z' }] },
+    });
+    await FCM.lookupProfile('twitch', 'viewer', '123', true);
+    const first = calls.length;
+    await FCM.lookupProfile('twitch', 'viewer', '123', true);
+    eq(calls.length, first, 'profile: a complete answer is served from cache');
+    // ...but not across channels, because the follow date is about the pair.
+    await FCM.lookupProfile('twitch', 'viewer', '456', true);
+    ok(calls.length > first, 'profile: and a different channel is a different question');
+  }
+
+  // Kick answers everything publicly.
+  {
+    const { FCM } = build({
+      kick: { username: 'zJOEYzZ', created_at: '2023-06-17T14:41:43.000000Z',
+        following_since: '2023-06-17T14:42:34.000000Z', subscribed_for: 7 },
+    });
+    const p = await FCM.lookupProfile('kick', 'zJOEYzZ', 'xqc', false);
+    eq(p.createdAt, '2023-06-17T14:41:43.000000Z', 'profile: Kick gives the join date');
+    eq(p.followedAt, '2023-06-17T14:42:34.000000Z', 'profile: and the follow date, to anyone');
+    eq(p.subscribedMonths, 7, 'profile: and how long they have subscribed');
+  }
+
+  // A name that is not one is refused before any request is made.
+  {
+    const { FCM, calls } = build({});
+    eq((await FCM.lookupProfile('twitch', '', '123', false)).reason, 'bad-request',
+      'profile: an empty name is refused');
+    eq((await FCM.lookupProfile('nope', 'viewer', '123', false)).reason, 'bad-request',
+      'profile: so is a platform that does not exist');
+    eq(calls.length, 0, 'profile: and neither costs a request');
+  }
+};
+
 suites.favourites = function () {
   const sandbox = makeSandbox({
     chrome: { storage: { sync: { get: async () => ({}) } } },
@@ -2623,6 +2766,37 @@ suites.resilience = function () {
   const linky = FCM.renderMessageBody('twitch', 'https://x.test/"><script>alert(1)</script>', {});
   missing(linky.html, '<script', 'resilience: a hostile url is escaped inside the anchor');
 
+  // ── Words built to make the link matcher backtrack ─────────────────────────
+  //
+  // The bare-host pattern nests quantifiers, which is the shape that can
+  // backtrack exponentially. Every word of every message goes through it, so a
+  // message crafted to hit that would freeze the tab rather than merely render
+  // wrongly — the one failure here that a viewer could not click away from.
+  //
+  // The bound is deliberately loose: this is meant to catch a pattern that has
+  // become catastrophic, not to measure anything.
+  {
+    const nasty = [
+      'a-'.repeat(240) + '!',                       // labels that never terminate
+      'a.'.repeat(240) + '!',                       // dots without a usable tld
+      ('ab-'.repeat(80)) + '.' + 'c-'.repeat(80) + '!',
+      'a'.repeat(200) + '.' + 'b'.repeat(200) + '1',
+      'aaaa.'.repeat(95) + '!',
+      '('.repeat(40) + 'a-'.repeat(200) + '!',      // leading punctuation too
+      '-'.repeat(480),
+      '.'.repeat(480),
+    ];
+    const started = Date.now();
+    let anchors = 0;
+    nasty.forEach((word) => {
+      const out = FCM.renderMessageBody('twitch', `hello ${word} world`, {});
+      anchors += (out.html.match(/<a /g) || []).length;
+    });
+    const spent = Date.now() - started;
+    ok(spent < 500, `resilience: words built to backtrack render promptly (${spent}ms)`);
+    eq(anchors, 0, 'resilience: and none of them is mistaken for a link');
+  }
+
   // ── Size and unicode ───────────────────────────────────────────────────────
   const huge = 'a'.repeat(50000);
   const t0 = Date.now();
@@ -3273,7 +3447,9 @@ suites.navigation = function () {
     sandbox.setTimeout = (fn, ms) => { timers.timeouts.push({ fn, ms, cancelled: false }); return timers.timeouts.length; };
     sandbox.clearTimeout = (id) => { if (timers.timeouts[id - 1]) timers.timeouts[id - 1].cancelled = true; };
 
-    const FCM = load(sandbox, ...SHARED, 'src/content/sites.js');
+    // render.js as well as sites.js, because the manifest loads it before
+    // boot.js and boot.js calls into it when a channel is left.
+    const FCM = load(sandbox, ...SHARED, 'src/content/render.js', 'src/content/sites.js');
 
     // A stand-in overlay: boot only needs it to mount, take messages and go away.
     const overlays = [];
@@ -3364,6 +3540,26 @@ suites.navigation = function () {
       newPort._recv({ type: 'ready', site: 'twitch', channel: 'bravo', connections: {} });
       await t.flush();
       eq(t.joinsFor(newPort), ['bravo'], 'nav: only the new channel is joined');
+    }
+
+    // ── What the render module held for the old channel is dropped ──
+    //
+    // It outlives the overlay, so this is the one place a channel's emotes and
+    // chatters can be forgotten. Driven through the real navigation rather than
+    // by calling the reset directly, because the wiring is the part that broke.
+    {
+      const t = boot('/alpha');
+      await t.flush();
+      t.FCM.setViewSettings(t.FCM.DEFAULT_SETTINGS);
+      t.FCM.setEmotes('twitch', 'thirdparty', { AlphaOnly: { url: 'https://cdn/a.webp', source: '7TV' } });
+      t.FCM.rememberChatter('twitch', 'AlphaRegular');
+      ok(t.FCM.findEmote('AlphaOnly'), 'nav: the channel had an emote loaded');
+
+      await t.navigateTo('/bravo');
+      ok(!t.FCM.findEmote('AlphaOnly'),
+        'nav: navigating away drops the emotes that belonged to the old channel');
+      eq(t.FCM.recentChatters().length, 0,
+        'nav: and the people who spoke there stop being offered here');
     }
 
     // ── The old overlay is torn down, exactly one is left ──
@@ -3629,6 +3825,67 @@ suites.moderation = function () {
 // scheduled, and the two channels then traded places forever.
 suites.channelswitch = function () {
   const { bootWorker, wait } = require('./background.js');
+
+  // ── What the render module keeps between channels ──────────────────────────
+  //
+  // It is loaded once for the page and outlives every overlay built on it, so
+  // anything it holds for a channel follows you to the next one unless it is
+  // dropped. That is a leak over a long session, and before that it is wrong:
+  // a word that is an emote in a channel you have left would render as that
+  // emote here, where the real chat shows text.
+  {
+    const sandbox = makeSandbox({ document: stubDocument() });
+    const FCM = load(sandbox, ...SHARED, 'src/content/render.js');
+    FCM.setViewSettings(FCM.DEFAULT_SETTINGS);
+
+    FCM.setEmotes('twitch', 'thirdparty', { AlphaOnly: { url: 'https://cdn/a.webp', source: '7TV' } });
+    FCM.setBadges('twitch', {
+      global: { moderator: { 1: { image_url_1x: 'https://badge/mod.png' } } },
+      channel: { subscriber: { 12: { image_url_1x: 'https://badge/alpha12.png' } } },
+    });
+    FCM.rememberChatter('twitch', 'AlphaRegular');
+
+    ok(FCM.findEmote('AlphaOnly'), 'switch: the channel\'s emote is loaded');
+    ok(FCM.recentChatters().some((c) => c.name === 'AlphaRegular'),
+      'switch: and someone who spoke there is remembered');
+    const beforeVersion = FCM.view.emoteVersion;
+
+    FCM.resetChannelView();
+
+    ok(!FCM.findEmote('AlphaOnly'), 'switch: leaving drops the channel\'s emotes');
+    eq(FCM.recentChatters().length, 0, 'switch: and everyone who spoke there');
+    eq(Object.keys(FCM.view.badges.twitch.channel).length, 0,
+      'switch: and the badges that belonged to it');
+    ok(FCM.view.emoteVersion > beforeVersion,
+      'switch: anything cached against the emotes is told to rebuild');
+    // Global badges are the same everywhere and are re-sent on join anyway.
+    ok(FCM.view.badges.twitch.global.moderator,
+      'switch: global badges are not channel state and stay');
+    // The settings are the viewer's, not the channel's.
+    eq(FCM.view.settings.fontSize, FCM.DEFAULT_SETTINGS.fontSize,
+      'switch: and neither are the settings');
+
+    // A word that was an emote in the channel just left is plain text here.
+    const after = FCM.renderMessageBody('twitch', 'AlphaOnly', {});
+    missing(after.html, '<img', 'switch: so it renders as text, the way the real chat shows it');
+
+    // ── Who gets forgotten when the list is full ──
+    //
+    // A busy channel has more names than the list holds, and the one to drop is
+    // whoever was heard from longest ago — not whoever was seen first, which in
+    // a channel you have sat in all evening is the regular still talking.
+    FCM.resetChannelView();
+    const regular = 'TheRegular';
+    FCM.rememberChatter('twitch', regular);
+    for (let i = 0; i < 150; i++) FCM.rememberChatter('twitch', `passerby${i}`);
+    FCM.rememberChatter('twitch', regular);            // they say something else
+    for (let i = 150; i < 260; i++) FCM.rememberChatter('twitch', `passerby${i}`);
+
+    const names = FCM.recentChatters().map((c) => c.name);
+    ok(names.includes(regular), 'switch: someone still talking survives a full list');
+    ok(!names.includes('passerby0'), 'switch: and the quietest name is the one dropped');
+    ok(names.length <= 200, 'switch: the list stays bounded');
+  }
 
   return (async () => {
     // ── Twitch ──

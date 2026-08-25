@@ -259,6 +259,11 @@
   function unmount() {
     if (overlay) { overlay.destroy(); overlay = null; }
     activeJoins.clear();
+    // The render module is loaded once for the page and outlives every overlay
+    // built on it, so what it holds for this channel — emote sets, the channel's
+    // badges, who has spoken — has to be dropped here or it follows us to the
+    // next one and is offered there as if it belonged.
+    FCM.resetChannelView();
   }
 
   async function evaluate() {
