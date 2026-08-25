@@ -82,7 +82,24 @@ function makeSink(session, platform) {
       conn.state = state;
       send(session, { type: 'status', platform, state, channel: conn.channel });
     },
-    roomId: (id) => { conn.roomId = id || null; },
+    roomId: (id) => {
+      const next = id || null;
+      const changed = conn.roomId !== next;
+      conn.roomId = next;
+      // The channel's own emotes cannot be asked for until Twitch has said
+      // which channel this is, and it says so after the join.
+      if (changed && next && platform === 'twitch') {
+        loadTwitchEmotes(session, platform).catch(() => {});
+      }
+    },
+    // The sets this account may use, which arrive with USERSTATE.
+    emoteSets: (ids) => {
+      const known = conn.emoteSets || [];
+      const merged = Array.from(new Set([...known, ...(ids || [])]));
+      if (merged.length === known.length) return;
+      conn.emoteSets = merged;
+      loadTwitchEmotes(session, platform).catch(() => {});
+    },
     moderator: (can) => {
       const next = !!can;
       if (conn.canModerate === next) return;
@@ -120,9 +137,18 @@ async function onJoined(session, platform, chatroomId) {
     FCM.twitchApi.badges(channel).then((badges) => {
       send(session, { type: 'badges', platform: 'twitch', badges });
     });
+    loadTwitchEmotes(session, platform).catch(() => {});
   } else {
     FCM.emoteLoader.kickNative(channel).then((store) => {
-      if (Object.keys(store).length) sink.emotes('native', store);
+      if (Object.keys(store).length) {
+        sink.emotes('native', store);
+        sink.sys(`Loaded ${Object.keys(store).length} Kick emotes for this channel`);
+        return;
+      }
+      // Kick sits behind Cloudflare, which can refuse a request that did not
+      // come from a browser tab. The page itself is a browser tab, so it is
+      // asked to fetch the same list from its own origin.
+      send(session, { type: 'needKickEmotes', channel });
     });
   }
 
@@ -140,6 +166,57 @@ async function onJoined(session, platform, chatroomId) {
         }
       });
   }
+}
+
+/**
+ * Loads the Twitch emotes this viewer may use, and does it again whenever
+ * something new is learnt.
+ *
+ * It runs on join, again when Twitch says which channel this is, and again when
+ * USERSTATE lists the account's emote sets — because those three facts arrive
+ * separately and each unlocks a different part of the answer. Sending a partial
+ * store more than once is safe: the view merges emotes rather than replacing
+ * them, so each pass adds and nothing is ever lost.
+ */
+async function loadTwitchEmotes(session, platform) {
+  const conn = session.conns[platform];
+  if (!conn || platform !== 'twitch') return;
+  const settings = await FCM.loadSettings();
+  const record = await FCM.auth.get('twitch');
+  const clientId = (record && record.clientId)
+    || settings.twitchClientId
+    || FCM.DEFAULT_TWITCH_CLIENT_ID;
+
+  const store = await FCM.emoteLoader.twitchNative({
+    clientId,
+    token: record && record.accessToken,
+    userId: record && record.userId,
+    broadcasterId: conn.roomId,
+    setIds: conn.emoteSets,
+  });
+
+  const count = Object.keys(store).length;
+  if (!count) return;
+  // Only the first pass is worth saying out loud; the later ones are top-ups.
+  const sink = makeSink(session, platform);
+  sink.emotes('native', store);
+  if (conn.announcedEmotes) return;
+  conn.announcedEmotes = true;
+
+  if (!record || !record.accessToken) {
+    sink.sys(`Loaded ${count} Twitch emotes — connect a Twitch account for your own subs and follows`);
+    return;
+  }
+  // A token from before this scope was asked for still works for everything
+  // else, so it is worth saying what is missing rather than quietly loading
+  // less than the viewer expects.
+  const scopes = record.scopes || [];
+  if (scopes.length && !scopes.includes('user:read:emotes')) {
+    sink.sys(`Loaded ${count} Twitch emotes. Reconnect your Twitch account in settings to `
+      + 'include the emotes from every channel you subscribe to.');
+    return;
+  }
+  sink.sys(`Loaded ${count} of your Twitch emotes (global, channel, subs, follows and rewards)`);
 }
 
 async function joinChannel(session, platform, channel) {

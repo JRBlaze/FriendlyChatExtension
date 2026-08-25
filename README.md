@@ -8,7 +8,7 @@ streamer is also live on Kick, the overlay says so and offers to add the Kick ch
 feed. Open a Kick channel and it works the other way round.
 
 ![Platform](https://img.shields.io/badge/Chrome-MV3-blue)
-![Version](https://img.shields.io/badge/version-1.3.0-green)
+![Version](https://img.shields.io/badge/version-1.4.0-green)
 
 ## What it does
 
@@ -31,9 +31,11 @@ feed. Open a Kick channel and it works the other way round.
   connect it. The same logic runs in reverse on Kick.
 - **One merged feed.** Twitch and Kick messages interleave in a single scroll, each tagged with
   a coloured dot and the platform's own username colour, and each filterable on and off.
-- **Real emotes and badges.** Twitch emotes from the IRC tag, Kick's inline emote tokens, Kick's
-  channel/global/emoji sets, plus 7TV, BetterTTV and FrankerFaceZ for both platforms. Twitch
-  badge images and Kick badge labels render inline.
+- **Every emote you can actually use.** Twitch global, channel, subscriber, follower, bits-tier,
+  hype-train, rewards and Prime emotes; Kick's channel, global and emoji sets; and 7TV, BetterTTV
+  and FrankerFaceZ on both platforms. They are grouped by where they came from in the picker, and
+  the Twitch list is the one Twitch itself says your account may send. Twitch badge images and
+  Kick badge labels render inline.
 - **Recent history on join,** with the original timestamps, so you are not staring at an empty
   panel when you arrive mid-stream.
 - **Events**: subs, resubs, gifted subs, raids, cheers, hype trains, timeouts and bans, shown as
@@ -67,7 +69,7 @@ feed. Open a Kick channel and it works the other way round.
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.3.0.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.4.0.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and a folder named `FriendlyChatExtension-main`. The
@@ -303,6 +305,38 @@ box, because replacing its contents on every keystroke would take the caret with
 different provider tomorrow. Starring one puts it in a row of its own at the top of the picker,
 newest first, and sorts it ahead of the alphabet in `:` autocomplete — which is the point of
 starring it, rather than scrolling past everything else sharing its first two letters.
+
+## Where the emotes come from
+
+Incoming Twitch messages never needed a lookup — an emote arrives as an id and a position in the
+IRC tag, so it renders whether or not anyone has fetched a list. The picker is a different
+question: it can only offer what it has been told about, and it was being told about nothing from
+Twitch at all.
+
+What an account may use comes from four places, and the difference between them matters:
+
+| | what it knows | needs |
+| --- | --- | --- |
+| `chat/emotes/global` | what everyone has | nothing |
+| `chat/emotes?broadcaster_id=` | the channel's own — sub, follower, bits tiers | nothing |
+| `chat/emotes/user?user_id=` | **what this account may send**, everywhere | a connected account with `user:read:emotes` |
+| `chat/emotes/set?emote_set_id=` | the sets Twitch names in USERSTATE | any connected account |
+
+All four are asked and merged. The user endpoint is the authoritative answer and covers channels
+you subscribe to that you are not currently watching; the emote-set ids cover the same ground from
+the other direction and work with any token, which is how Chatterino does it. Each is allowed to
+fail on its own, so a viewer with no account still gets globals and the channel's own.
+
+They arrive at different times — the join, then the room id, then USERSTATE — so the load runs
+more than once and each pass adds to what is there. The view merges emote stores rather than
+replacing them, so nothing an earlier pass found is lost, and the label from the most specific
+source is the one that survives.
+
+Kick answers `/emotes/<channel>` with the channel's set, the global set and the emoji set. That
+request is made from the background worker, which is not a browser tab — and Kick sits behind
+Cloudflare, which sometimes minds. When it comes back empty and the tab is on Kick, the page is
+asked to fetch the same list from its own origin instead, which Cloudflare has no reason to
+refuse.
 
 ## Moderating
 
@@ -646,7 +680,7 @@ DOM, so nothing in the page's layout or stacking contexts has to be fought with.
 node tests/run.js
 ```
 
-793 assertions, no network. It drives the real parsers with real payload shapes: IRC lines with
+814 assertions, no network. It drives the real parsers with real payload shapes: IRC lines with
 tags and emote positions, Kick Pusher events, emote sets from every provider, and the
 counterpart matcher against stubbed platform APIs — including the cases that matter most, like a
 manual mapping beating a same-name guess and a failing emote provider not taking the others down.
@@ -878,6 +912,15 @@ was never going to see in a friendly test:
 - **The card strip costs feed height.** Twitch keeps a bits leaderboard above chat on many
   channels, so *Leave room for the site's cards* usually gives up an inch of column even when
   there is no hype train running. Turning it off puts the panel back over the whole column.
+- **Twitch emotes from other channels need a connected account.** Global emotes and the current
+  channel's own load for anyone. The list of what *your* account may send — every channel you
+  subscribe to, follower emotes, bits tiers, hype train rewards — comes from an endpoint that
+  needs `user:read:emotes`, which is requested at sign-in. A token created before that scope was
+  asked for still works for everything else; the overlay says so and reconnecting fixes it.
+- **Kick emotes on a Twitch tab depend on the background request working.** The page-side fallback
+  only applies when the tab is actually on Kick, because a content script cannot make a
+  cross-origin request the way the worker can. Watching Twitch with Kick chat merged, Kick's emote
+  list is whatever the worker managed to fetch.
 - **Kick's API sits behind Cloudflare.** The endpoints used here are the public ones and are
   currently reachable, but if Cloudflare starts challenging them, Kick channel lookups will fail
   and the overlay will say so.

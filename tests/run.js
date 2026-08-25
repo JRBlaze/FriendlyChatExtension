@@ -897,6 +897,139 @@ suites.discovery = function () {
   })();
 };
 
+// Every Twitch emote the viewer may use. Four sources, each knowing something
+// the others do not, merged into one store.
+suites.twitchEmotes = function () {
+  function build({ userPages = [], sets = {}, fail = [] } = {}) {
+    const calls = [];
+    const sandbox = makeSandbox({
+      fetch: async (url) => {
+        const u = String(url);
+        calls.push(u);
+        if (fail.some((f) => u.includes(f))) return { ok: false, status: 401, json: async () => ({}) };
+        if (u.includes('/chat/emotes/global')) {
+          return { ok: true, json: async () => ({ data: [
+            { id: 'g1', name: 'GlobalOne', emote_type: 'globals' },
+            { id: 'g2', name: 'Smiley', owner_id: '0' },
+          ] }) };
+        }
+        if (u.includes('/chat/emotes/user')) {
+          const after = /after=([^&]*)/.exec(u);
+          const page = after ? Number(after[1]) : 0;
+          const body = userPages[page] || { data: [] };
+          return { ok: true, json: async () => body };
+        }
+        if (u.includes('/chat/emotes/set')) {
+          const ids = (u.match(/emote_set_id=([^&]*)/g) || []).map((p) => p.split('=')[1]);
+          const data = ids.flatMap((id) => sets[id] || []);
+          return { ok: true, json: async () => ({ data }) };
+        }
+        if (u.includes('/chat/emotes?broadcaster_id=')) {
+          return { ok: true, json: async () => ({ data: [
+            { id: 'c1', name: 'ChanSub', emote_type: 'subscriptions' },
+            { id: 'c2', name: 'ChanBits', emote_type: 'bitstier' },
+          ] }) };
+        }
+        return { ok: false, status: 404, json: async () => ({}) };
+      },
+    });
+    const FCM = load(sandbox, ...SHARED, 'src/background/emotes.js');
+    return { FCM, calls };
+  }
+
+  return (async () => {
+    // Nothing at all without a client id: there is no request that can be made.
+    {
+      const t = build();
+      eq(await t.FCM.emoteLoader.twitchNative({}), {}, 'twitch emotes: no client id, no request');
+      eq(t.calls.length, 0, 'twitch emotes: and nothing is fetched');
+    }
+
+    // Signed out: global emotes still arrive, and the channel's own.
+    {
+      const t = build();
+      const store = await t.FCM.emoteLoader.twitchNative({ clientId: 'cid', broadcasterId: '123' });
+      ok(store.GlobalOne, 'twitch emotes: globals load without an account');
+      eq(store.GlobalOne.source, 'Twitch Global', 'twitch emotes: and are labelled as global');
+      ok(store.ChanSub, 'twitch emotes: so do the channel’s own');
+      eq(store.ChanSub.source, 'Twitch Sub', 'twitch emotes: labelled by what they are');
+      eq(store.ChanBits.source, 'Twitch Bits', 'twitch emotes: bits emotes too');
+      ok(store.GlobalOne.url.includes('/emoticons/v2/g1/'), 'twitch emotes: the image is the Helix id');
+      ok(!t.calls.some((c) => c.includes('/chat/emotes/user')),
+        'twitch emotes: the user endpoint is not asked without a token');
+    }
+
+    // Signed in: the user endpoint pages until the cursor runs out.
+    {
+      const t = build({ userPages: [
+        { data: [{ id: 'u1', name: 'SubA', emote_type: 'subscriptions' }], pagination: { cursor: '1' } },
+        { data: [{ id: 'u2', name: 'FollowB', emote_type: 'follower' }], pagination: { cursor: '2' } },
+        { data: [{ id: 'u3', name: 'HypeC', emote_type: 'hypetrain' }] },
+      ] });
+      const store = await t.FCM.emoteLoader.twitchNative({
+        clientId: 'cid', token: 'tok', userId: '55', broadcasterId: '123',
+      });
+      ok(store.SubA && store.FollowB && store.HypeC, 'twitch emotes: every page is collected');
+      eq(store.FollowB.source, 'Twitch Follow', 'twitch emotes: follower emotes are named');
+      eq(store.HypeC.source, 'Twitch Hype Train', 'twitch emotes: so are hype train ones');
+      eq(t.calls.filter((c) => c.includes('/chat/emotes/user')).length, 3,
+        'twitch emotes: it stops when the cursor does');
+      ok(t.calls.some((c) => c.includes('/chat/emotes/user') && c.includes('broadcaster_id=123')),
+        'twitch emotes: the channel is named, so this channel’s follower emotes come too');
+    }
+
+    // Emote sets from USERSTATE, in chunks of 25.
+    {
+      const sets = {};
+      const ids = [];
+      for (let i = 0; i < 60; i++) { ids.push(`s${i}`); sets[`s${i}`] = [{ id: `e${i}`, name: `SetEmote${i}` }]; }
+      const t = build({ sets });
+      const store = await t.FCM.emoteLoader.twitchNative({ clientId: 'cid', token: 'tok', setIds: ids });
+      eq(Object.keys(store).filter((n) => n.startsWith('SetEmote')).length, 60,
+        'twitch emotes: every set is fetched');
+      eq(t.calls.filter((c) => c.includes('/chat/emotes/set')).length, 3,
+        'twitch emotes: in chunks of twenty-five');
+    }
+
+    // Sets need a token; without one they are not asked for.
+    {
+      const t = build({ sets: { a: [{ id: 'x', name: 'Nope' }] } });
+      const store = await t.FCM.emoteLoader.twitchNative({ clientId: 'cid', setIds: ['a'] });
+      ok(!store.Nope, 'twitch emotes: sets are not readable without a token');
+    }
+
+    // One source failing must not take the others with it.
+    {
+      const t = build({ userPages: [{ data: [{ id: 'u1', name: 'SubA' }] }], fail: ['/chat/emotes/user'] });
+      const store = await t.FCM.emoteLoader.twitchNative({
+        clientId: 'cid', token: 'tok', userId: '55', broadcasterId: '123',
+      });
+      ok(store.GlobalOne && store.ChanSub, 'twitch emotes: a refused endpoint loses only itself');
+      ok(!store.SubA, 'twitch emotes: and contributes nothing');
+    }
+
+    // The most specific label wins: a record already stored is not overwritten
+    // by a later, vaguer one.
+    {
+      const t = build({ userPages: [{ data: [{ id: 'c1', name: 'ChanSub', emote_type: 'subscriptions' }] }] });
+      const store = await t.FCM.emoteLoader.twitchNative({
+        clientId: 'cid', token: 'tok', userId: '55', broadcasterId: '123',
+      });
+      eq(store.ChanSub.source, 'Twitch Sub', 'twitch emotes: the same emote from two sources appears once');
+    }
+
+    // A cursor that never terminates has to terminate.
+    {
+      const pages = [];
+      for (let i = 0; i < 200; i++) pages.push({ data: [{ id: `p${i}`, name: `P${i}` }], pagination: { cursor: String(i + 1) } });
+      const t = build({ userPages: pages });
+      await t.FCM.emoteLoader.twitchNative({ clientId: 'cid', token: 'tok', userId: '55' });
+      ok(t.calls.filter((c) => c.includes('/chat/emotes/user')).length <= 60,
+        'twitch emotes: a runaway cursor is capped');
+    }
+  })();
+};
+
 suites.emotes = function () {
   function build() {
     const calls = [];

@@ -111,6 +111,7 @@
       case 'chat': overlay.chat(msg.msg); break;
       case 'batch': overlay.batch(msg.rows || []); break;
       case 'emotes': overlay.setEmotes(msg.platform, msg.kind, msg.store); break;
+      case 'needKickEmotes': fetchKickEmotesFromPage(msg.channel); break;
       case 'badges': overlay.setBadges(msg.platform, msg.badges); break;
       case 'deleteMsg': overlay.deleteMessage(msg.platform, msg.messageId); break;
       case 'deleteUser': overlay.deleteUser(msg.platform, msg.username); break;
@@ -195,6 +196,33 @@
       const hints = site.hints();
       if (hints.length) post({ cmd: 'hints', hints });
     }, delay));
+  }
+
+  /**
+   * Fetches Kick's emote list from the page itself.
+   *
+   * Kick sits behind Cloudflare, which can refuse a request that did not come
+   * from a browser tab — and the background worker is not one. This tab is, so
+   * when the worker comes back empty-handed it asks here instead. Only when the
+   * tab is actually on Kick: from anywhere else this would be a cross-origin
+   * request, and a content script does not carry the extension's permission to
+   * make one.
+   */
+  async function fetchKickEmotesFromPage(channel) {
+    if (site.id !== 'kick' || !overlay) return;
+    const slug = FCM.normalizeChannel(channel || '');
+    if (!slug) return;
+    try {
+      const res = await fetch(`https://kick.com/emotes/${encodeURIComponent(slug)}`, {
+        headers: { Accept: 'application/json' },
+      });
+      if (!res.ok) return;
+      const store = FCM.parseKickEmotePayload(await res.json());
+      const count = Object.keys(store).length;
+      if (!count || !overlay) return;
+      overlay.setEmotes('kick', 'native', store);
+      overlay.sys(`Loaded ${count} Kick emotes for this channel`);
+    } catch (e) { /* the picker simply has fewer emotes in it */ }
   }
 
   // ── Mounting ────────────────────────────────────────────────────────────────
