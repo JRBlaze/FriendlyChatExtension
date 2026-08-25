@@ -69,6 +69,16 @@
     </div>
     <div class="field">
       <div class="field-text">
+        <label for="usePageSession">Use the Twitch page's own session</label>
+        <small>Adds follow dates and Tier 1/2/3 gift buttons to the menu that opens when you click a
+          name in chat. Twitch tells its own page things it will not tell an API token, so this asks
+          the page instead — the one part of this extension that runs in the page's own world.
+          Gifting only opens Twitch's own checkout; nothing is bought here. Twitch only.</small>
+      </div>
+      <input type="checkbox" id="usePageSession">
+    </div>
+    <div class="field">
+      <div class="field-text">
         <label for="showNativeStats">Show bits, Kicks and channel points</label>
         <small>Read from the page you are on. Clicking one opens the site's own rewards or cheer
           menu, and the overlay steps aside while it is open.</small>

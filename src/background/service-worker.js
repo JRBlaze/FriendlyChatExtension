@@ -17,7 +17,8 @@ importScripts(
   '/src/background/kick-source.js',
   '/src/background/auth.js',
   '/src/background/send.js',
-  '/src/background/moderation.js'
+  '/src/background/moderation.js',
+  '/src/background/profile.js'
 );
 
 const FCM = self.FCM;
@@ -80,16 +81,28 @@ function makeSink(session, platform) {
     deleteUser: (username) => send(session, { type: 'deleteUser', platform, username: String(username) }),
     status: (state) => {
       conn.state = state;
-      send(session, { type: 'status', platform, state, channel: conn.channel });
+      // The channel's own id travels with the status. The overlay needs it to
+      // ask the page's session about a viewer's relationship to this channel,
+      // and this is the message that already says which channel that is.
+      send(session, {
+        type: 'status', platform, state, channel: conn.channel, roomId: conn.roomId || null,
+      });
     },
     roomId: (id) => {
       const next = id || null;
       const changed = conn.roomId !== next;
       conn.roomId = next;
+      // It arrives after the join, so the status that went out named no id.
+      if (changed && next) {
+        send(session, {
+          type: 'status', platform, state: conn.state, channel: conn.channel, roomId: next,
+        });
+      }
       // The channel's own emotes cannot be asked for until Twitch has said
       // which channel this is, and it says so after the join.
       if (changed && next && platform === 'twitch') {
         loadTwitchEmotes(session, platform).catch(() => {});
+        loadCheermotes(session, platform).catch(() => {});
       }
     },
     // The sets this account may use, which arrive with USERSTATE.
@@ -184,6 +197,40 @@ async function onJoined(session, platform, chatroomId) {
  * store more than once is safe: the view merges emotes rather than replacing
  * them, so each pass adds and nothing is ever lost.
  */
+/**
+ * The Cheermote prefixes this channel accepts, so a Cheer can be told apart
+ * from an ordinary word ending in digits before the message is sent.
+ *
+ * Worth asking the channel rather than assuming the global set, because a
+ * broadcaster's own Cheermotes are exactly the ones a regular of that channel
+ * types. A failure here is not worth reporting: the overlay falls back to the
+ * global list, which covers everything except those custom prefixes.
+ */
+async function loadCheermotes(session, platform) {
+  const conn = session.conns[platform];
+  if (!conn || platform !== 'twitch' || !conn.roomId) return;
+  const record = await FCM.auth.get('twitch');
+  if (!record || !record.accessToken) return;
+  const data = await FCM.getJson(
+    `${FCM.TWITCH_HELIX}/bits/cheermotes?broadcaster_id=${encodeURIComponent(conn.roomId)}`,
+    {
+      headers: {
+        Authorization: `Bearer ${record.accessToken}`,
+        'Client-Id': record.clientId,
+      },
+    }
+  );
+  const prefixes = Array.isArray(data && data.data)
+    ? data.data.map((entry) => entry && entry.prefix).filter(Boolean)
+    : [];
+  if (!prefixes.length) return;
+  // Merged with the global list rather than replacing it: the API answers for
+  // this channel, and a viewer who types a global Cheermote it omitted should
+  // still have it recognised.
+  const merged = Array.from(new Set([...FCM.GLOBAL_CHEERMOTES, ...prefixes]));
+  send(session, { type: 'cheermotes', platform, prefixes: merged });
+}
+
 async function loadTwitchEmotes(session, platform) {
   const conn = session.conns[platform];
   if (!conn || platform !== 'twitch') return;
@@ -391,6 +438,7 @@ chrome.runtime.onConnect.addListener((port) => {
               channel: session.conns[p].channel,
               state: session.conns[p].state,
               canModerate: session.conns[p].canModerate,
+              roomId: session.conns[p].roomId || null,
             };
             return acc;
           }, {}),
@@ -452,6 +500,23 @@ chrome.runtime.onConnect.addListener((port) => {
       case 'leave':
         leaveChannel(session, msg.platform);
         break;
+
+      case 'profile': {
+        // The channel the follow date is being asked about. Twitch wants the
+        // broadcaster's id and Kick wants the slug, so each is given what it
+        // asks for rather than one being converted into the other.
+        const on = session.conns[msg.platform] || {};
+        const where = msg.platform === 'twitch' ? on.roomId : on.channel;
+        const profile = await FCM.lookupProfile(msg.platform, msg.username, where);
+        send(session, {
+          type: 'profile',
+          id: msg.id,
+          platform: msg.platform,
+          username: msg.username,
+          profile,
+        });
+        break;
+      }
 
       case 'recheck':
         await refreshCounterpart(session, { announce: true });

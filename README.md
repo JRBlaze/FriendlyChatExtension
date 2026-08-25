@@ -74,7 +74,7 @@ feed. Open a Kick channel and it works the other way round.
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.5.0.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.6.0.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and a folder named `FriendlyChatExtension-main`. The
@@ -572,6 +572,7 @@ src/
     emotes.js          third-party emote providers
     auth.js            Twitch implicit + Kick PKCE sign-in, token storage
     send.js            posting a message to each platform's chat API
+    profile.js         who a chatter is: join date, follow date, sub length
   content/         everything that touches the page
     boot.js          channel detection, SPA navigation, the port
     overlay.js       the shadow-DOM panel, prompt, targets and settings sheet
@@ -581,6 +582,11 @@ src/
                      presents an input's interface over a contenteditable
     native.js        the site's own cards, balances and menus: measuring,
                      reading and driving them
+    page-bridge.js   the isolated side of the conversation with the page's own
+                     world, which treats every answer as untrusted
+    main-world.js    the ONLY file that runs in the page's own world: Twitch's
+                     follow dates and its gift-sub checkout, both of which the
+                     public API will not give us
     render.js        message tokenising and row building
     feed.js          the batched, bounded message feed
     sites.js         per-site selectors, the native composer and the

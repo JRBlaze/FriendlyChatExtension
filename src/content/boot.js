@@ -113,13 +113,15 @@
       case 'emotes': overlay.setEmotes(msg.platform, msg.kind, msg.store); break;
       case 'needKickEmotes': fetchKickEmotesFromPage(msg.channel); break;
       case 'badges': overlay.setBadges(msg.platform, msg.badges); break;
+      case 'cheermotes': overlay.setCheermotes(msg.prefixes); break;
+      case 'profile': overlay.profileResult(msg.id, msg.platform, msg.username, msg.profile); break;
       case 'deleteMsg': overlay.deleteMessage(msg.platform, msg.messageId); break;
       case 'deleteUser': overlay.deleteUser(msg.platform, msg.username); break;
 
       case 'status':
         if (msg.channel) activeJoins.set(msg.platform, msg.channel);
         else if (msg.state === 'idle') activeJoins.delete(msg.platform);
-        overlay.setStatus(msg.platform, msg.state, msg.channel);
+        overlay.setStatus(msg.platform, msg.state, msg.channel, msg.roomId);
         break;
 
       case 'counterpart':
@@ -162,7 +164,7 @@
       const conn = (msg.connections || {})[platform];
       if (conn && conn.channel) {
         activeJoins.set(platform, conn.channel);
-        overlay.setStatus(platform, conn.state, conn.channel);
+        overlay.setStatus(platform, conn.state, conn.channel, conn.roomId);
         if (conn.canModerate) overlay.setModerator(platform, true);
       }
     });

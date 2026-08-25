@@ -78,6 +78,26 @@
     return `${String(safe.getHours()).padStart(2, '0')}:${String(safe.getMinutes()).padStart(2, '0')}`;
   };
 
+  /**
+   * A date the way a person reads one: month, day and year.
+   *
+   * The day itself is the answer here, not how long ago it was. "9 years" and
+   * "3 months" are a summary of the date, and a summary is not what someone
+   * clicking a name is after — they want to see the day the account was made or
+   * the day this person started following, and judge it themselves.
+   *
+   * Rendered in the viewer's own locale, so the order of the parts is whatever
+   * they are used to reading.
+   *
+   * @returns {string} a date, or '' for anything that is not one
+   */
+  FCM.shortDate = function (value) {
+    if (!value) return '';
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return '';
+    return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+  };
+
   FCM.backoffDelay = function (attempt) {
     return Math.min(
       FCM.RECONNECT_BASE_DELAY_MS * (2 ** attempt),

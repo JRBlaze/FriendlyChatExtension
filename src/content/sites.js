@@ -137,6 +137,21 @@
    * nothing at all — which is exactly what it did.
    */
   // The real control around an element, or nothing if there is not one.
+  /**
+   * A value safe to drop inside a CSS attribute selector.
+   *
+   * The value is a username that came off a chat message, so it is not ours and
+   * a quote in it would end the selector early and throw. Logins never contain
+   * one, which is exactly why an unescaped version would survive every test and
+   * fail on whatever the platform allows next.
+   */
+  function cssQuote(value) {
+    if (window.CSS && typeof window.CSS.escape === 'function') {
+      return window.CSS.escape(String(value));
+    }
+    return String(value).replace(/["\\]/g, '\\$&');
+  }
+
   function clickableStrict(el) {
     if (!el) return null;
     const tag = el.tagName;
@@ -392,6 +407,26 @@
         'button[data-test-selector="chat-send-button"]',
       ]);
     },
+
+    /**
+     * This viewer's name as Twitch itself drew it in its own chat.
+     *
+     * Twitch stamps the login straight onto the name, which makes this exact
+     * rather than a text match — two people whose display names differ only by
+     * case are still told apart.
+     *
+     * The most recent one is returned: the card Twitch opens is anchored to the
+     * name that was clicked, and anchoring it to a message that has already
+     * scrolled away puts the card somewhere nobody is looking.
+     */
+    chatUsername(name) {
+      const login = FCM.normalizeChannel(name);
+      if (!login) return null;
+      const list = this.messageList();
+      if (!list) return null;
+      const found = list.querySelectorAll(`[data-a-user="${cssQuote(login)}"]`);
+      return found.length ? found[found.length - 1] : null;
+    },
   };
 
   const kick = {
@@ -575,6 +610,32 @@
         'button[aria-label*="send" i]',
         'button[title*="send" i]',
       ]);
+    },
+
+    /**
+     * This viewer's name as Kick itself drew it in its own chat.
+     *
+     * Kick puts nothing on the name but the name, so this matches on the text —
+     * case-insensitively, because Kick shows the display name and the overlay
+     * may hold either spelling.
+     *
+     * Kick's message list is virtualised: only the rows on screen exist at all.
+     * Someone who has scrolled away genuinely is not there to click, which is
+     * why the caller has to cope with finding nothing rather than treat it as
+     * an error.
+     */
+    chatUsername(name) {
+      const wanted = String(name || '').trim().toLowerCase();
+      if (!wanted) return null;
+      const list = this.messageList();
+      if (!list) return null;
+      const buttons = list.querySelectorAll('button[data-prevent-expand], button.font-bold, button');
+      let match = null;
+      buttons.forEach((btn) => {
+        if ((btn.textContent || '').trim().toLowerCase() !== wanted) return;
+        match = btn;
+      });
+      return match;
     },
   };
 

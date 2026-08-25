@@ -192,6 +192,70 @@
   // link with a stray bracket either side, not plain text.
   const URL_RE = /^([([{<"']*)(https?:\/\/[^\s]+)$/i;
 
+  // The same shape with the scheme left off. Almost nobody types the https:
+  // "kick.com/name" and "youtu.be/xYz" are what people actually paste, and both
+  // Twitch's and Kick's own chats draw them as links.
+  const BARE_RE = /^([([{<"']*)((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,24})([^\s]*)$/i;
+
+  // Trailing punctuation is almost never part of the link.
+  const TRAILING_PUNCT = /[.,!?;:'")\]}>]+$/;
+
+  // A bare host only becomes a link when its last label is a real top-level
+  // domain, because "any dotted word" would turn "node.js", "README.md" and
+  // "run.sh" into links pointing at nothing. Anything under www. is taken on
+  // the prefix alone.
+  const BARE_TLDS = new Set([
+    'com', 'net', 'org', 'edu', 'gov', 'int', 'mil', 'info', 'biz', 'name', 'pro',
+    'io', 'co', 'tv', 'gg', 'me', 'ai', 'app', 'dev', 'xyz', 'link', 'live', 'stream',
+    'online', 'site', 'shop', 'store', 'news', 'blog', 'wiki', 'art', 'fun', 'club',
+    'life', 'world', 'today', 'space', 'cloud', 'tech', 'media', 'video', 'watch',
+    'games', 'gallery', 'design', 'studio', 'social', 'chat', 'fm', 'am', 'ly', 'gl',
+    'to', 'be', 'cc', 'ws', 'uk', 'us', 'ca', 'de', 'fr', 'nl', 'es', 'it', 'se',
+    'no', 'fi', 'dk', 'br', 'au', 'nz', 'jp', 'kr', 'cn', 'in', 'ru', 'ua', 'tr',
+    'mx', 'ar', 'cl', 'pt', 'gr', 'cz', 'ro', 'hu', 'at', 'ch', 'ie', 'il',
+    'za', 'ph', 'id', 'th', 'vn', 'my', 'sg', 'hk', 'tw', 'eu',
+  ]);
+
+  /**
+   * A link token for one whitespace-separated word, or null when the word is
+   * not a link. The punctuation that has to stay as text comes back alongside
+   * it, because "(kick.com/name)." is a link with three characters of sentence
+   * wrapped around it.
+   *
+   * The visible text is always exactly what was typed, so a row can never show
+   * one address while pointing at another.
+   */
+  function linkTokenFor(word) {
+    const scheme = word.match(URL_RE);
+    if (scheme) {
+      const clean = scheme[2].replace(TRAILING_PUNCT, '');
+      // "https://" on its own is punctuation, not a destination.
+      if (!/^https?:\/\/[^/\s]/i.test(clean)) return null;
+      return {
+        lead: scheme[1],
+        token: { type: 'link', url: clean, text: clean },
+        tail: scheme[2].slice(clean.length),
+      };
+    }
+
+    const bare = word.match(BARE_RE);
+    if (!bare) return null;
+    const host = bare[2];
+    const tld = host.slice(host.lastIndexOf('.') + 1).toLowerCase();
+    if (!/^www\./i.test(host) && !BARE_TLDS.has(tld)) return null;
+    const rest = bare[3].replace(TRAILING_PUNCT, '');
+    // Whatever follows the host has to look like a path, a query or a fragment.
+    // Anything else means the dotted word was never an address.
+    if (rest && !/^[/?#]/.test(rest)) return null;
+    const text = host + rest;
+    return {
+      lead: bare[1],
+      // The scheme people left off. http would be a downgrade nobody asked for.
+      token: { type: 'link', url: `https://${text}`, text },
+      tail: bare[3].slice(rest.length),
+    };
+  }
+
   function expandTextRun(text, platform) {
     const out = [];
     if (!text) return out;
@@ -210,20 +274,13 @@
         return;
       }
 
-      const urlMatch = word.match(URL_RE);
-      if (urlMatch) {
-        const lead = urlMatch[1];
-        const rest = urlMatch[2];
-        // Trailing punctuation is almost never part of the link.
-        const clean = rest.replace(/[.,!?;:'")\]}>]+$/, '');
-        const tail = rest.slice(clean.length);
-        if (clean) {
-          buffer += lead;
-          flush();
-          out.push({ type: 'link', url: clean, text: clean });
-          if (tail) buffer += tail;
-          return;
-        }
+      const link = linkTokenFor(word);
+      if (link) {
+        buffer += link.lead;
+        flush();
+        out.push(link.token);
+        if (link.tail) buffer += link.tail;
+        return;
       }
 
       buffer += word;
@@ -364,6 +421,19 @@
       return FCM.escapeHtml(token.text);
     }).join('');
   }
+
+  /**
+   * Text with its links made clickable and everything else escaped, for the
+   * rows that are not chat: status lines, account notices, channel events.
+   * A sign-in page or a channel address named in one of those is worth clicking
+   * rather than retyping, and emotes are deliberately not expanded here — a
+   * status line is not something a viewer typed.
+   */
+  FCM.renderLinkedText = function (text) {
+    // No platform, so the emote lookup finds nothing and only links are split
+    // out of the run.
+    return serializeTokens(expandTextRun(String(text === null || text === undefined ? '' : text), null));
+  };
 
   FCM.renderMessageBody = function (platform, text, opts = {}) {
     let tokens;
@@ -526,7 +596,7 @@
     el.innerHTML = `<span class="fcm-sys-time">${FCM.ftime()}</span>`
       + '<span class="fcm-sys-tag">SYSTEM</span>'
       + `<span class="fcm-sys-label fcm-sys-${FCM.escapeHtml(sys.type)}">${FCM.escapeHtml(sys.label)}</span>`
-      + `<span class="fcm-sys-body">${FCM.escapeHtml(sys.message)}</span>`;
+      + `<span class="fcm-sys-body">${FCM.renderLinkedText(sys.message)}</span>`;
     return el;
   };
 
@@ -537,7 +607,7 @@
     el.innerHTML = `<span class="fcm-sys-time">${FCM.ftime()}</span>`
       + '<span class="fcm-sys-tag">EVENT</span>'
       + `<span class="fcm-sys-label fcm-sys-${platform}">${FCM.escapeHtml(FCM.PLATFORM_META[platform].name)}</span>`
-      + `<span class="fcm-sys-body">${FCM.escapeHtml(String(text || ''))}</span>`;
+      + `<span class="fcm-sys-body">${FCM.renderLinkedText(text)}</span>`;
     return el;
   };
 })(self.FCM);
