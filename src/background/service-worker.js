@@ -81,23 +81,12 @@ function makeSink(session, platform) {
     deleteUser: (username) => send(session, { type: 'deleteUser', platform, username: String(username) }),
     status: (state) => {
       conn.state = state;
-      // The channel's own id travels with the status. The overlay needs it to
-      // ask the page's session about a viewer's relationship to this channel,
-      // and this is the message that already says which channel that is.
-      send(session, {
-        type: 'status', platform, state, channel: conn.channel, roomId: conn.roomId || null,
-      });
+      send(session, { type: 'status', platform, state, channel: conn.channel });
     },
     roomId: (id) => {
       const next = id || null;
       const changed = conn.roomId !== next;
       conn.roomId = next;
-      // It arrives after the join, so the status that went out named no id.
-      if (changed && next) {
-        send(session, {
-          type: 'status', platform, state: conn.state, channel: conn.channel, roomId: next,
-        });
-      }
       // The channel's own emotes cannot be asked for until Twitch has said
       // which channel this is, and it says so after the join.
       if (changed && next && platform === 'twitch') {
@@ -438,7 +427,6 @@ chrome.runtime.onConnect.addListener((port) => {
               channel: session.conns[p].channel,
               state: session.conns[p].state,
               canModerate: session.conns[p].canModerate,
-              roomId: session.conns[p].roomId || null,
             };
             return acc;
           }, {}),

@@ -42,14 +42,6 @@
   FCM.TWITCH_AUTH_URL = 'https://id.twitch.tv/oauth2/authorize';
   FCM.TWITCH_VALIDATE_URL = 'https://id.twitch.tv/oauth2/validate';
   FCM.TWITCH_HELIX = 'https://api.twitch.tv/helix';
-  // Twitch's own GraphQL, which its website runs on. Used for one thing only:
-  // the day an account was created, which it answers for anyone with no token
-  // at all. Helix wants a connected account for the same fact, and the day
-  // someone joined Twitch is not worth putting behind a sign-in.
-  FCM.TWITCH_GQL = 'https://gql.twitch.tv/gql';
-  // The client id Twitch's own web player uses. Public, in every request the
-  // site makes, and the only one this endpoint accepts.
-  FCM.TWITCH_GQL_CLIENT_ID = 'kimne78kx3ncx6brgo4mv6wki5h1ko';
   FCM.TWITCH_SCOPES = [
     'chat:read', 'chat:edit', 'user:write:chat', 'user:read:emotes',
     // Moderation, so a mod or the broadcaster can act from the overlay.
@@ -141,12 +133,6 @@
                                 // pinned messages stay visible above the panel
     showNativeStats: true,      // read bits, Kicks and channel points off the
                                 // page, and open the site's own rewards menu
-    // Ask the Twitch page's own signed-in session for the things Twitch will
-    // not tell an API token: when a viewer started following, and the gift
-    // buttons, which open Twitch's own checkout. Off by default because it is
-    // the one part of this extension that runs code in the page's own world —
-    // with it off, the extension behaves exactly as it did before it existed.
-    usePageSession: false,
     // Composer
     sendTargets: ['twitch', 'kick'],  // which platforms a typed message goes to
     // Credentials the OAuth flows use. Defaults are the desktop app's, and can

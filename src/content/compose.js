@@ -64,8 +64,6 @@
     // who scrolled away is genuinely not there.
     const onUserCard = ctx.onUserCard || function () { return false; };
     const onProfile = ctx.onProfile || function () { return Promise.resolve(null); };
-    const canGift = ctx.canGift || function () { return false; };
-    const onGift = ctx.onGift || function () { return Promise.resolve(false); };
     // Which site the panel is sitting on. The site's own card only exists for
     // the chat that page is actually showing.
     const hostPlatform = ctx.hostPlatform || '';
@@ -586,38 +584,6 @@
           closeMenu();
         },
       });
-
-      // ── Gifting a subscription ────────────────────────────────────────────
-      //
-      // These open Twitch's own checkout and nothing else. No money moves
-      // through this extension: Twitch draws the price and the confirm button
-      // and takes the payment itself, exactly as if the viewer had used the
-      // gift button on Twitch's own card. Shown only when the page has actually
-      // handed over a way to open it.
-      if (canGift(platform)) {
-        const heading = document.createElement('div');
-        heading.className = 'fcm-um-section';
-        heading.textContent = `Gift a sub to ${name}`;
-        menu.appendChild(heading);
-
-        const tiers = document.createElement('div');
-        tiers.className = 'fcm-um-tiers';
-        [['1000', 'Tier 1'], ['2000', 'Tier 2'], ['3000', 'Tier 3']].forEach(([tier, label]) => {
-          const btn = document.createElement('button');
-          btn.className = 'fcm-um-tier';
-          btn.textContent = label;
-          btn.title = `Open ${meta.name}'s own checkout to gift ${name} a ${label} sub`;
-          btn.addEventListener('click', async () => {
-            closeMenu();
-            const opened = await onGift(platform, tier, name);
-            toast(opened
-              ? `Opening ${meta.name}'s checkout to gift ${name} a ${label} sub`
-              : `${meta.name} did not offer a gift option here`);
-          });
-          tiers.appendChild(btn);
-        });
-        menu.appendChild(tiers);
-      }
 
       // ── Moderation, shown only where this viewer actually holds the badge ──
       if (canModerate(platform)) {

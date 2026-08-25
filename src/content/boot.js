@@ -121,7 +121,7 @@
       case 'status':
         if (msg.channel) activeJoins.set(msg.platform, msg.channel);
         else if (msg.state === 'idle') activeJoins.delete(msg.platform);
-        overlay.setStatus(msg.platform, msg.state, msg.channel, msg.roomId);
+        overlay.setStatus(msg.platform, msg.state, msg.channel);
         break;
 
       case 'counterpart':
@@ -164,7 +164,7 @@
       const conn = (msg.connections || {})[platform];
       if (conn && conn.channel) {
         activeJoins.set(platform, conn.channel);
-        overlay.setStatus(platform, conn.state, conn.channel, conn.roomId);
+        overlay.setStatus(platform, conn.state, conn.channel);
         if (conn.canModerate) overlay.setModerator(platform, true);
       }
     });

@@ -41,7 +41,7 @@
    * a sign-in when Twitch itself hands it to a stranger.
    */
   async function twitchCreatedAt(login) {
-    const res = await FCM.getJson(FCM.TWITCH_GQL, {
+    const res = await FCM.getJson(FCM.TWITCH_GQL_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

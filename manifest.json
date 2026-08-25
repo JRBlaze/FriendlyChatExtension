@@ -44,7 +44,6 @@
         "src/content/feed.js",
         "src/content/emote-input.js",
         "src/content/compose.js",
-        "src/content/page-bridge.js",
         "src/content/native.js",
         "src/content/overlay.js",
         "src/content/sites.js",
@@ -52,16 +51,6 @@
       ],
       "run_at": "document_idle",
       "all_frames": false
-    },
-    {
-      "matches": [
-        "*://*.twitch.tv/*"
-      ],
-      "js": [
-        "src/content/main-world.js"
-      ],
-      "run_at": "document_idle",
-      "world": "MAIN"
     }
   ],
   "action": {
