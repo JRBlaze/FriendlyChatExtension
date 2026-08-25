@@ -968,30 +968,12 @@
   text-transform: uppercase;
   color: var(--text-dim);
 }
-.fcm-um-timeouts,
-.fcm-um-tiers {
+.fcm-um-timeouts {
   display: flex;
   gap: 4px;
   padding: 2px 11px 6px;
   flex-wrap: wrap;
 }
-/* Gifting opens the site's own checkout, so these are drawn as a way in rather
-   than as a moderation control: the platform's colour, not the danger red. */
-.fcm-um-tier {
-  flex: 1 1 auto;
-  min-width: 48px;
-  height: 22px;
-  padding: 0 7px;
-  border-radius: 5px;
-  border: 1px solid var(--twitch-border);
-  background: var(--twitch-dim);
-  color: var(--twitch-text);
-  font-family: var(--fcm-mono);
-  font-size: 10px;
-  font-weight: 600;
-  cursor: pointer;
-}
-.fcm-um-tier:hover { border-color: var(--twitch); color: var(--text); }
 .fcm-um-timeout {
   flex: 1 1 auto;
   min-width: 34px;

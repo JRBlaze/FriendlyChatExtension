@@ -41,7 +41,7 @@
    * a sign-in when Twitch itself hands it to a stranger.
    */
   async function twitchCreatedAt(login) {
-    const res = await FCM.getJson(FCM.TWITCH_GQL, {
+    const res = await FCM.getJson(FCM.TWITCH_GQL_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -57,72 +57,79 @@
     return user || null;
   }
 
-  async function twitchProfile(login, broadcasterId) {
+  async function twitchProfile(login, broadcasterId, canModerate) {
     const record = await FCM.auth.get('twitch');
-    const basic = await twitchCreatedAt(login);
-    if (!basic && !record) return { reason: 'not-found' };
 
-    const profile = {
-      displayName: (basic && basic.displayName) || login,
-      avatar: '',
-      createdAt: (basic && basic.createdAt) || '',
-      accountType: '',
-      about: '',
-      followedAt: '',
-      followedReason: '',
-    };
-
-    // Everything past the join date needs the connected account: the avatar and
-    // Twitch's own word for the account come from Helix, and the follow date
-    // needs a token Twitch will accept for this channel.
+    // No account connected. Twitch's own GraphQL still gives the join date to
+    // anyone, which is the part of this worth having without a sign-in.
     if (!record || !record.accessToken) {
-      profile.followedReason = 'not-connected';
-      return profile.createdAt ? profile : { reason: 'not-connected' };
+      const basic = await twitchCreatedAt(login);
+      if (!basic) return { reason: 'not-found' };
+      return {
+        displayName: basic.displayName || login,
+        avatar: '',
+        createdAt: basic.createdAt || '',
+        accountType: '',
+        about: '',
+        followedAt: '',
+        followedReason: 'not-connected',
+      };
     }
+
+    // With a token, Helix carries the join date as well, so the GraphQL call is
+    // not made at all — one request per lookup rather than two.
     const headers = {
       Authorization: `Bearer ${record.accessToken}`,
       'Client-Id': record.clientId,
     };
-
     const data = await FCM.getJson(
       `${FCM.TWITCH_HELIX}/users?login=${encodeURIComponent(login)}`,
       { headers }
     );
     const user = data && Array.isArray(data.data) ? data.data[0] : null;
-    if (!user) return profile.createdAt ? profile : { reason: 'not-found' };
+    if (!user) return { reason: 'not-found' };
 
-    profile.displayName = user.display_name || profile.displayName;
-    profile.avatar = user.profile_image_url || '';
-    profile.createdAt = profile.createdAt || user.created_at || '';
-    // Twitch's own word for the account, when there is one. Partners and staff
-    // are worth surfacing; a blank type is an ordinary account and is not worth
-    // a line of its own.
-    profile.accountType = user.broadcaster_type || user.type || '';
-    profile.about = user.description || '';
+    const profile = {
+      displayName: user.display_name || login,
+      avatar: user.profile_image_url || '',
+      createdAt: user.created_at || '',
+      // Twitch's own word for the account, when there is one. Partners and staff
+      // are worth surfacing; a blank type is an ordinary account and is not worth
+      // a line of its own.
+      accountType: user.broadcaster_type || user.type || '',
+      about: user.description || '',
+      followedAt: '',
+      followedReason: '',
+    };
 
-    // Twitch will only say when someone started following if the account asking
-    // runs the channel or moderates it — that is the rule on the endpoint, not
-    // a matter of scopes alone. For everyone else the call succeeds and comes
-    // back empty, so the absence is reported as "not allowed to know" rather
-    // than as "they do not follow", which would be a lie.
     if (!broadcasterId) {
       profile.followedReason = 'no-channel';
       return profile;
     }
+
+    // Twitch answers this only for the broadcaster and their moderators. For
+    // everyone else the call succeeds and comes back empty — the same shape it
+    // returns for somebody who simply does not follow.
+    //
+    // Those two are opposite answers and must not be told the same way, so
+    // whether this viewer can moderate here decides which one it is. A mod
+    // seeing an empty list is being told the person does not follow; anyone
+    // else is being told nothing at all.
     const follows = await FCM.getJson(
       `${FCM.TWITCH_HELIX}/channels/followers`
       + `?broadcaster_id=${encodeURIComponent(broadcasterId)}`
       + `&user_id=${encodeURIComponent(user.id)}`,
       { headers }
     );
-    const entry = follows && Array.isArray(follows.data) ? follows.data[0] : null;
-    if (entry && entry.followed_at) profile.followedAt = entry.followed_at;
-    else if (!follows) profile.followedReason = 'refused';
-    else if (typeof follows.total === 'number' && !follows.data.length) {
-      // The shape Twitch returns to someone who may not see the list: a total
-      // and nothing else. Indistinguishable from "does not follow" except that
-      // a viewer who cannot moderate was never going to be told either way.
-      profile.followedReason = 'not-a-moderator';
+    if (!follows || !Array.isArray(follows.data)) {
+      profile.followedReason = 'refused';
+      return profile;
+    }
+    const entry = follows.data[0];
+    if (entry && entry.followed_at) {
+      profile.followedAt = entry.followed_at;
+    } else {
+      profile.followedReason = canModerate ? 'not-following' : 'not-a-moderator';
     }
     return profile;
   }
@@ -177,7 +184,23 @@
    * @returns {Promise<{displayName?: string, avatar?: string, createdAt?: string,
    *   accountType?: string, about?: string, reason?: string}>}
    */
-  FCM.lookupProfile = async function (platform, username, channel) {
+  // Answers that stop being true on their own, and so must not be remembered.
+  // Connecting an account or a network coming back turns every one of these
+  // into a different answer, and a viewer who signs in should not keep being
+  // told to sign in for the next half hour.
+  const TRANSIENT = new Set(['not-connected', 'refused', 'failed', 'no-channel']);
+
+  function worthCaching(value) {
+    if (!value) return false;
+    if (TRANSIENT.has(value.reason)) return false;
+    // A whole-profile answer is only as good as its weakest half: one that
+    // could not reach the follow date is re-asked rather than pinned for half
+    // an hour with a reason that may already be stale.
+    if (TRANSIENT.has(value.followedReason)) return false;
+    return true;
+  }
+
+  FCM.lookupProfile = async function (platform, username, channel, canModerate) {
     const name = FCM.normalizeChannel(username);
     if (!name || !FCM.PLATFORMS.includes(platform)) return { reason: 'bad-request' };
     // Keyed by the channel too. The follow date is about this pair of people,
@@ -189,14 +212,14 @@
     let value;
     try {
       value = platform === 'twitch'
-        ? await twitchProfile(name, channel)
+        ? await twitchProfile(name, channel, canModerate)
         : await kickProfile(name, channel);
     } catch (e) {
       return { reason: 'failed' };
     }
-    // A miss is worth remembering too, or a name the platform does not know is
-    // re-asked on every click.
-    cachePut(key, value);
+    // A name the platform does not know is worth remembering too, so it is not
+    // re-asked on every click — but only answers that will still be true later.
+    if (worthCaching(value)) cachePut(key, value);
     return value;
   };
 })(self.FCM);

@@ -86,33 +86,6 @@
     // Reads and drives the site's own chat: the cards above the message list,
     // and the bits and channel-points controls below it.
     const native = FCM.createNativeBridge(site);
-    // Talks to the part of the extension running in the page's own world, which
-    // exists only on Twitch and only when the viewer has switched it on. Held
-    // as null until then, and every caller copes with null — that is what keeps
-    // the setting being off from being a special case anywhere else.
-    let pageBridge = null;
-    // What that world says it can actually do here, re-asked on each channel.
-    let pageCan = { relationship: false, gifting: false };
-
-    function refreshPageBridge() {
-      const wanted = hostPlatform === 'twitch' && settings.usePageSession === true;
-      if (!wanted) {
-        if (pageBridge) { pageBridge.close(); pageBridge = null; }
-        pageCan = { relationship: false, gifting: false };
-        return;
-      }
-      if (pageBridge) return;
-      // Guarded because this whole feature is meant to fail closed: if the
-      // bridge module is not there, the overlay carries on without it rather
-      // than throwing part-way through applying settings.
-      if (typeof FCM.createPageBridge !== 'function') return;
-      pageBridge = FCM.createPageBridge();
-      pageBridge.capabilities().then((can) => {
-        // Torn down while the page was being asked.
-        if (!pageBridge) return;
-        pageCan = can;
-      });
-    }
     // Set while one of the site's own menus is open where the panel would cover
     // it — the rewards panel, the cheer menu. The panel steps aside until it
     // closes rather than painting over a menu the user just opened.
@@ -1062,15 +1035,6 @@
             </label>
             <input type="checkbox" data-set="showNativeStats">
           </div>
-          ${hostPlatform === 'twitch' ? `<div class="fcm-field">
-            <label>Use this page's Twitch session
-              <small>Adds follow dates and Tier 1/2/3 gift buttons to the menu that
-                opens when you click a name. Twitch tells its own page things it will
-                not tell an API token, so this asks the page. Gifting opens Twitch's
-                own checkout — nothing is bought here.</small>
-            </label>
-            <input type="checkbox" data-set="usePageSession">
-          </div>` : ''}
           <div class="fcm-field">
             <label>Theme<small>Follows the site's own dark or light mode</small></label>
             <select data-set="theme">
@@ -1201,9 +1165,6 @@
       sendTargets = new Set(stored.filter((p) => FCM.SEND_PLATFORMS.includes(p)));
       if (!sendTargets.size) sendTargets = new Set(FCM.SEND_PLATFORMS);
       applyTheme();
-      // Switched on or off from the settings sheet or another tab, so the
-      // bridge follows the setting rather than only the mount.
-      refreshPageBridge();
       root.dataset.animate = String(!!settings.animations);
       root.dataset.timestamps = String(settings.timestamps !== false);
       root.dataset.badges = String(settings.showBadges !== false);
@@ -1694,9 +1655,9 @@
           // What is publicly known about a chatter, for the head of their menu.
           // The menu opens before this resolves and fills in when it lands, so
           // a slow or failed lookup never delays the actions.
-          onProfile: async (platform, name) => {
+          onProfile: (platform, name) => {
             const id = `p${++sendSeq}`;
-            const fromWorker = await new Promise((resolve) => {
+            return new Promise((resolve) => {
               const timer = setTimeout(() => {
                 pendingProfiles.delete(id);
                 resolve({ reason: 'timeout' });
@@ -1707,38 +1668,6 @@
               });
               onCommand({ cmd: 'profile', id, platform, username: name });
             });
-
-            // The page's own session knows the things the API will not say.
-            // Asked second and merged over the top, so switching it off leaves
-            // exactly what the worker found.
-            if (platform !== 'twitch' || !pageBridge || !pageCan.relationship) return fromWorker;
-            const roomId = status.twitch && status.twitch.roomId;
-            const extra = await pageBridge.relationship(name, roomId || '');
-            if (!extra) return fromWorker;
-            const merged = { ...fromWorker };
-            if (extra.createdAt) merged.createdAt = extra.createdAt;
-            if (extra.followedAt) {
-              merged.followedAt = extra.followedAt;
-              merged.followedReason = '';
-            }
-            if (extra.subscriptionMonths) merged.subscribedMonths = extra.subscriptionMonths;
-            if (extra.subscriptionTier) merged.subscriptionTier = extra.subscriptionTier;
-            return merged;
-          },
-          // Whether the gift buttons are worth drawing at all here.
-          canGift: (platform) => platform === hostPlatform && platform === 'twitch'
-            && !!pageBridge && pageCan.gifting,
-          // Opens Twitch's own gift checkout. This extension never takes a
-          // payment: Twitch draws the price and the confirm button, and the
-          // viewer finishes it there or closes it.
-          onGift: async (platform, tier, recipient) => {
-            if (!pageBridge || !pageCan.gifting) return false;
-            const opened = await pageBridge.giftSub(tier, recipient);
-            if (opened) {
-              setPeek(true);
-              schedulePeekCheck();
-            }
-            return opened;
           },
           // Opening the site's own card means the site draws something over its
           // own chat, which the panel is sitting on top of — so it has to step
@@ -1782,9 +1711,6 @@
         // would otherwise keep a callback alive pointing at a dead panel.
         pendingProfiles.forEach((resolve) => resolve({ reason: 'closed' }));
         pendingProfiles.clear();
-        // Its listener is on the page's window, which outlives this overlay —
-        // a channel switch would otherwise leave one behind on every hop.
-        if (pageBridge) { pageBridge.close(); pageBridge = null; }
         clearInterval(placementTimer);
         clearPeekTimers();
         clearFocusTimers();
@@ -1813,11 +1739,8 @@
 
       batch(rows) { rows.forEach((row) => feed.addMessage(row, filter)); },
 
-      setStatus(platform, state, chan, roomId) {
-        // The id is kept across a status that does not carry one: it arrives
-        // after the join, and a later "connected" with no id must not erase it.
-        const had = status[platform] && status[platform].roomId;
-        status[platform] = { state, channel: chan || null, roomId: roomId || (chan ? had : null) || null };
+      setStatus(platform, state, chan) {
+        status[platform] = { state, channel: chan || null };
         if (state === 'idle') feed.dropPlatform(platform);
         if (chan) filter.add(platform);
         renderChips();

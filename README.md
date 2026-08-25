@@ -582,11 +582,6 @@ src/
                      presents an input's interface over a contenteditable
     native.js        the site's own cards, balances and menus: measuring,
                      reading and driving them
-    page-bridge.js   the isolated side of the conversation with the page's own
-                     world, which treats every answer as untrusted
-    main-world.js    the ONLY file that runs in the page's own world: Twitch's
-                     follow dates and its gift-sub checkout, both of which the
-                     public API will not give us
     render.js        message tokenising and row building
     feed.js          the batched, bounded message feed
     sites.js         per-site selectors, the native composer and the

@@ -145,13 +145,50 @@
   FCM.rememberChatter = function (platform, author) {
     const key = `${platform}:${String(author).toLowerCase()}`;
     const existing = chatters.get(key);
-    if (existing) { existing.time = Date.now(); return; }
+    if (existing) {
+      existing.time = Date.now();
+      // Re-inserted so the map's own order is recency order. Without this the
+      // oldest *key* was dropped rather than the least recently heard from, so
+      // in a channel with more than a few hundred names a regular who had been
+      // talking since you arrived was evicted ahead of somebody who said one
+      // word and left.
+      chatters.delete(key);
+      chatters.set(key, existing);
+      return;
+    }
     chatters.set(key, { name: author, platform, time: Date.now() });
     if (chatters.size > CHATTER_LIMIT) chatters.delete(chatters.keys().next().value);
   };
 
   FCM.recentChatters = function () {
     return [...chatters.values()];
+  };
+
+  /**
+   * Forgets everything that belonged to the channel being left.
+   *
+   * This module is loaded once for the page and outlives the overlay, which is
+   * torn down and rebuilt on every channel change. Nothing here was ever
+   * cleared, so a session spent moving between channels kept every one of their
+   * emote sets — tens of thousands of entries after an hour, and worse than the
+   * memory: a name that is an emote somewhere you have been renders as that
+   * emote here, where the real chat shows plain text and you could not send it
+   * if you tried.
+   *
+   * Everything dropped here is sent again by the worker when the next channel
+   * is joined, so this costs nothing but the re-send that already happens.
+   */
+  FCM.resetChannelView = function () {
+    FCM.PLATFORMS.forEach((platform) => {
+      view.emotes[platform] = { native: {}, thirdparty: {} };
+    });
+    // Global badges are the same everywhere and are re-sent on join regardless;
+    // the channel's own are the ones that would be wrong here.
+    view.badges.twitch.channel = {};
+    chatters.clear();
+    // Anything cached against this — the picker list, the autocomplete index —
+    // has to rebuild rather than keep offering what is no longer loaded.
+    view.emoteVersion++;
   };
 
   FCM.setViewSettings = function (settings) {

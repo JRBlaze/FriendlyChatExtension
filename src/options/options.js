@@ -5,7 +5,7 @@
 
   const CHECKBOXES = [
     'autoOpen', 'autoConnectHost', 'startCollapsed', 'hideNativeChat',
-    'revealHighlights', 'showNativeStats', 'usePageSession',
+    'revealHighlights', 'showNativeStats',
     'showHistory', 'showEvents', 'thirdPartyEmotes', 'timestamps', 'showBadges',
     'animations',
   ];
