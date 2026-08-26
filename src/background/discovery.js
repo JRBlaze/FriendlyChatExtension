@@ -287,6 +287,13 @@
     }
   }
 
+  // Stamped on every record written since page links stopped being read at the
+  // moment the address changed. Anything older that came from a page link may
+  // have been read off the channel being left rather than the one arrived at,
+  // and there is no way to tell which from the record itself — so the mark is
+  // what separates them.
+  const LINK_RECORD_VERSION = 2;
+
   FCM.links = {
     key: (platform, channel) => `${platform}:${FCM.normalizeChannel(channel)}`,
 
@@ -299,8 +306,25 @@
     // overwritten by a guess.
     async set(platform, channel, record) {
       const store = await readLinkStore();
-      store[FCM.links.key(platform, channel)] = { ...record, at: Date.now() };
+      store[FCM.links.key(platform, channel)] = {
+        ...record, at: Date.now(), v: LINK_RECORD_VERSION,
+      };
       await writeLinkStore(store);
+    },
+
+    /**
+     * Whether a remembered pairing is still worth believing.
+     *
+     * A mapping typed in by hand always is. An automatic one is trusted unless
+     * it came from a page link and predates the fix that stopped those being
+     * read off the wrong page — those cannot be told apart from the good ones,
+     * so they are re-derived instead of carried forward.
+     */
+    trustworthy(record) {
+      if (!record) return false;
+      if (record.manual) return true;
+      if (record.match !== 'page-link') return true;
+      return (record.v || 0) >= LINK_RECORD_VERSION;
     },
 
     async clear(platform, channel) {
@@ -423,7 +447,7 @@
     // first is also what lets one already written down be corrected.
     hints.forEach((href) => push(FCM.slugFromUrl(href, other), 'page-link'));
 
-    const fresh = saved && !saved.manual
+    const fresh = saved && !saved.manual && FCM.links.trustworthy(saved)
       && Date.now() - (saved.at || 0) < FCM.LINK_CACHE_TTL_MS;
     if (fresh && saved.none && !candidates.length) return null;
     if (fresh && !saved.none) push(saved.channel, saved.match || 'cache');
@@ -433,7 +457,15 @@
     for (const candidate of candidates) {
       const summary = await FCM.platformApi.summary(other, candidate.slug);
       if (summary.exists) {
-        await FCM.links.set(platform, self, { channel: summary.channel, match: candidate.match });
+        // Only written when it is news. Re-writing on every visit reset the
+        // clock, so a guess made once was renewed each time it was used and
+        // could never expire — a wrong one included, which is how one survived
+        // its own six-hour life indefinitely.
+        const unchanged = saved && !saved.none
+          && FCM.normalizeChannel(saved.channel) === FCM.normalizeChannel(summary.channel);
+        if (!unchanged) {
+          await FCM.links.set(platform, self, { channel: summary.channel, match: candidate.match });
+        }
         return { ...summary, match: candidate.match };
       }
     }

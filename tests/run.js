@@ -4901,11 +4901,15 @@ suites.counterpartswitch = function () {
       } finally { w.teardown(); }
     }
 
-    // ── A pairing written down by the old fault repairs itself ──
+    // ── A pairing written down by the old fault is not used at all ──
     //
-    // Anyone who hit this has kick:irongoddess -> cashmeow in storage. A link
-    // on the page in front of you outranks something worked out earlier, which
-    // is what lets it be corrected rather than waiting out the cache.
+    // Anyone who hit this has kick:irongoddess -> cashmeow in storage, and
+    // neither Kick page links to Twitch, so nothing would ever arrive to argue
+    // with it. Worse, using it rewrote its own timestamp, so the six hours it
+    // was supposed to live never elapsed and the wrong answer was permanent.
+    //
+    // A page-link pairing from before the fix cannot be told from a good one,
+    // so it is re-derived rather than carried forward.
     {
       const w = boot({
         'kick:irongoddess': { channel: 'cashmeow', match: 'page-link', at: Date.now() },
@@ -4913,14 +4917,45 @@ suites.counterpartswitch = function () {
       try {
         w.connect();
         w.send({ cmd: 'hello', site: 'kick', channel: 'irongoddess', hints: [] });
-        await wait(400);
-        eq(seen(w), 'cashmeow', 'switch: the remembered pairing is used until something better arrives');
-        w.send({ cmd: 'hints', hints: ['https://twitch.tv/irongoddess'] });
-        await wait(400);
-        eq(seen(w), 'irongoddess', 'switch: the page corrects it');
+        await wait(500);
+        eq(seen(w), 'irongoddess',
+          'switch: a pairing from before the fix is not believed, with no page link needed');
         const links = w.storage.local.fcm_channel_links_v1;
         eq(links['kick:irongoddess'].channel, 'irongoddess',
-          'switch: and the correction is written down, so it does not come back');
+          'switch: and what replaces it is written down');
+      } finally { w.teardown(); }
+    }
+
+    // ── A page link recorded since the fix is still believed ──
+    //
+    // The whole point of page links is the streamer whose names differ. Throwing
+    // the good ones out with the bad would trade one wrong merge for another.
+    {
+      const w = boot({
+        'kick:irongoddess': { channel: 'cashmeow', match: 'page-link', at: Date.now(), v: 2 },
+      });
+      try {
+        w.connect();
+        w.send({ cmd: 'hello', site: 'kick', channel: 'irongoddess', hints: [] });
+        await wait(500);
+        eq(seen(w), 'cashmeow',
+          'switch: a page link found since the fix still outranks the same-name guess');
+      } finally { w.teardown(); }
+    }
+
+    // ── Using a remembered pairing does not renew it ──
+    {
+      const old = Date.now() - (60 * 60 * 1000);
+      const w = boot({
+        'kick:irongoddess': { channel: 'irongoddess', match: 'same-name', at: old, v: 2 },
+      });
+      try {
+        w.connect();
+        w.send({ cmd: 'hello', site: 'kick', channel: 'irongoddess', hints: [] });
+        await wait(500);
+        const links = w.storage.local.fcm_channel_links_v1;
+        eq(links['kick:irongoddess'].at, old,
+          'switch: an unchanged answer keeps the age it was found at, so it can expire');
       } finally { w.teardown(); }
     }
 
