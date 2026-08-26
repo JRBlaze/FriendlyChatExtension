@@ -177,8 +177,20 @@
 
   // ── Hints ───────────────────────────────────────────────────────────────────
 
+  /**
+   * Tells the worker which channel is on screen.
+   *
+   * Deliberately carries no hints. This runs the moment the address changes,
+   * and on a single-page app the address changes before the page it names has
+   * been drawn — so anything scraped here is the channel we just left. On Kick
+   * that meant arriving at one streamer and being offered the last one's Twitch
+   * chat, which was then written down as this channel's counterpart.
+   *
+   * The scans scheduled after this send them once the new page exists, which is
+   * the only moment they mean anything.
+   */
   function sendHello() {
-    post({ cmd: 'hello', site: site.id, channel: currentChannel, hints: site.hints() });
+    post({ cmd: 'hello', site: site.id, channel: currentChannel, hints: [] });
   }
 
   // The about/social panels render well after the chat does, so the page is
