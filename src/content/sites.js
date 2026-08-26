@@ -285,14 +285,44 @@
     };
   };
 
-  // Scrapes links to the other platform out of the channel page. A link the
-  // streamer put in their own about panel is the most reliable way to know
-  // which account on the other platform is theirs.
-  function scrapeHints(otherHostPattern) {
+  /**
+   * Scrapes links to the other platform out of the channel page. A link the
+   * streamer put in their own about panel is the most reliable way to know
+   * which account on the other platform is theirs.
+   *
+   * Only links that are actually laid out count, which is the same rule the
+   * rest of this file already follows: an element with no box is one the site
+   * has finished with. Kick leaves the previous channel's about panel mounted
+   * after a click through to the next one. The card still reads "About
+   * CashMeow" and still holds their Twitch link, and it measures nothing at
+   * all. Reading it offered the last streamer's Twitch chat on the next
+   * streamer's page, and then wrote that down as this channel's pairing.
+   *
+   * That is why only one channel ever caused it: a leftover panel can only
+   * mislead when the streamer put a link on it in the first place.
+   *
+   * Links sitting in the chat are ignored as well. Those belong to whoever
+   * pasted them rather than to the streamer, and no one viewer should get to
+   * decide which account the channel is paired with.
+   *
+   * Measuring is safe in a window that is not being painted: layout still runs
+   * when it is asked for. It is `requestAnimationFrame` that stops, which is a
+   * trap documented elsewhere in here and not one this shares.
+   */
+  function scrapeHints(otherHostPattern, site) {
+    let chat = null;
+    try {
+      chat = site && site.chatContainer ? site.chatContainer() : null;
+    } catch (e) {
+      chat = null;
+    }
     const out = [];
     document.querySelectorAll('a[href]').forEach((a) => {
       const href = a.getAttribute('href') || '';
-      if (otherHostPattern.test(href)) out.push(href);
+      if (!otherHostPattern.test(href)) return;
+      if (!a.getClientRects().length) return;
+      if (chat && chat.contains(a)) return;
+      out.push(href);
     });
     return Array.from(new Set(out)).slice(0, 40);
   }
@@ -435,7 +465,7 @@
     },
 
     hints() {
-      return scrapeHints(/kick\.com/i);
+      return scrapeHints(/kick\.com/i, this);
     },
 
     composer() {
@@ -648,7 +678,7 @@
     },
 
     hints() {
-      return scrapeHints(/twitch\.tv/i);
+      return scrapeHints(/twitch\.tv/i, this);
     },
 
     composer() {

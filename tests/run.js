@@ -1180,6 +1180,106 @@ suites.chatcollapse = function () {
   });
 };
 
+// Which links on a channel page are allowed to say who the streamer is on the
+// other platform.
+//
+// Kick leaves the previous channel's about panel mounted after a click through
+// to the next streamer. The card still reads "About CashMeow" and still holds
+// their Twitch link; it simply measures nothing. Verified on kick.com: on
+// /cashmeow the link's box is 340x191, and after clicking through to /odablock
+// the very same link is still in the document at 0x0.
+//
+// That is why one channel and only one channel caused it. A leftover panel can
+// only mislead if the streamer put a link on it to begin with.
+suites.stalepanel = function () {
+  const anchor = (href, { laidOut = true, inChat = false } = {}) => ({
+    getAttribute: (name) => (name === 'href' ? href : null),
+    getClientRects: () => (laidOut ? [{ width: 340, height: 191 }] : []),
+    _inChat: inChat,
+  });
+
+  // A page holding the given anchors, with a chat column big enough to be
+  // recognised as one.
+  const page = (anchors) => {
+    const chat = {
+      getBoundingClientRect: () => ({ width: 340, height: 660, top: 0, left: 0,
+        right: 340, bottom: 660 }),
+      contains: (el) => !!(el && el._inChat),
+      querySelector: () => null,
+    };
+    const isChatSel = (sel) => /right-column|chat-room|chatroom|chat-container|chat-scroll|chat-list|message-container/.test(sel);
+    return makeSandbox({
+      document: {
+        querySelectorAll: (sel) => {
+          if (sel === 'a[href]') return anchors;
+          return isChatSel(sel) ? [chat] : [];
+        },
+        querySelector: (sel) => (isChatSel(sel) ? chat : null),
+      },
+      window: {},
+    });
+  };
+
+  const hintsOn = (id, anchors) => {
+    const FCM = load(page(anchors), ...SHARED, 'src/content/sites.js');
+    return FCM.SITES[id].hints();
+  };
+
+  // 1. The streamer's own link, on their own page, is exactly what this is for.
+  eq(hintsOn('kick', [anchor('https://www.twitch.tv/cashmeow')]),
+    ['https://www.twitch.tv/cashmeow'],
+    'stalepanel: a link the streamer put on their own page is read');
+
+  // 2. The reported bug. Same link, same document, no box: this is the panel
+  //    for the channel that was left, and it must not speak for this one.
+  eq(hintsOn('kick', [anchor('https://www.twitch.tv/cashmeow', { laidOut: false })]),
+    [],
+    'stalepanel: the previous channel\'s leftover panel is not read');
+
+  // 3. Both at once, which is what the next streamer's page actually looks
+  //    like when they have a Twitch link of their own.
+  eq(hintsOn('kick', [
+    anchor('https://www.twitch.tv/cashmeow', { laidOut: false }),
+    anchor('https://www.twitch.tv/odablock'),
+  ]), ['https://www.twitch.tv/odablock'],
+  'stalepanel: the channel on screen wins over the one left behind');
+
+  // 4. A link someone pasted in chat belongs to them, not to the streamer. One
+  //    viewer does not get to decide which account the channel is paired with.
+  eq(hintsOn('kick', [anchor('https://www.twitch.tv/someoneelse', { inChat: true })]),
+    [],
+    'stalepanel: a link pasted in chat does not pair the channel');
+
+  // 5. Nothing here is Kick-specific, and Twitch gets the same treatment.
+  eq(hintsOn('twitch', [anchor('https://kick.com/realone')]),
+    ['https://kick.com/realone'],
+    'stalepanel: twitch reads a laid-out link too');
+  eq(hintsOn('twitch', [anchor('https://kick.com/leftover', { laidOut: false })]),
+    [],
+    'stalepanel: twitch ignores one with no box');
+
+  // 6. Duplicates still collapse. Kick renders the about panel twice, once for
+  //    each breakpoint, and only one of the pair is ever laid out.
+  eq(hintsOn('kick', [
+    anchor('https://www.twitch.tv/cashmeow'),
+    anchor('https://www.twitch.tv/cashmeow', { laidOut: false }),
+  ]), ['https://www.twitch.tv/cashmeow'],
+  'stalepanel: the responsive duplicate does not double the answer');
+
+  // 7. A pairing written down by a version that read the leftover panel cannot
+  //    be told from a good one by looking at it, so it is re-derived instead of
+  //    being served for the rest of its six hours.
+  const D = load(makeSandbox(), ...SHARED, 'src/background/discovery.js');
+  eq(D.links.trustworthy({ match: 'page-link', v: 2 }), false,
+    'stalepanel: a page-link pairing from before the fix is not carried forward');
+  eq(D.links.trustworthy({ match: 'page-link', v: 3 }), true,
+    'stalepanel: one written since is');
+  eq(D.links.trustworthy({ match: 'same-name', v: 2 }), true,
+    'stalepanel: pairings that never came from a page link are untouched');
+  eq(D.links.trustworthy({ manual: true, v: 1 }), true,
+    'stalepanel: and a mapping set by hand always stands');
+};
+
 suites.sites = function () {
   const FCM = load(makeSandbox(), ...SHARED, 'src/background/discovery.js');
 
@@ -3813,7 +3913,11 @@ suites.navigation = function () {
         // one, an announcement that wrongly carried links would look identical
         // to one that correctly carried none.
         querySelectorAll: (sel) => (String(sel) === 'a[href]'
-          ? [{ getAttribute: () => 'https://kick.com/someoneelse' }]
+          // Laid out, like an anchor on a page a viewer can see. A real one
+          // always answers this; only the panels a site has finished with
+          // measure nothing.
+          ? [{ getAttribute: () => 'https://kick.com/someoneelse',
+            getClientRects: () => [{ width: 340, height: 191 }] }]
           : []),
         createElement: () => ({ dataset: {}, style: {}, classList: { add() {}, remove() {}, contains: () => false, toggle() {} }, appendChild() {}, addEventListener() {} }),
       },
@@ -4842,6 +4946,18 @@ suites.reload = function () {
 suites.counterpartswitch = function () {
   const { bootWorker, wait } = require('./background.js');
 
+  // What the code currently stamps on a page-link pairing, read off the code
+  // rather than written down here: the number goes up every time page links
+  // turn out to have been read off the wrong thing, and a fixture meant to be
+  // current should not silently become a fixture meant to be stale.
+  const CURRENT_LINK_VERSION = (() => {
+    const D = load(makeSandbox(), ...SHARED, 'src/background/discovery.js');
+    for (let v = 1; v <= 50; v++) {
+      if (D.links.trustworthy({ match: 'page-link', v })) return v;
+    }
+    throw new Error('no page-link record version is trusted');
+  })();
+
   const known = new Set(['cashmeow', 'irongoddess']);
   const boot = (storage) => {
     const w = bootWorker({
@@ -4956,13 +5072,18 @@ suites.counterpartswitch = function () {
       } finally { w.teardown(); }
     }
 
-    // ── A page link recorded since the fix is still believed ──
+    // ── A page link recorded by the current version is still believed ──
     //
     // The whole point of page links is the streamer whose names differ. Throwing
     // the good ones out with the bad would trade one wrong merge for another.
+    //
+    // Stamped with whatever the code considers current rather than a number
+    // written in here, so that raising it means re-examining the fixtures that
+    // are meant to be stale instead of quietly invalidating this one too.
     {
       const w = boot({
-        'kick:irongoddess': { channel: 'cashmeow', match: 'page-link', at: Date.now(), v: 2 },
+        'kick:irongoddess': { channel: 'cashmeow', match: 'page-link', at: Date.now(),
+          v: CURRENT_LINK_VERSION },
       });
       try {
         w.connect();

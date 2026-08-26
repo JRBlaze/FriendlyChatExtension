@@ -287,12 +287,20 @@
     }
   }
 
-  // Stamped on every record written since page links stopped being read at the
-  // moment the address changed. Anything older that came from a page link may
-  // have been read off the channel being left rather than the one arrived at,
-  // and there is no way to tell which from the record itself — so the mark is
-  // what separates them.
-  const LINK_RECORD_VERSION = 2;
+  // Stamped on every record written since page links became trustworthy, and
+  // raised each time they turn out not to have been.
+  //
+  //   1 → 2  they were read at the moment the address changed, which on a
+  //          single-page app is before the page they describe exists.
+  //   2 → 3  they were read off the previous channel's about panel, which Kick
+  //          leaves mounted and unrendered after a click through to the next
+  //          streamer.
+  //
+  // A record cannot say which page it was scraped from, so anything written
+  // before the fault was found has to be re-derived rather than carried
+  // forward. Without this the pairing already written down keeps being served
+  // for its full six hours, and the fix appears not to have worked.
+  const LINK_RECORD_VERSION = 3;
 
   FCM.links = {
     key: (platform, channel) => `${platform}:${FCM.normalizeChannel(channel)}`,
