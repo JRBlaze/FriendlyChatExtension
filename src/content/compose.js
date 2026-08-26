@@ -18,7 +18,7 @@
   FCM.allEmoteEntries = function () {
     if (emoteIndex && emoteIndexVersion === FCM.view.emoteVersion) return emoteIndex;
 
-    const seen = new Set();
+    const seen = new Map();
     const items = [];
     FCM.PLATFORMS.forEach((platform) => {
       const sets = FCM.view.emotes[platform];
@@ -26,9 +26,18 @@
       [sets.native, sets.thirdparty].forEach((store) => {
         Object.keys(store || {}).forEach((name) => {
           const emote = store[name];
-          if (!emote || !emote.url || seen.has(name)) return;
-          seen.add(name);
-          items.push({
+          if (!emote || !emote.url) return;
+          const already = seen.get(name);
+          if (already) {
+            // The same name in both stores is one emote listed once, and the
+            // first store to have it decides how it looks. Whose it is, though,
+            // is only ever learnt: the platform's own list and a provider's list
+            // do not both know, so whichever does gets to say.
+            if (emote.channel) already.channel = true;
+            if (emote.owner && !already.owner) already.owner = emote.owner;
+            return;
+          }
+          const entry = {
             type: 'emote',
             name,
             // Folded once here rather than on every keystroke of every search.
@@ -42,7 +51,9 @@
             // by this, so a subscriber sees their channels by name instead of
             // one undifferentiated pile of "Twitch Sub".
             owner: emote.owner || '',
-          });
+          };
+          seen.set(name, entry);
+          items.push(entry);
         });
       });
     });

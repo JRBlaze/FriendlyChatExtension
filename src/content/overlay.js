@@ -422,6 +422,9 @@
     // watch full-width leaves this sitting over the video, which is the one
     // thing the viewer just said they did not want.
     let pageChatHidden = false;
+    // Consecutive ticks the chat has read as collapsed. Two are needed to act
+    // on it, so a column mid-layout is not mistaken for one put away.
+    let collapsedTicks = 0;
 
     /**
      * Follows the site's own show/hide chat control.
@@ -432,18 +435,27 @@
      * a floating button is still something in the way of a video someone has
      * just cleared the chat off.
      *
-     * Only asked once the chat has been found laid out at least once, so a page
-     * still building its chat column is never mistaken for one that has been
-     * collapsed.
+     * Two readings in a row are needed before hiding, and none before showing
+     * again. A chat column exists for a moment during page load with no size
+     * yet, and hiding for one tick and coming straight back is worse than
+     * taking half a second to notice — while a chat that is genuinely collapsed
+     * stays collapsed, so it is only ever half a second late.
+     *
+     * This used to wait for the chat to have been found laid out at least once,
+     * which read as caution and was actually a hole: someone who keeps chat
+     * collapsed never lays it out at all, so on the load where the overlay most
+     * obviously should not appear, it always did.
      */
     function syncPageChatVisibility() {
-      const collapsed = !!(lastGoodRect && site.chatCollapsed && site.chatCollapsed());
-      if (collapsed === pageChatHidden) return;
-      pageChatHidden = collapsed;
-      root.classList.toggle('fcm-page-chat-hidden', collapsed);
+      const collapsed = !!(site.chatCollapsed && site.chatCollapsed());
+      collapsedTicks = collapsed ? collapsedTicks + 1 : 0;
+      const hidden = collapsedTicks >= 2;
+      if (hidden === pageChatHidden) return;
+      pageChatHidden = hidden;
+      root.classList.toggle('fcm-page-chat-hidden', hidden);
       // Nothing of ours is on screen to be covered, so nothing is standing
       // aside for the site's menus either.
-      if (collapsed) setPeek(false);
+      if (hidden) setPeek(false);
       else syncPlacement();
     }
 
