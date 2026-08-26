@@ -1882,7 +1882,17 @@
         enableDragAndResize();
         setCollapsed(!!settings.startCollapsed);
         setVisible(settings.autoOpen !== false);
-        feed.addSys(`[Merged] Watching ${FCM.PLATFORM_META[hostPlatform].name}/${channel}`);
+        // The version is on this line because reloading an extension does not
+        // reload the pages already open — the old content script keeps running
+        // in every one of them until each is reloaded. Without something on
+        // screen saying which one is running, "I updated and it still does it"
+        // and "I updated and the page is still on the old one" look identical,
+        // and one of those was spent chasing a bug that was already fixed.
+        const version = (() => {
+          try { return chrome.runtime.getManifest().version; } catch (e) { return ''; }
+        })();
+        feed.addSys(`[Merged] v${version} · Watching `
+          + `${FCM.PLATFORM_META[hostPlatform].name}/${channel}`);
         showEmpty();
         return api;
       },

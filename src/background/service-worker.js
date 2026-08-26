@@ -497,7 +497,17 @@ chrome.runtime.onConnect.addListener((port) => {
         const channel = FCM.normalizeChannel(msg.channel);
         const changedChannel = session.hostChannel !== channel || session.site !== site;
         session.site = site;
-        session.hints = Array.isArray(msg.hints) ? msg.hints.slice(0, 40) : [];
+        // Links that arrive with the announcement of a channel are discarded,
+        // whatever the page sent. They can only have been read at the moment the
+        // address changed, which on a single-page app is before the page it
+        // names exists — so they describe the channel just left.
+        //
+        // The page half no longer sends any, and this does not depend on that.
+        // Reloading an extension leaves the old content script running in every
+        // tab already open until each one is reloaded, so the worker is the
+        // half that can be sure it is current, and it is the half that decides.
+        // The scans send them separately, once there is a page to read.
+        session.hints = [];
 
         if (changedChannel) {
           teardown(session);
