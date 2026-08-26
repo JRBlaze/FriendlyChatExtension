@@ -230,6 +230,41 @@
   };
 
   /**
+   * The same emote at the largest size its provider offers.
+   *
+   * Every store holds the size the feed draws at, which is the right choice
+   * there and far too small blown up in a preview — a 28px image at 112px is a
+   * smear. Each provider spells its sizes into the url, so the bigger one is a
+   * substitution rather than another request to find out.
+   *
+   * Anything not recognised comes back untouched: a preview of the size we
+   * already have is worth more than a broken image, and providers add hosts
+   * without asking.
+   */
+  FCM.largerEmoteUrl = function (url) {
+    const value = String(url || '');
+    if (!value) return '';
+    // Twitch: .../<id>/default/dark/2.0
+    if (value.includes('static-cdn.jtvnw.net/emoticons')) {
+      return value.replace(/\/[0-9](?:\.0)?$/, '/3.0');
+    }
+    // 7TV: .../2x.webp, and whatever extension it was served as
+    if (value.includes('7tv.app') || value.includes('7tv.io')) {
+      return value.replace(/\/[1-4]x(\.[a-z0-9]+)$/i, '/4x$1');
+    }
+    // BTTV: .../emote/<id>/2x
+    if (value.includes('betterttv.net')) {
+      return value.replace(/\/[1-3]x$/, '/3x');
+    }
+    // FFZ: .../<id>/2, sometimes with an extension
+    if (value.includes('frankerfacez.com') || value.includes('cdn.ffz')) {
+      return value.replace(/\/[124](\.[a-z0-9]+)?$/i, '/4$1');
+    }
+    // Kick already serves one size, and it is the big one.
+    return value;
+  };
+
+  /**
    * An emote by name, from whichever platform has one. The composer can send to
    * either, so a name is drawn if either side knows it.
    */
@@ -469,9 +504,13 @@
   function serializeTokens(tokens) {
     return tokens.map((token) => {
       if (token.type === 'emote') {
-        const title = token.source ? `${token.name} (${token.source})` : token.name;
+        // No `title`: the overlay draws its own preview on hover, and the
+        // browser's tooltip appears on the same pause, in the same place, with
+        // less in it. Two tooltips for one emote is worse than either alone.
+        // `alt` still carries the name, for a screen reader and for the preview
+        // to look the emote up by.
         return `<img class="fcm-emote ${token.cls}" src="${FCM.escapeHtml(token.url)}"`
-          + ` alt="${FCM.escapeHtml(token.name)}" title="${FCM.escapeHtml(title)}" loading="lazy">`;
+          + ` alt="${FCM.escapeHtml(token.name)}" loading="lazy">`;
       }
       if (token.type === 'link') {
         return `<a href="${FCM.escapeHtml(token.url)}" target="_blank" rel="noopener noreferrer"`

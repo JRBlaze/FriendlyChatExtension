@@ -183,7 +183,9 @@
 
     function cellHtml(item, index) {
       const fav = isFavourite(item.name);
-      return `<div class="fcm-emote-cell" data-index="${index}" title="${esc(item.name)}">`
+      // No `title` here either: the panel's own preview covers a cell in the
+      // picker the same way it covers an emote in a message.
+      return `<div class="fcm-emote-cell" data-index="${index}">`
         + `<img src="${esc(item.url)}" alt="${esc(item.name)}" loading="lazy">`
         + `<button class="fcm-emote-fav${fav ? ' fcm-emote-fav-on' : ''}"`
         + ` data-fav="${esc(item.name)}" tabindex="-1"`

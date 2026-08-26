@@ -276,6 +276,36 @@ suites.render = function () {
   const partial = FCM.renderMessageBody('twitch', 'PogUUU', {});
   missing(partial.html, 'cdn.7tv/pogu.webp', 'render: partial word is not an emote');
 
+  // ── The bigger copy, for the hover preview ───────────────────────────────
+  //
+  // Every store holds the size the feed draws at, which blown up to preview
+  // size is a smear. Each provider spells its sizes into the url, so the
+  // bigger one is a substitution rather than another request to find out.
+  {
+    const bigger = FCM.largerEmoteUrl;
+    eq(bigger('https://static-cdn.jtvnw.net/emoticons/v2/25/default/dark/2.0'),
+      'https://static-cdn.jtvnw.net/emoticons/v2/25/default/dark/3.0', 'render: twitch emote at 3.0');
+    eq(bigger('https://static-cdn.jtvnw.net/emoticons/v2/25/default/dark/1.0'),
+      'https://static-cdn.jtvnw.net/emoticons/v2/25/default/dark/3.0', 'render: whatever size it started at');
+    eq(bigger('https://cdn.7tv.app/emote/60aeab8/2x.webp'),
+      'https://cdn.7tv.app/emote/60aeab8/4x.webp', 'render: 7TV at 4x');
+    eq(bigger('https://cdn.7tv.app/emote/60aeab8/2x.gif'),
+      'https://cdn.7tv.app/emote/60aeab8/4x.gif', 'render: keeping the format it was served as');
+    eq(bigger('https://cdn.betterttv.net/emote/5f1b018/2x'),
+      'https://cdn.betterttv.net/emote/5f1b018/3x', 'render: BTTV at 3x, the largest it has');
+    eq(bigger('https://cdn.frankerfacez.com/emote/1234/2'),
+      'https://cdn.frankerfacez.com/emote/1234/4', 'render: FFZ at 4');
+
+    // Kick serves one size and it is already the big one.
+    eq(bigger('https://files.kick.com/emotes/37226/fullsize'),
+      'https://files.kick.com/emotes/37226/fullsize', 'render: Kick is left alone');
+    // A host nobody has taught it about is worth showing at the size we have.
+    eq(bigger('https://some.new.host/emote/abc'), 'https://some.new.host/emote/abc',
+      'render: an unrecognised host comes back untouched');
+    eq(bigger(''), '', 'render: and nothing stays nothing');
+    eq(bigger(null), '', 'render: including a missing url');
+  }
+
   // Links.
   const link = FCM.renderMessageBody('twitch', 'see https://example.com/a?b=1&c=2 now', {});
   contains(link.html, 'href="https://example.com/a?b=1&amp;c=2"', 'render: link href is escaped once');
@@ -3019,7 +3049,7 @@ suites.resilience = function () {
     missing(el.innerHTML, '" onerror=', 'resilience: a username cannot open a new attribute');
   });
 
-  // And in an emote name and url, which land in src/alt/title.
+  // And in an emote name and url, which land in src and alt.
   FCM.setEmotes('twitch', 'thirdparty', {
     'evil"onerror="alert(1)': { url: 'https://cdn/x.png', source: '7TV' },
     safe: { url: 'https://cdn/x.png" onerror="alert(1)', source: '"><b>' },
@@ -3027,8 +3057,13 @@ suites.resilience = function () {
   const emoteHtml = FCM.renderMessageBody('twitch', 'evil"onerror="alert(1) safe', {});
   missing(emoteHtml.html, '"onerror="', 'resilience: an emote name cannot break out of its attribute');
   missing(emoteHtml.html, '" onerror="', 'resilience: an emote url cannot break out of its attribute');
-  missing(emoteHtml.html, '"><b>', 'resilience: an emote source cannot break out of its attribute');
   contains(emoteHtml.html, '&quot;', 'resilience: quotes in emote fields are escaped');
+  // The source is no longer written into the markup at all — it used to sit in
+  // a `title`, which the hover preview replaced. A field that never reaches the
+  // page cannot break out of anything, and this says so rather than leaving an
+  // assertion that passes because it is testing nothing.
+  missing(emoteHtml.html, '"><b>', 'resilience: a hostile emote source reaches no attribute');
+  missing(emoteHtml.html, 'title=', 'resilience: emotes carry no title for it to reach');
 
   // A malicious badge image url lands in src.
   const badgeHtml = FCM.renderBadges('kick', [{ type: 'mod', image_url: 'x" onerror="alert(1)' }]);

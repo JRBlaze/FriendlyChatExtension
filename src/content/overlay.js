@@ -175,6 +175,11 @@
 
         <div class="fcm-resize"><div class="fcm-resize-corner"></div></div>
         <div class="fcm-toast"></div>
+        <div class="fcm-emote-peek fcm-hidden" aria-hidden="true">
+          <img class="fcm-emote-peek-img" alt="">
+          <div class="fcm-emote-peek-name"></div>
+          <div class="fcm-emote-peek-from"></div>
+        </div>
       </div>
     `;
 
@@ -228,6 +233,112 @@
     // Scrolls and nothing else. Coming back to the live end is about reading,
     // so the caret is left wherever the viewer put it.
     jumpEl.addEventListener('click', () => feed.scrollToBottom());
+
+    // ── Holding still over an emote ───────────────────────────────────────────
+    //
+    // Chat emotes are drawn small enough to read a line of text around, which is
+    // right for reading and no use at all for "what is that". A pause over one
+    // shows it at the largest size its provider has, with its name and where it
+    // came from.
+    //
+    // One delegated listener on the panel, which covers both the feed and the
+    // picker, rather than a pair on every emote in a feed of four hundred rows.
+    const EMOTE_PEEK_DELAY_MS = 1000;
+    const peekEl = $('.fcm-emote-peek');
+    const peekImg = $('.fcm-emote-peek-img');
+    const peekName = $('.fcm-emote-peek-name');
+    const peekFrom = $('.fcm-emote-peek-from');
+    let emotePeekTimer = null;
+    let peekedEl = null;
+
+    function hideEmotePeek() {
+      clearTimeout(emotePeekTimer);
+      emotePeekTimer = null;
+      peekedEl = null;
+      peekEl.classList.add('fcm-hidden');
+    }
+
+    // The emote under the pointer, whether it is a row in the feed, a cell in
+    // the picker or a line of the autocomplete.
+    function emoteImageAt(target) {
+      if (!target || !target.closest) return null;
+      return target.closest('.fcm-emote, .fcm-emote-cell img, .fcm-ac-item img');
+    }
+
+    /**
+     * Puts the preview beside the emote, inside the panel.
+     *
+     * Above it by preference, below when there is no room above — the pointer
+     * is at the emote, so covering what is underneath is fine and covering the
+     * emote itself is not.
+     */
+    function placeEmotePeek(anchor) {
+      const box = panel.getBoundingClientRect();
+      const at = anchor.getBoundingClientRect();
+      const own = peekEl.getBoundingClientRect();
+      const gap = 8;
+      let top = at.top - box.top - own.height - gap;
+      if (top < 4) top = at.bottom - box.top + gap;
+      top = Math.max(4, Math.min(top, box.height - own.height - 4));
+      let left = at.left - box.left + (at.width / 2) - (own.width / 2);
+      left = Math.max(4, Math.min(left, box.width - own.width - 4));
+      peekEl.style.left = `${Math.round(left)}px`;
+      peekEl.style.top = `${Math.round(top)}px`;
+    }
+
+    function showEmotePeek(img) {
+      const name = img.getAttribute('alt') || '';
+      if (!name) return;
+      const known = FCM.findEmote(name);
+      const src = (known && known.url) || img.getAttribute('src') || '';
+      if (!src) return;
+
+      peekImg.src = FCM.largerEmoteUrl(src);
+      peekImg.alt = name;
+      peekName.textContent = name;
+      // Whose it is says more than which provider served it, so it leads.
+      const owner = known && known.owner;
+      // A Twitch emote in a message arrives as an id and a position rather than
+      // by name, so it is drawn without ever being in a store and the lookup
+      // above finds nothing. The row still says which platform drew it, which
+      // is less than the store would have said and better than saying nothing.
+      const fromClass = img.classList.contains('twitch-emote') ? 'Twitch'
+        : img.classList.contains('kick-emote') ? 'Kick' : '';
+      const source = (known && known.source) || fromClass;
+      peekFrom.textContent = owner
+        ? `${owner}${source ? ` · ${source}` : ''}`
+        : source;
+      peekFrom.classList.toggle('fcm-hidden', !peekFrom.textContent);
+
+      peekEl.classList.remove('fcm-hidden');
+      // Measured only once it is on screen, or it has no size to place by.
+      placeEmotePeek(img);
+    }
+
+    panel.addEventListener('mouseover', (e) => {
+      const img = emoteImageAt(e.target);
+      if (!img || img === peekedEl) return;
+      hideEmotePeek();
+      peekedEl = img;
+      emotePeekTimer = setTimeout(() => {
+        // Gone from under the pointer while we waited: a trimmed row, a
+        // re-rendered picker.
+        if (peekedEl !== img || !img.isConnected) { hideEmotePeek(); return; }
+        showEmotePeek(img);
+      }, EMOTE_PEEK_DELAY_MS);
+    });
+
+    panel.addEventListener('mouseout', (e) => {
+      const img = emoteImageAt(e.target);
+      if (!img || img !== peekedEl) return;
+      // Moving within the same image is not leaving it.
+      if (e.relatedTarget && emoteImageAt(e.relatedTarget) === img) return;
+      hideEmotePeek();
+    });
+
+    // A feed that scrolls out from under the pointer, or a picker that closes,
+    // leaves the preview pointing at nothing.
+    feedEl.addEventListener('scroll', hideEmotePeek, { passive: true });
 
     // ── Placement ─────────────────────────────────────────────────────────────
 
@@ -1787,6 +1898,7 @@
         clearInterval(placementTimer);
         clearPeekTimers();
         clearFocusTimers();
+        hideEmotePeek();
         window.removeEventListener('resize', syncPlacement);
         window.removeEventListener('scroll', syncPlacement, true);
         document.removeEventListener('click', schedulePeekCheck, true);
