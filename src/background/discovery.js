@@ -413,13 +413,21 @@
       if (norm && !candidates.some((c) => c.slug === norm)) candidates.push({ slug: norm, match });
     };
 
-    if (saved && !saved.manual && Date.now() - (saved.at || 0) < FCM.LINK_CACHE_TTL_MS) {
-      if (saved.none) return null;
-      push(saved.channel, saved.match || 'cache');
-    }
-
-    // Links the streamer put on their own channel page are the strongest signal.
+    // Links the streamer put on their own channel page are the strongest signal
+    // short of a mapping set by hand, so they are tried first — including ahead
+    // of what was worked out last time.
+    //
+    // They used to come second, behind the remembered answer, which is how a
+    // wrong pairing outlived the mistake that made it: once written down it won
+    // for six hours against the page that disagreed with it. Trying the page
+    // first is also what lets one already written down be corrected.
     hints.forEach((href) => push(FCM.slugFromUrl(href, other), 'page-link'));
+
+    const fresh = saved && !saved.manual
+      && Date.now() - (saved.at || 0) < FCM.LINK_CACHE_TTL_MS;
+    if (fresh && saved.none && !candidates.length) return null;
+    if (fresh && !saved.none) push(saved.channel, saved.match || 'cache');
+
     push(self, 'same-name');
 
     for (const candidate of candidates) {

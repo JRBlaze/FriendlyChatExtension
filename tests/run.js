@@ -3808,7 +3808,13 @@ suites.navigation = function () {
         documentElement: { appendChild() {}, className: '', dataset: {}, getAttribute: () => null },
         body: { className: '' },
         querySelector: () => null,
-        querySelectorAll: () => [],
+        // A page carrying a link to the other platform, so "were the page's own
+        // links sent" is a question this harness can actually answer. Without
+        // one, an announcement that wrongly carried links would look identical
+        // to one that correctly carried none.
+        querySelectorAll: (sel) => (String(sel) === 'a[href]'
+          ? [{ getAttribute: () => 'https://kick.com/someoneelse' }]
+          : []),
         createElement: () => ({ dataset: {}, style: {}, classList: { add() {}, remove() {}, contains: () => false, toggle() {} }, appendChild() {}, addEventListener() {} }),
       },
       chrome: {
@@ -3892,6 +3898,8 @@ suites.navigation = function () {
       joinsFor(port) { return port.sent.filter((m) => m.cmd === 'join').map((m) => m.channel); },
       allJoins() { return ports.flatMap((p) => p.sent.filter((m) => m.cmd === 'join').map((m) => m.channel)); },
       hellos() { return ports.flatMap((p) => p.sent.filter((m) => m.cmd === 'hello').map((m) => m.channel)); },
+      helloMessages() { return ports.flatMap((p) => p.sent.filter((m) => m.cmd === 'hello')); },
+      hintMessages() { return ports.flatMap((p) => p.sent.filter((m) => m.cmd === 'hints')); },
       runTimersOfLength(ms) {
         timers.timeouts.filter((t) => t.ms === ms && !t.cancelled).forEach((t) => t.fn());
       },
@@ -3932,6 +3940,23 @@ suites.navigation = function () {
       newPort._recv({ type: 'ready', site: 'twitch', channel: 'bravo', connections: {} });
       await t.flush();
       eq(t.joinsFor(newPort), ['bravo'], 'nav: only the new channel is joined');
+    }
+
+    // ── Announcing a channel carries no links scraped from the page ──
+    //
+    // This runs the moment the address changes, and a single-page app changes
+    // the address before it draws the page. Anything read then belongs to the
+    // channel just left — which is how arriving at one Kick streamer offered
+    // the previous one's Twitch chat and wrote it down as this one's pair.
+    // The links come later, from the scans, once the page they describe exists.
+    {
+      const t = boot('/alpha');
+      await t.flush();
+      await t.navigateTo('/bravo');
+      const hellos = t.helloMessages();
+      ok(hellos.length >= 2, 'nav: both channels were announced');
+      ok(hellos.every((m) => Array.isArray(m.hints) && m.hints.length === 0),
+        'nav: and neither announcement carried links read off the page');
     }
 
     // ── What the render module held for the old channel is dropped ──
@@ -4806,6 +4831,116 @@ suites.reload = function () {
 
 // Typing in a channel name to merge two that are not called the same thing.
 // Driven through the real worker, over the port, the way the overlay does it.
+// Moving to another channel on the same site.
+//
+// Reported from Kick: arriving at one streamer while still being offered the
+// last one’s Twitch chat, with their name in the header. The address changes
+// before a single-page app has drawn the page it names, so the links scraped
+// at that moment belong to the channel just left — and the wrong pairing they
+// produced was then written down and won for six hours against the page that
+// disagreed with it.
+suites.counterpartswitch = function () {
+  const { bootWorker, wait } = require('./background.js');
+
+  const known = new Set(['cashmeow', 'irongoddess']);
+  const boot = (storage) => {
+    const w = bootWorker({
+      fetchImpl: async (url, init) => {
+        const u = String(url);
+        const m = /kick[.]com[/]api[/]v[0-9][/]channels[/]([^/?]+)$/.exec(u);
+        if (m) {
+          return { ok: true, json: async () => ({
+            id: 9, user_id: 77, slug: m[1], chatroom: { id: 55 },
+            livestream: { session_title: 'live', viewer_count: 3, categories: [] },
+            user: { username: m[1], profile_pic: '' },
+          }) };
+        }
+        if (u.includes('gql.twitch.tv')) {
+          const asked = JSON.stringify(JSON.parse((init && init.body) || '{}'));
+          const who = [...known].find((n) => asked.includes(n));
+          if (!who) return { ok: true, json: async () => ({ data: { user: null } }) };
+          return { ok: true, json: async () => ({ data: { user: {
+            id: '1', login: who, displayName: who, profileImageURL: '', stream: { id: 's' },
+          } } }) };
+        }
+        return { ok: false, status: 404, json: async () => ({}) };
+      },
+    });
+    if (storage) w.storage.local.fcm_channel_links_v1 = storage;
+    return w;
+  };
+  const seen = (w) => {
+    const all = w.of('counterpart');
+    const last = all[all.length - 1];
+    return last && last.counterpart ? last.counterpart.channel : null;
+  };
+
+  return (async () => {
+    // ── Arriving at a new channel is not offered the last one ──
+    {
+      const w = boot();
+      try {
+        w.connect();
+        w.send({ cmd: 'hello', site: 'kick', channel: 'cashmeow', hints: [] });
+        await wait(150);
+        w.send({ cmd: 'hints', hints: ['https://twitch.tv/cashmeow'] });
+        await wait(300);
+        eq(seen(w), 'cashmeow', 'switch: the first channel finds its own counterpart');
+
+        // The move. No hints travel with it, because the page has not caught up.
+        w.clear();
+        w.send({ cmd: 'hello', site: 'kick', channel: 'irongoddess', hints: [] });
+        await wait(400);
+        ok(seen(w) !== 'cashmeow',
+          'switch: the channel just left is not offered as the new one’s counterpart');
+
+        // And once the page exists, its own links are used.
+        w.send({ cmd: 'hints', hints: ['https://twitch.tv/irongoddess'] });
+        await wait(400);
+        eq(seen(w), 'irongoddess', 'switch: the new page’s own link is what answers');
+      } finally { w.teardown(); }
+    }
+
+    // ── A pairing written down by the old fault repairs itself ──
+    //
+    // Anyone who hit this has kick:irongoddess -> cashmeow in storage. A link
+    // on the page in front of you outranks something worked out earlier, which
+    // is what lets it be corrected rather than waiting out the cache.
+    {
+      const w = boot({
+        'kick:irongoddess': { channel: 'cashmeow', match: 'page-link', at: Date.now() },
+      });
+      try {
+        w.connect();
+        w.send({ cmd: 'hello', site: 'kick', channel: 'irongoddess', hints: [] });
+        await wait(400);
+        eq(seen(w), 'cashmeow', 'switch: the remembered pairing is used until something better arrives');
+        w.send({ cmd: 'hints', hints: ['https://twitch.tv/irongoddess'] });
+        await wait(400);
+        eq(seen(w), 'irongoddess', 'switch: the page corrects it');
+        const links = w.storage.local.fcm_channel_links_v1;
+        eq(links['kick:irongoddess'].channel, 'irongoddess',
+          'switch: and the correction is written down, so it does not come back');
+      } finally { w.teardown(); }
+    }
+
+    // ── A mapping set by hand is not overruled by a page link ──
+    {
+      const w = boot({
+        'kick:irongoddess': { channel: 'cashmeow', manual: true, match: 'manual', at: Date.now() },
+      });
+      try {
+        w.connect();
+        w.send({ cmd: 'hello', site: 'kick', channel: 'irongoddess', hints: [] });
+        await wait(300);
+        w.send({ cmd: 'hints', hints: ['https://twitch.tv/irongoddess'] });
+        await wait(400);
+        eq(seen(w), 'cashmeow', 'switch: what the viewer set by hand still wins');
+      } finally { w.teardown(); }
+    }
+  })();
+};
+
 suites.linking = function () {
   const { bootWorker, wait } = require('./background.js');
 

@@ -562,9 +562,13 @@ chrome.runtime.onConnect.addListener((port) => {
           const merged = Array.from(new Set([...session.hints, ...msg.hints])).slice(0, 40);
           const isNew = merged.length !== session.hints.length;
           session.hints = merged;
-          if (isNew && !(session.counterpart && session.counterpart.exists)) {
-            await refreshCounterpart(session);
-          }
+          // Re-resolved whenever the page turns up something new, including
+          // when an answer has already been found. It used to stop at the first
+          // answer, which meant a wrong one could never be corrected — and the
+          // wrong ones came from exactly here, before the page had rendered.
+          // A link the streamer put on the page in front of you outranks a
+          // guess, and a mapping set by hand still outranks both.
+          if (isNew) await refreshCounterpart(session);
         }
         break;
 
