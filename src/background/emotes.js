@@ -40,6 +40,44 @@
     return null;
   }
 
+  // Helix takes 100 ids per /users request, which covers a heavily subscribed
+  // account in one or two calls.
+  const OWNER_LOOKUP_CHUNK = 100;
+
+  /**
+   * Turns the owner ids on a Twitch emote store into channel names.
+   *
+   * The picker groups by the channel an emote came from, and Helix answers with
+   * an id. Resolved for the whole store at once — a subscriber to fifty
+   * channels is one request, where doing it per emote would be thousands.
+   *
+   * Failure costs the names and nothing else: an emote with no owner name falls
+   * back to being grouped by what kind of emote it is.
+   */
+  async function nameOwners(store, get) {
+    const ids = Array.from(new Set(
+      Object.values(store).map((e) => e.ownerId).filter(Boolean)
+    ));
+    if (!ids.length) return;
+
+    const names = new Map();
+    for (let i = 0; i < ids.length; i += OWNER_LOOKUP_CHUNK) {
+      const chunk = ids.slice(i, i + OWNER_LOOKUP_CHUNK);
+      const qs = chunk.map((id) => `id=${encodeURIComponent(id)}`).join('&');
+      // eslint-disable-next-line no-await-in-loop
+      const data = await get(`${FCM.TWITCH_HELIX}/users?${qs}`);
+      ((data && data.data) || []).forEach((u) => {
+        if (u && u.id) names.set(String(u.id), u.display_name || u.login || '');
+      });
+    }
+
+    Object.values(store).forEach((e) => {
+      const name = e.ownerId && names.get(e.ownerId);
+      if (name) e.owner = name;
+      delete e.ownerId;
+    });
+  }
+
   FCM.emoteLoader = {
     /**
      * 7TV for both platforms, BTTV and FFZ for Twitch.
@@ -67,7 +105,12 @@
         // Set even when the name is already there. These fetches race, so a
         // name in both the channel's set and a global one would otherwise be
         // marked or not depending on which request came back first.
-        if (channel) store[name].channel = true;
+        if (channel) {
+          store[name].channel = true;
+          // Whose set it was in. The only channel these calls ask about is
+          // the one being watched, so its name is the answer.
+          if (channelLogin) store[name].owner = channelLogin;
+        }
       };
 
       const add7tv = (payload, channel) => {
@@ -75,7 +118,7 @@
         const emotes = payload.emotes
           || (payload.emote_set && payload.emote_set.emotes)
           || [];
-        emotes.forEach((e) => put(e.name, FCM.sevenTvUrl(e), '7TV', channel));
+        emotes.forEach((e) => put(e.name, FCM.sevenTvUrl(e), channel ? '7TV' : '7TV Global', channel));
       };
 
       const addFfz = (data, channel) => {
@@ -83,7 +126,8 @@
         Object.values(data.sets || {}).forEach((set) => {
           (set.emoticons || []).forEach((e) => {
             const url = (e.urls && (e.urls[2] || e.urls[1] || e.urls[4])) || null;
-            put(e.name, url && url.startsWith('//') ? `https:${url}` : url, 'FFZ', channel);
+            put(e.name, url && url.startsWith('//') ? `https:${url}` : url,
+              channel ? 'FFZ' : 'FFZ Global', channel);
           });
         });
       };
@@ -113,7 +157,8 @@
           ).then((d) => addFfz(d, true)));
         }
         jobs.push(FCM.getJson('https://api.betterttv.net/3/cached/emotes/global').then((list) => {
-          (list || []).forEach((e) => put(e.code, `https://cdn.betterttv.net/emote/${e.id}/2x`, 'BTTV'));
+          (list || []).forEach((e) => put(e.code,
+            `https://cdn.betterttv.net/emote/${e.id}/2x`, 'BTTV Global'));
         }));
         jobs.push(FCM.getJson('https://api.frankerfacez.com/v1/set/global').then(addFfz));
       }
@@ -151,6 +196,11 @@
             url: `${TWITCH_EMOTE_CDN}/${e.id}/default/dark/2.0`,
             source: twitchEmoteSource(e) || fallback || 'Twitch',
           };
+          // Which channel it belongs to, as an id for now. The picker groups by
+          // channel name, and a name costs a lookup that is only worth making
+          // once for the whole set rather than once per emote. '0' is Twitch's
+          // way of saying "nobody's", which is what a global is.
+          if (e.owner_id && e.owner_id !== '0') store[e.name].ownerId = String(e.owner_id);
         }
         // Marked whether or not the name was already known, because these
         // fetches race and the channel's own list is the only one that can say
@@ -206,6 +256,7 @@
       }
 
       await Promise.all(jobs.map((job) => job.catch(() => null)));
+      await nameOwners(store, get);
       return store;
     },
 

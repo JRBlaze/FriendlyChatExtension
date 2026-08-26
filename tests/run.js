@@ -1011,6 +1011,55 @@ suites.authpages = function () {
   });
 };
 
+// Whether the viewer has collapsed the site's own chat.
+//
+// The overlay is a chat, so it goes when the chat goes. Told by size rather
+// than by a class name: both sites rename their classes and neither renames
+// the fact that a collapsed column measures nothing. Verified against a real
+// Twitch page, where collapsing leaves the whole right column at 0x0.
+suites.chatcollapse = function () {
+  // A page with just enough of a chat column to answer the question.
+  const page = ({ present = true, width = 340, height = 660 } = {}) => {
+    const el = {
+      getBoundingClientRect: () => ({ width, height, top: 0, left: 0,
+        right: width, bottom: height }),
+    };
+    return makeSandbox({
+      document: { querySelector: (sel) => (present && /right-column|chat-room|chatroom|chat-container/.test(sel) ? el : null) },
+      window: {},
+    });
+  };
+
+  ['twitch', 'kick'].forEach((id) => {
+    // Laid out normally: not collapsed.
+    {
+      const FCM = load(page(), ...SHARED, 'src/content/sites.js');
+      const site = FCM.SITES[id];
+      eq(site.chatCollapsed(), false, `collapse: ${id} chat at full size is not collapsed`);
+    }
+    // Present and given no size: collapsed.
+    {
+      const FCM = load(page({ width: 0, height: 0 }), ...SHARED, 'src/content/sites.js');
+      const site = FCM.SITES[id];
+      eq(site.chatCollapsed(), true, `collapse: ${id} chat with no size is collapsed`);
+    }
+    // Narrowed to a sliver is the same thing.
+    {
+      const FCM = load(page({ width: 12 }), ...SHARED, 'src/content/sites.js');
+      const site = FCM.SITES[id];
+      eq(site.chatCollapsed(), true, `collapse: ${id} chat narrowed to a sliver is collapsed`);
+    }
+    // Not in the page at all is a different answer, and must stay false: that
+    // is a layout we never recognised, which the overlay handles its own way.
+    {
+      const FCM = load(page({ present: false }), ...SHARED, 'src/content/sites.js');
+      const site = FCM.SITES[id];
+      eq(site.chatCollapsed(), false,
+        `collapse: ${id} chat that is not there is not reported as collapsed`);
+    }
+  });
+};
+
 suites.sites = function () {
   const FCM = load(makeSandbox(), ...SHARED, 'src/background/discovery.js');
 
@@ -1569,7 +1618,11 @@ suites.emotes = function () {
       const { FCM, calls } = build();
       const store = await FCM.emoteLoader.thirdParty('twitch', 'somechannel', '71092938');
       eq(store.GlobalPog.url, 'https://cdn.7tv.app/emote/1/2x.webp', 'emotes: 7TV global url built from host+file');
-      eq(store.GlobalPog.source, '7TV', 'emotes: 7TV source label');
+      // A provider's global set says so, rather than sharing a label with the
+      // channel's own set — they end up as different sections in the picker.
+      eq(store.GlobalPog.source, '7TV Global', 'emotes: a provider global says it is global');
+      eq(store.ChannelPog.source, '7TV', "emotes: the channel's set keeps the plain name");
+      eq(store.bttvGlobal.source, 'BTTV Global', 'emotes: and the same for BTTV');
       eq(store.ChannelPog.url, 'https://cdn.7tv.app/emote/2/2x.webp', 'emotes: 7TV channel set');
       eq(store.bttvGlobal.url, 'https://cdn.betterttv.net/emote/b1/2x', 'emotes: BTTV global');
       eq(store.bttvChan.url, 'https://cdn.betterttv.net/emote/b2/2x', 'emotes: BTTV channel');
@@ -1586,7 +1639,9 @@ suites.emotes = function () {
       ok(!store.GlobalPog.channel, 'emotes: a provider global is not the channel\'s');
       ok(!store.bttvGlobal.channel, 'emotes: nor a BTTV global');
       // The label is what a tooltip shows and must not have been repurposed.
-      eq(store.ChannelPog.source, '7TV', 'emotes: and the provider name is left alone');
+      eq(store.ChannelPog.owner, 'somechannel',
+        "emotes: a channel set records whose channel it is, for the picker's headings");
+      ok(!store.GlobalPog.owner, 'emotes: a global belongs to nobody');
       ok(calls.includes('https://7tv.io/v3/users/twitch/71092938'),
         'emotes: 7TV twitch lookup uses the numeric user id');
     }
@@ -4357,6 +4412,89 @@ suites.endtoend = function () {
 // The point of the cache is the gap at the start of a visit, and the point of
 // these is that it can never become the final answer: the fetch still runs, and
 // what it returns lands on top.
+// The channel's own third-party emotes, which depend on an id that arrives
+// whenever Twitch feels like sending it.
+//
+// 7TV, BTTV and FFZ all key a channel set by the platform’s numeric id, and on
+// Twitch that id comes from ROOMSTATE, which is not ordered against the 366
+// that says the join finished. When 366 came first the fetch went out with no
+// id, got only the providers’ global sets, and nothing ever went back — which
+// is why reloading the page sometimes fixed it and sometimes did not.
+suites.emoterace = function () {
+  const { bootWorker, wait } = require('./background.js');
+
+  // Answers the channel-scoped provider calls only when they carry the id,
+  // and counts them: the harness only records what its own default fetch does.
+  const asked = [];
+  const providers = async (url) => {
+    const u = String(url);
+    asked.push(u);
+    if (u === 'https://7tv.io/v3/emote-sets/global') {
+      return { ok: true, json: async () => ({ emotes: [
+        { name: 'GlobalOnly', data: { host: { url: '//cdn/1', files: [{ name: '2x.webp' }] } } },
+      ] }) };
+    }
+    if (u.includes('7tv.io/v3/users/twitch/99')) {
+      return { ok: true, json: async () => ({ emote_set: { emotes: [
+        { name: 'TheChannelEmote', data: { host: { url: '//cdn/2', files: [{ name: '2x.webp' }] } } },
+      ] } }) };
+    }
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+
+  const namesSent = (w) => w.of('emotes')
+    .flatMap((m) => Object.keys(m.store || {}));
+
+  return (async () => {
+    // ── The join finishing before Twitch says which channel it is ──
+    {
+      const w = bootWorker({ fetchImpl: providers });
+      try {
+        w.connect();
+        w.send({ cmd: 'hello', site: 'twitch', channel: 'alpha', hints: [] });
+        await wait(60);
+        w.send({ cmd: 'join', platform: 'twitch', channel: 'alpha' });
+        await wait(120);
+        const irc = w.socketFor('irc-ws');
+        // 366 first, with no ROOMSTATE yet: the order that used to lose them.
+        irc.push(':justinfan!justinfan@tmi.twitch.tv 366 justinfan #alpha :End of /NAMES list');
+        await wait(300);
+        ok(namesSent(w).includes('GlobalOnly'),
+          'emoterace: the providers’ global sets load without an id');
+        ok(!namesSent(w).includes('TheChannelEmote'),
+          'emoterace: the channel’s own set cannot be asked for yet');
+
+        // ROOMSTATE arrives late, which is the case that was never retried.
+        irc.push('@room-id=99 :tmi.twitch.tv ROOMSTATE #alpha');
+        await wait(400);
+        ok(namesSent(w).includes('TheChannelEmote'),
+          'emoterace: and are fetched as soon as the id turns up');
+      } finally { w.teardown(); }
+    }
+
+    // ── The other order still costs exactly one pass ──
+    {
+      asked.length = 0;
+      const w = bootWorker({ fetchImpl: providers });
+      try {
+        w.connect();
+        w.send({ cmd: 'hello', site: 'twitch', channel: 'alpha', hints: [] });
+        await wait(60);
+        w.send({ cmd: 'join', platform: 'twitch', channel: 'alpha' });
+        await wait(120);
+        const irc = w.socketFor('irc-ws');
+        irc.push('@room-id=99 :tmi.twitch.tv ROOMSTATE #alpha');
+        irc.push(':justinfan!justinfan@tmi.twitch.tv 366 justinfan #alpha :End of /NAMES list');
+        await wait(400);
+        ok(namesSent(w).includes('TheChannelEmote'),
+          'emoterace: an id that arrives first works the same way');
+        const channelCalls = asked.filter((u) => u.includes('7tv.io/v3/users/twitch/99')).length;
+        eq(channelCalls, 1, 'emoterace: and is not asked for twice');
+      } finally { w.teardown(); }
+    }
+  })();
+};
+
 suites.emotecache = function () {
   const { bootWorker, wait } = require('./background.js');
 

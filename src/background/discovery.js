@@ -83,7 +83,7 @@
           headers: { Accept: 'application/json' },
           credentials: 'omit',
         });
-        const store = FCM.parseKickEmotePayload(data);
+        const store = FCM.parseKickEmotePayload(data, slug);
         if (Object.keys(store).length) return store;
       }
       return {};

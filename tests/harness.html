@@ -94,7 +94,7 @@
         <p><a href="https://kick.com/examplestreamer-kick">kick.com/examplestreamer-kick</a></p>
       </div>
     </div>
-    <div class="chatcol" data-a-target="right-column-chat-bar">
+    <div class="chatcol channel-root__right-column" data-a-target="right-column-chat-bar">
       <!-- Twitch keeps its chat header outside the chat-room section, above the
            card stack, and the region code depends on that: the header is not a
            sibling of the message list, so it is never mistaken for a card. -->
@@ -199,6 +199,7 @@
     <button data-act="hype">+ hype train card</button>
     <button data-act="pinned">+ pinned card</button>
     <button data-act="no-cards">clear cards</button>
+    <button data-act="collapse-chat">collapse chat (native)</button>
     <button data-act="bonus">toggle claim bonus</button>
     <button data-act="no-rewards">toggle rewards row</button>
     <button data-act="auth-both">fake: both accounts</button>
@@ -621,6 +622,14 @@ function loadSources(bust) {
     // Takes Kick's balance controls off the page, so the overlay's own stats
     // bar has nothing to read and has to cope with that. It named an id that
     // has never existed, so it threw instead of hiding anything.
+    // What Twitch does when the viewer collapses chat: the column stays in the
+    // page and is given no size at all. The overlay is meant to go with it.
+    'collapse-chat': () => {
+      const col = document.querySelector('.chatcol');
+      const on = col.dataset.collapsed === 'true';
+      col.dataset.collapsed = String(!on);
+      col.style.cssText = on ? '' : 'width:0;overflow:hidden;';
+    },
     'kick-balance-off': () => {
       ['kick-points', 'kick-kicks', 'kick-get'].forEach((id) => {
         const b = document.getElementById(id);

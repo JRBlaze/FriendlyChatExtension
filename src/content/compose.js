@@ -38,6 +38,10 @@
             // Whether it belongs to the channel being watched rather than to a
             // provider's global set. What the picker puts at the top.
             channel: !!emote.channel,
+            // Which channel it came from, when one owns it. The picker groups
+            // by this, so a subscriber sees their channels by name instead of
+            // one undifferentiated pile of "Twitch Sub".
+            owner: emote.owner || '',
           });
         });
       });
@@ -269,34 +273,65 @@
         return;
       }
 
-      // Three tiers, in the order someone actually reaches for them: the ones
-      // they starred, the ones this channel gave them, then everything else by
-      // where it came from.
-      const groups = new Map();
+      // Grouped by the channel an emote belongs to, and by what kind of emote
+      // it is when no channel owns it. A subscriber to thirty channels had all
+      // of it under one "Twitch Sub" heading, which is a list of every emote
+      // they have rather than an answer to "what can I send here".
+      const groups = new Map();   // lowercased key -> { title, entries }
       const favs = [];
-      const channelEmotes = [];
       const order = favourites();
+
+      const groupFor = (item) => {
+        const owner = item.owner || '';
+        const title = owner || item.source || 'Emotes';
+        // Keyed case-insensitively: the same channel arrives as a login from
+        // the third-party providers and as a display name from Twitch, and
+        // "jynxzi" and "Jynxzi" are not two channels.
+        const key = title.toLowerCase();
+        let group = groups.get(key);
+        if (!group) {
+          group = { title, owner: !!owner, channel: false, entries: [] };
+          groups.set(key, group);
+        }
+        // Prefer the spelling that carries capitals, which is the one the
+        // platform shows people.
+        if (owner && title !== title.toLowerCase() && group.title === group.title.toLowerCase()) {
+          group.title = title;
+        }
+        if (item.channel) group.channel = true;
+        return group;
+      };
+
       matches.forEach((item, index) => {
         const entry = { item, index };
+        // A favourite is listed once, at the top, rather than again under its
+        // channel — the same emote twice in one list is a worse answer than
+        // either placement on its own.
         if (isFavourite(item.name)) { favs.push(entry); return; }
-        // A channel emote is listed once, at the top, rather than again under
-        // its provider — the same emote twice in one list is a worse answer
-        // than either placement on its own.
-        if (item.channel) { channelEmotes.push(entry); return; }
-        const key = item.source || 'Emotes';
-        if (!groups.has(key)) groups.set(key, []);
-        groups.get(key).push(entry);
+        groupFor(item).entries.push(entry);
       });
       // In the order they were starred, not the order the providers list them.
       favs.sort((a, b) => order.indexOf(a.item.name) - order.indexOf(b.item.name));
+
+      // The channel being watched first, then the other channels by name, then
+      // everything that belongs to nobody — globals, Prime, hype train.
+      const ordered = [...groups.values()].sort((a, b) => {
+        if (a.channel !== b.channel) return a.channel ? -1 : 1;
+        if (a.owner !== b.owner) return a.owner ? -1 : 1;
+        return a.title.localeCompare(b.title);
+      });
 
       // No cap. Every emote loaded is drawn, because "+340 more — type to
       // search" asked people to remember a name in order to find a picture,
       // which is what a picker is for in the first place.
       const sections = [];
       if (favs.length) sections.push({ title: '★ Favourites', entries: favs });
-      if (channelEmotes.length) sections.push({ title: 'This channel', entries: channelEmotes });
-      groups.forEach((entries, source) => sections.push({ title: esc(source), entries }));
+      ordered.forEach((group) => sections.push({
+        // The channel being watched is worth saying so, because it is the one
+        // set everyone in the room can see you use.
+        title: esc(group.title) + (group.channel ? ' <em>· this channel</em>' : ''),
+        entries: group.entries,
+      }));
 
       body.innerHTML = '';
       fillSections(body, sections);

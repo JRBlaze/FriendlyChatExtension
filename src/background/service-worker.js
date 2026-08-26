@@ -93,6 +93,9 @@ function makeSink(session, platform) {
       if (changed && next && platform === 'twitch') {
         loadTwitchEmotes(session, platform).catch(() => {});
         loadCheermotes(session, platform).catch(() => {});
+        // The third-party providers key a channel's set by this id too, and on
+        // Twitch it can arrive after the join has already asked without it.
+        loadThirdPartyEmotes(session, platform).catch(() => {});
       }
     },
     // The sets this account may use, which arrive with USERSTATE.
@@ -167,20 +170,51 @@ async function onJoined(session, platform, chatroomId) {
   // anything new appears then — nothing here is treated as final.
   sendCachedEmotes(session, platform).catch(() => {});
 
-  if (settings.thirdPartyEmotes) {
-    // conn.roomId is the channel's numeric id on its own platform: Twitch's
-    // room-id tag, or Kick's user_id. Every third-party provider keys channel
-    // sets by that, not by the channel name.
-    FCM.emoteLoader
-      .thirdParty(platform, channel, conn.roomId)
-      .then(async (store) => {
-        const count = Object.keys(store).length;
-        if (!count) return;
-        sink.emotes('thirdparty', store);
-        sink.sys(`Loaded ${count} third-party emotes for ${FCM.PLATFORM_META[platform].name} (7TV/BTTV/FFZ)`);
-        await FCM.emoteCache.write(platform, channel, await accountIdFor(platform), 'thirdparty', store);
-      });
+  loadThirdPartyEmotes(session, platform).catch(() => {});
+}
+
+/**
+ * The 7TV, BTTV and FFZ emotes for this channel.
+ *
+ * Runs on join, and again if the channel's numeric id arrives afterwards.
+ *
+ * That second run is the whole point. Every provider keys a channel's set by
+ * the platform's own numeric id, and on Twitch that id comes from ROOMSTATE,
+ * which is not ordered against the 366 that says the join finished. When 366
+ * came first — often — this ran with no id, fetched only the providers' global
+ * sets, and nothing ever went back for the channel's own. The emotes people
+ * actually came for were missing, and reloading the page only helped because it
+ * re-ran the race.
+ *
+ * Guarded by which id it last ran for, so the ordinary case is still one pass
+ * and the second only happens when it would ask a different question.
+ */
+async function loadThirdPartyEmotes(session, platform) {
+  const conn = session.conns[platform];
+  if (!conn || !conn.channel) return;
+  const settings = await FCM.loadSettings();
+  if (!settings.thirdPartyEmotes) return;
+
+  const channel = conn.channel;
+  const attempt = `${channel}:${conn.roomId || ''}`;
+  if (conn.thirdPartyFor === attempt) return;
+  conn.thirdPartyFor = attempt;
+
+  const store = await FCM.emoteLoader.thirdParty(platform, channel, conn.roomId);
+  // Left the channel while the providers were answering.
+  if (conn.channel !== channel) return;
+  const count = Object.keys(store).length;
+  if (!count) return;
+
+  const sink = makeSink(session, platform);
+  sink.emotes('thirdparty', store);
+  // Only the first pass is worth saying out loud; the one that follows an id
+  // arriving is a top-up, the same as the native emote loads.
+  if (!conn.announcedThirdParty) {
+    conn.announcedThirdParty = true;
+    sink.sys(`Loaded ${count} third-party emotes for ${FCM.PLATFORM_META[platform].name} (7TV/BTTV/FFZ)`);
   }
+  await FCM.emoteCache.write(platform, channel, await accountIdFor(platform), 'thirdparty', store);
 }
 
 // Which account the cached lists belong to. Twitch's answer to "what may this
@@ -355,6 +389,11 @@ function leaveChannel(session, platform, { silent = false } = {}) {
   conn.roomId = null;
   conn.auth = null;
   conn.state = 'idle';
+  // What has already been fetched, and what has already been said about it.
+  // Left set, a channel joined again would be skipped as already done.
+  conn.thirdPartyFor = null;
+  conn.announcedThirdParty = false;
+  conn.announcedEmotes = false;
   if (conn.canModerate) {
     conn.canModerate = false;
     send(session, { type: 'moderator', platform, canModerate: false });

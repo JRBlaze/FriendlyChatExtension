@@ -403,6 +403,13 @@
 
 .fcm-msg:hover { background: var(--surface2); }
 .fcm-hide { display: none !important; }
+
+/* The viewer collapsed the site's own chat. The overlay is a chat, so it goes
+   with it — panel and launcher both, because a floating button is still
+   something in the way of a video someone has just cleared the chat off. Its
+   own open/closed state is untouched, so it comes back as it was. */
+.fcm-root.fcm-page-chat-hidden .fcm-panel,
+.fcm-root.fcm-page-chat-hidden .fcm-launcher { display: none !important; }
 /* Struck through and muted, not faded: it is a record of what was said and
    then removed, and still has to be readable. */
 .fcm-deleted .fcm-body { text-decoration: line-through; color: var(--text-muted); }
@@ -893,6 +900,13 @@
   text-transform: uppercase; color: var(--text-dim);
   border-bottom: 1px solid var(--border);
   position: sticky; top: 0; background: var(--surface); z-index: 1;
+}
+/* Which of the channel headings is the room you are actually in. Quieter than
+   the name, because the name is the thing being looked for. */
+.fcm-ac-header em {
+  font-style: normal;
+  color: var(--accent);
+  letter-spacing: 0.04em;
 }
 .fcm-ac-item {
   display: flex; align-items: center; gap: 9px;

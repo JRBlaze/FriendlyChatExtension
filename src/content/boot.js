@@ -219,7 +219,7 @@
         headers: { Accept: 'application/json' },
       });
       if (!res.ok) return;
-      const store = FCM.parseKickEmotePayload(await res.json());
+      const store = FCM.parseKickEmotePayload(await res.json(), slug);
       const count = Object.keys(store).length;
       if (!count || !overlay) return;
       overlay.setEmotes('kick', 'native', store);
