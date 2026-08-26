@@ -3,7 +3,6 @@
 (function (FCM) {
   'use strict';
 
-  const EMOTE_PICKER_PER_GROUP = 250;
   const AC_MAX_EMOTES = 30;
   const AC_MAX_MENTIONS = 15;
 
@@ -36,6 +35,9 @@
             lower: name.toLowerCase(),
             url: emote.url,
             source: emote.source || platform,
+            // Whether it belongs to the channel being watched rather than to a
+            // provider's global set. What the picker puts at the top.
+            channel: !!emote.channel,
           });
         });
       });
@@ -97,6 +99,9 @@
     function isOpen() { return !popup.classList.contains('fcm-hidden'); }
 
     function closePopup() {
+      // A fill still in flight would otherwise write sections into a popup that
+      // has been emptied and closed.
+      cancelPickerFill();
       popup.classList.add('fcm-hidden');
       popup.innerHTML = '';
       AC.items = []; AC.index = -1; AC.trigger = null; AC.browse = false;
@@ -172,6 +177,80 @@
         + '>★</button></div>';
     }
 
+    // How many cells go in before the browser is allowed to paint. Enough to
+    // fill the picker several times over, so what anyone actually looks at is
+    // there on the first frame and the rest arrives while they are looking at
+    // it. Ten thousand emotes in one write cost 300ms of frozen page.
+    const PICKER_FIRST_CHUNK = 600;
+    const PICKER_CHUNK = 900;
+    // How long to wait for a frame that may never come. A window that is merely
+    // covered by another one stops being painted while `document.hidden` stays
+    // false, and then no animation frame ever arrives — the same trap the feed
+    // works around, and the reason a picker built on frames alone stopped
+    // halfway through and stayed there.
+    const PICKER_FILL_FALLBACK_MS = 120;
+    let pickerFrameId = null;
+    let pickerTimerId = null;
+
+    function cancelPickerFill() {
+      if (pickerFrameId !== null && window.cancelAnimationFrame) {
+        window.cancelAnimationFrame(pickerFrameId);
+      }
+      if (pickerTimerId !== null) clearTimeout(pickerTimerId);
+      pickerFrameId = null;
+      pickerTimerId = null;
+    }
+
+    /**
+     * Writes the sections into the picker a few hundred cells at a time.
+     *
+     * Every emote still ends up in the list; this only decides how much of it
+     * lands before the browser is allowed to paint. The images are lazy, so the
+     * ones below the fold cost nothing until they are scrolled to — it is
+     * building the elements that takes the time, and ten thousand of them in
+     * one write froze the page for a third of a second.
+     *
+     * A long section is split across batches rather than going in whole, because
+     * one account's subscription emotes are a single section of several
+     * thousand and letting it through intact defeats the whole arrangement.
+     */
+    function fillSections(body, sections) {
+      cancelPickerFill();
+      let si = 0;      // which section
+      let ci = 0;      // how far into that section's entries
+      let grid = null; // the grid being filled, held across batches
+
+      const step = (budget) => {
+        cancelPickerFill();
+        let spent = 0;
+        while (si < sections.length && spent < budget) {
+          const section = sections[si];
+          if (ci === 0) {
+            body.insertAdjacentHTML('beforeend',
+              `<div class="fcm-ac-header">${section.title} (${section.entries.length})</div>`
+              + '<div class="fcm-emote-grid"></div>');
+            grid = body.lastElementChild;
+          }
+          const take = Math.min(section.entries.length - ci, budget - spent);
+          grid.insertAdjacentHTML('beforeend', section.entries
+            .slice(ci, ci + take)
+            .map(({ item, index }) => cellHtml(item, index))
+            .join(''));
+          ci += take;
+          spent += take;
+          if (ci >= section.entries.length) { si++; ci = 0; grid = null; }
+        }
+        if (si >= sections.length) return;
+        // Both, and whichever arrives first does the work — a frame when the
+        // page is being drawn, the timer when it is not.
+        const next = () => step(PICKER_CHUNK);
+        if (window.requestAnimationFrame) pickerFrameId = window.requestAnimationFrame(next);
+        pickerTimerId = setTimeout(next, PICKER_FILL_FALLBACK_MS);
+      };
+
+      step(PICKER_FIRST_CHUNK);
+    }
+
     function renderPickerBody(query) {
       pickerQuery = query || '';
       const q = String(query || '').trim().toLowerCase();
@@ -190,31 +269,37 @@
         return;
       }
 
+      // Three tiers, in the order someone actually reaches for them: the ones
+      // they starred, the ones this channel gave them, then everything else by
+      // where it came from.
       const groups = new Map();
       const favs = [];
+      const channelEmotes = [];
       const order = favourites();
       matches.forEach((item, index) => {
-        if (isFavourite(item.name)) favs.push({ item, index });
+        const entry = { item, index };
+        if (isFavourite(item.name)) { favs.push(entry); return; }
+        // A channel emote is listed once, at the top, rather than again under
+        // its provider — the same emote twice in one list is a worse answer
+        // than either placement on its own.
+        if (item.channel) { channelEmotes.push(entry); return; }
         const key = item.source || 'Emotes';
         if (!groups.has(key)) groups.set(key, []);
-        groups.get(key).push({ item, index });
+        groups.get(key).push(entry);
       });
       // In the order they were starred, not the order the providers list them.
       favs.sort((a, b) => order.indexOf(a.item.name) - order.indexOf(b.item.name));
 
-      const block = (title, entries, cap) => {
-        const shown = cap ? entries.slice(0, cap) : entries;
-        const hidden = entries.length - shown.length;
-        return `<div class="fcm-ac-header">${title} (${entries.length})</div>`
-          + '<div class="fcm-emote-grid">'
-          + shown.map(({ item, index }) => cellHtml(item, index)).join('')
-          + '</div>'
-          + (hidden > 0 ? `<div class="fcm-ac-more">+${hidden} more — type to search</div>` : '');
-      };
+      // No cap. Every emote loaded is drawn, because "+340 more — type to
+      // search" asked people to remember a name in order to find a picture,
+      // which is what a picker is for in the first place.
+      const sections = [];
+      if (favs.length) sections.push({ title: '★ Favourites', entries: favs });
+      if (channelEmotes.length) sections.push({ title: 'This channel', entries: channelEmotes });
+      groups.forEach((entries, source) => sections.push({ title: esc(source), entries }));
 
-      body.innerHTML = (favs.length ? block('★ Favourites', favs, 0) : '')
-        + [...groups.entries()].map(([source, entries]) =>
-          block(esc(source), entries, EMOTE_PICKER_PER_GROUP)).join('');
+      body.innerHTML = '';
+      fillSections(body, sections);
     }
 
     function toggleEmotePicker() {
@@ -239,8 +324,15 @@
       renderPickerBody('');
       openPopup();
 
+      // Debounced, because each keystroke rebuilds the list and a one-letter
+      // query can match thousands. Typing "a" used to cost 200ms a character,
+      // which reads as a stuck keyboard.
       const search = popup.querySelector('.fcm-ac-input');
-      search.addEventListener('input', () => renderPickerBody(search.value));
+      let searchTimer = null;
+      search.addEventListener('input', () => {
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(() => renderPickerBody(search.value), 110);
+      });
       search.addEventListener('keydown', (e) => {
         e.stopPropagation();
         if (e.key === 'Escape') { e.preventDefault(); closePopup(); inputEl.focus(); }

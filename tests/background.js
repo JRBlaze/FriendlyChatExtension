@@ -77,6 +77,7 @@ function bootWorker(opts = {}) {
       local: {
         get: async (key) => ({ [key]: storage.local[key] }),
         set: async (obj) => { Object.assign(storage.local, obj); },
+        remove: async (key) => { delete storage.local[key]; },
       },
       sync: {
         get: async (key) => ({ [key]: storage.sync[key] }),

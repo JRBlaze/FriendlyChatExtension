@@ -18,7 +18,8 @@ importScripts(
   '/src/background/auth.js',
   '/src/background/send.js',
   '/src/background/moderation.js',
-  '/src/background/profile.js'
+  '/src/background/profile.js',
+  '/src/background/emote-cache.js'
 );
 
 const FCM = self.FCM;
@@ -147,10 +148,11 @@ async function onJoined(session, platform, chatroomId) {
     });
     loadTwitchEmotes(session, platform).catch(() => {});
   } else {
-    FCM.emoteLoader.kickNative(channel).then((store) => {
+    FCM.emoteLoader.kickNative(channel).then(async (store) => {
       if (Object.keys(store).length) {
         sink.emotes('native', store);
         sink.sys(`Loaded ${Object.keys(store).length} Kick emotes for this channel`);
+        await FCM.emoteCache.write(platform, channel, await accountIdFor(platform), 'native', store);
         return;
       }
       // Kick sits behind Cloudflare, which can refuse a request that did not
@@ -160,32 +162,62 @@ async function onJoined(session, platform, chatroomId) {
     });
   }
 
+  // Last visit's lists, sent before anything is fetched. The view merges rather
+  // than replaces, so the real answer lands on top of this a moment later and
+  // anything new appears then — nothing here is treated as final.
+  sendCachedEmotes(session, platform).catch(() => {});
+
   if (settings.thirdPartyEmotes) {
     // conn.roomId is the channel's numeric id on its own platform: Twitch's
     // room-id tag, or Kick's user_id. Every third-party provider keys channel
     // sets by that, not by the channel name.
     FCM.emoteLoader
       .thirdParty(platform, channel, conn.roomId)
-      .then((store) => {
+      .then(async (store) => {
         const count = Object.keys(store).length;
-        if (count) {
-          sink.emotes('thirdparty', store);
-          sink.sys(`Loaded ${count} third-party emotes for ${FCM.PLATFORM_META[platform].name} (7TV/BTTV/FFZ)`);
-        }
+        if (!count) return;
+        sink.emotes('thirdparty', store);
+        sink.sys(`Loaded ${count} third-party emotes for ${FCM.PLATFORM_META[platform].name} (7TV/BTTV/FFZ)`);
+        await FCM.emoteCache.write(platform, channel, await accountIdFor(platform), 'thirdparty', store);
       });
   }
 }
 
+// Which account the cached lists belong to. Twitch's answer to "what may this
+// viewer send here" is about the viewer as much as the channel, so a cache
+// shared between two accounts would offer emotes the other one cannot use.
+async function accountIdFor(platform) {
+  const record = await FCM.auth.get(platform);
+  return (record && record.userId) || '';
+}
+
 /**
- * Loads the Twitch emotes this viewer may use, and does it again whenever
- * something new is learnt.
+ * Sends whatever was cached for this channel, immediately.
  *
- * It runs on join, again when Twitch says which channel this is, and again when
- * USERSTATE lists the account's emote sets — because those three facts arrive
- * separately and each unlocks a different part of the answer. Sending a partial
- * store more than once is safe: the view merges emotes rather than replacing
- * them, so each pass adds and nothing is ever lost.
+ * Only ever an opening bid. Every list here is fetched again straight
+ * afterwards, and the view merges, so this fills the gap at the start of a
+ * visit without being able to hold a stale answer in place.
  */
+async function sendCachedEmotes(session, platform) {
+  const conn = session.conns[platform];
+  if (!conn || !conn.channel) return;
+  const channel = conn.channel;
+  const kinds = await FCM.emoteCache.read(platform, channel, await accountIdFor(platform));
+  if (!kinds) return;
+  // The channel may have been left while storage was being read.
+  if (session.conns[platform].channel !== channel) return;
+  const sink = makeSink(session, platform);
+  let total = 0;
+  ['native', 'thirdparty'].forEach((kind) => {
+    const store = kinds[kind];
+    const count = store ? Object.keys(store).length : 0;
+    if (!count) return;
+    sink.emotes(kind, store);
+    total += count;
+  });
+  if (total) sink.sys(`${total} emotes ready from last time — checking for new ones`);
+}
+
 /**
  * The Cheermote prefixes this channel accepts, so a Cheer can be told apart
  * from an ordinary word ending in digits before the message is sent.
@@ -220,6 +252,16 @@ async function loadCheermotes(session, platform) {
   send(session, { type: 'cheermotes', platform, prefixes: merged });
 }
 
+/**
+ * Loads the Twitch emotes this viewer may use, and does it again whenever
+ * something new is learnt.
+ *
+ * It runs on join, again when Twitch says which channel this is, and again when
+ * USERSTATE lists the account's emote sets — because those three facts arrive
+ * separately and each unlocks a different part of the answer. Sending a partial
+ * store more than once is safe: the view merges emotes rather than replacing
+ * them, so each pass adds and nothing is ever lost.
+ */
 async function loadTwitchEmotes(session, platform) {
   const conn = session.conns[platform];
   if (!conn || platform !== 'twitch') return;
@@ -242,6 +284,12 @@ async function loadTwitchEmotes(session, platform) {
   // Only the first pass is worth saying out loud; the later ones are top-ups.
   const sink = makeSink(session, platform);
   sink.emotes('native', store);
+  // Cached against the account as well as the channel: this list is the answer
+  // to what *this* viewer may send here, and it grows across the three passes,
+  // so the last and largest one is what ends up stored.
+  FCM.emoteCache
+    .write(platform, conn.channel, (record && record.userId) || '', 'native', store)
+    .catch(() => {});
   if (conn.announcedEmotes) return;
   conn.announcedEmotes = true;
 

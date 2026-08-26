@@ -104,6 +104,9 @@
     // Tokens live in storage.local, never storage.sync: they are per-device
     // credentials and must not be replicated across a user's browsers.
     auth:     'fcm_auth_v1',
+    // Last visit's emote lists. By far the largest thing kept here, which is
+    // why the options page can show its size and empty it.
+    emoteCache: 'fcm_emote_cache_v1',
   };
 
   FCM.DEFAULT_SETTINGS = {

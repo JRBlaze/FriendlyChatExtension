@@ -459,6 +459,8 @@ src/
     auth.js            Twitch implicit + Kick PKCE sign-in, token storage
     send.js            posting a message to each platform's chat API
     profile.js         who a chatter is: join date, follow date, sub length
+    emote-cache.js     last visit's emote lists, so a channel you have been
+                       in before has them on arrival
   content/         everything that touches the page
     boot.js          channel detection, SPA navigation, the port
     overlay.js       the shadow-DOM panel, prompt, targets and settings sheet
