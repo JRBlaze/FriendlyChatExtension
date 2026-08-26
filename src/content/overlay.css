@@ -460,6 +460,42 @@
 .fcm-body { color: var(--text); word-break: break-word; }
 
 .fcm-emote { max-height: 26px; vertical-align: middle; margin: -2px 1px; }
+
+/* What an emote looks like when you stop on it. Chat draws emotes small enough
+   to read a line of text around, which answers "is there an emote here" and not
+   "which one". Positioned by script against the panel, so only the look is
+   here. Never under the pointer: it must not be able to take its own hover. */
+.fcm-emote-peek {
+  position: absolute;
+  z-index: 8;
+  pointer-events: none;
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  max-width: 180px;
+  padding: 9px 11px;
+  border-radius: 9px;
+  border: 1px solid var(--border2);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+.fcm-root[data-animate="true"] .fcm-emote-peek { animation: fcm-fade .12s ease; }
+.fcm-emote-peek-img {
+  /* Height rather than width: emotes are wildly different shapes, and a wide
+     one scaled to a square box is a wide one squashed. */
+  height: 96px; max-width: 156px;
+  object-fit: contain;
+  image-rendering: auto;
+}
+.fcm-emote-peek-name {
+  font-size: max(11px, calc(var(--fcm-size) - 2px));
+  font-weight: 600; color: var(--text);
+  word-break: break-all; text-align: center;
+}
+.fcm-emote-peek-from {
+  font-family: var(--fcm-mono);
+  font-size: max(9px, calc(var(--fcm-size) - 4px));
+  color: var(--text-dim);
+  word-break: break-word; text-align: center;
+}
 .fcm-link { color: var(--link); text-decoration: underline; text-underline-offset: 2px; word-break: break-all; }
 .fcm-link:hover { color: var(--link-hover); }
 .fcm-mention {
