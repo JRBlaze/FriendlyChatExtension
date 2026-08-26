@@ -570,6 +570,25 @@ suites.compose = function () {
   const FCM = load(sandbox, ...SHARED, 'src/content/render.js', 'src/content/compose.js');
   FCM.setViewSettings(FCM.DEFAULT_SETTINGS);
 
+  // ── What the picker groups by ─────────────────────────────────────────────
+  //
+  // Favourites first, then the channel's own emotes, then everything else by
+  // provider. The channel flag is what the middle one turns on, and it has to
+  // survive the trip from the loader through to the list the picker reads.
+  {
+    FCM.setEmotes('twitch', 'thirdparty', {
+      ChannelPog: { url: 'https://cdn/c.webp', source: '7TV', channel: true },
+      GlobalPog: { url: 'https://cdn/g.webp', source: '7TV' },
+      bttvGlobal: { url: 'https://cdn/b.webp', source: 'BTTV' },
+    });
+    const entries = FCM.allEmoteEntries();
+    const by = (n) => entries.find((e) => e.name === n);
+    eq(by('ChannelPog').channel, true, "compose: the channel's emote is marked in the list");
+    eq(by('GlobalPog').channel, false, 'compose: a provider global is not');
+    eq(by('bttvGlobal').channel, false, 'compose: whatever provider it came from');
+    eq(by('ChannelPog').source, '7TV', 'compose: and the provider name is still the label');
+  }
+
   // ── Dates on the user menu ──────────────────────────────────────────────────
   //
   // The menu shows the day an account was made and the day someone started
@@ -1555,6 +1574,19 @@ suites.emotes = function () {
       eq(store.bttvGlobal.url, 'https://cdn.betterttv.net/emote/b1/2x', 'emotes: BTTV global');
       eq(store.bttvChan.url, 'https://cdn.betterttv.net/emote/b2/2x', 'emotes: BTTV channel');
       eq(store.ffzEmote.url, 'https://cdn.ffz/2.png', 'emotes: FFZ protocol-relative url fixed up');
+
+      // ── Which set an emote came from ──
+      //
+      // The picker puts the channel's own emotes at the top, and only the fetch
+      // an emote arrived on knows whose set it was in — every provider labels
+      // both its global and its channel sets with the same name.
+      eq(store.ChannelPog.channel, true, "emotes: 7TV's channel set is marked as the channel's");
+      eq(store.bttvChan.channel, true, "emotes: so is BTTV's");
+      eq(store.ffzEmote.channel, true, "emotes: and FFZ's room set");
+      ok(!store.GlobalPog.channel, 'emotes: a provider global is not the channel\'s');
+      ok(!store.bttvGlobal.channel, 'emotes: nor a BTTV global');
+      // The label is what a tooltip shows and must not have been repurposed.
+      eq(store.ChannelPog.source, '7TV', 'emotes: and the provider name is left alone');
       ok(calls.includes('https://7tv.io/v3/users/twitch/71092938'),
         'emotes: 7TV twitch lookup uses the numeric user id');
     }
@@ -4319,6 +4351,100 @@ suites.endtoend = function () {
 
 // Reloading the page. The sockets in the worker carry on, so nothing re-joins —
 // and history, badges and emotes only ever happened on a join.
+// Last visit's emote lists, kept so a channel you have been in before has its
+// emotes on arrival rather than several round-trips later.
+//
+// The point of the cache is the gap at the start of a visit, and the point of
+// these is that it can never become the final answer: the fetch still runs, and
+// what it returns lands on top.
+suites.emotecache = function () {
+  const { bootWorker, wait } = require('./background.js');
+
+  // A whole arrival: connect, announce the channel, join, and let Twitch
+  // confirm the join — 366 is what actually starts the emote load.
+  const visit = async (w, channel) => {
+    w.connect();
+    w.send({ cmd: 'hello', site: 'twitch', channel, hints: [] });
+    await wait(60);
+    w.send({ cmd: 'join', platform: 'twitch', channel });
+    await wait(120);
+    const irc = w.socketFor('irc-ws');
+    irc.push(`@room-id=99 :tmi.twitch.tv ROOMSTATE #${channel}`);
+    irc.push(`:justinfan!justinfan@tmi.twitch.tv 366 justinfan #${channel} :End of /NAMES list`);
+    await wait(300);
+  };
+
+  return (async () => {
+    // Serves the providers the join asks for; everything else 404s the way the
+    // harness normally does, which is enough for a join to complete.
+    const withEmotes = async (url) => {
+      const u = String(url);
+      if (u === 'https://7tv.io/v3/emote-sets/global') {
+        return { ok: true, json: async () => ({ emotes: [
+          { name: 'GlobalPog', data: { host: { url: '//cdn.7tv/1', files: [{ name: '2x.webp' }] } } },
+        ] }) };
+      }
+      if (/7tv[.]io[/]v3[/]users[/]/.test(u)) {
+        return { ok: true, json: async () => ({ emote_set: { emotes: [
+          { name: 'ChannelPog', data: { host: { url: '//cdn.7tv/2', files: [{ name: '2x.webp' }] } } },
+        ] } }) };
+      }
+      return { ok: false, status: 404, json: async () => ({}) };
+    };
+
+    // ── A first visit fetches, and remembers ──
+    const first = bootWorker({ fetchImpl: withEmotes });
+    let carried;
+    try {
+      await visit(first, 'alpha');
+      const sent = first.of('emotes');
+      ok(sent.length > 0, 'emotecache: the first visit loads emotes from the providers');
+      carried = first.storage.local.fcm_emote_cache_v1;
+      ok(carried, 'emotecache: and writes them down for next time');
+      ok(Object.keys(carried).some((k) => k.startsWith('twitch:alpha:')),
+        'emotecache: keyed by the platform and channel');
+    } finally { first.teardown(); }
+
+    // ── A second visit has them before anything is fetched ──
+    // Every provider hangs, so nothing can arrive from the network at all and
+    // anything the overlay is given must have come from the cache.
+    const hangs = () => new Promise(() => {});
+    const second = bootWorker({ fetchImpl: hangs });
+    try {
+      // Same machine, so it starts with what the first visit left behind.
+      second.storage.local.fcm_emote_cache_v1 = carried;
+      await visit(second, 'alpha');
+      const sent = second.of('emotes');
+      ok(sent.length > 0,
+        'emotecache: a return visit has its emotes with every provider unreachable');
+      const names = sent.flatMap((m) => Object.keys(m.store || {}));
+      ok(names.length > 0, 'emotecache: and they are real entries, not an empty store');
+      ok(second.of('sys').some((m) => /from last time/i.test(m.text || '')),
+        'emotecache: and says where they came from rather than claiming a fresh load');
+    } finally { second.teardown(); }
+
+    // ── A different channel does not get another channel's emotes ──
+    const third = bootWorker({ fetchImpl: hangs });
+    try {
+      third.storage.local.fcm_emote_cache_v1 = carried;
+      await visit(third, 'bravo');
+      ok(!third.of('sys').some((m) => /from last time/i.test(m.text || '')),
+        'emotecache: a channel never visited has nothing cached to offer');
+    } finally { third.teardown(); }
+
+    // ── Old enough and it is not offered ──
+    const stale = bootWorker({ fetchImpl: hangs });
+    try {
+      const aged = JSON.parse(JSON.stringify(carried));
+      Object.keys(aged).forEach((k) => { aged[k].at = Date.now() - (400 * 24 * 60 * 60 * 1000); });
+      stale.storage.local.fcm_emote_cache_v1 = aged;
+      await visit(stale, 'alpha');
+      ok(!stale.of('sys').some((m) => /from last time/i.test(m.text || '')),
+        'emotecache: a list old enough to distrust is not used');
+    } finally { stale.teardown(); }
+  })();
+};
+
 suites.reload = function () {
   const { bootWorker, wait } = require('./background.js');
 

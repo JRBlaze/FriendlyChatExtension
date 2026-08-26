@@ -36,7 +36,13 @@
       const name = emote?.name || emote?.slug || emote?.code;
       if (id === undefined || id === null || !name) return;
       if (!/^\d+$/.test(String(id))) return;
-      store[String(name)] = { url: `https://files.kick.com/emotes/${id}/fullsize`, source };
+      store[String(name)] = {
+        url: `https://files.kick.com/emotes/${id}/fullsize`,
+        source,
+        // The picker puts the channel's own emotes first, and Kick is the one
+        // platform that says outright which set an emote came from.
+        ...(source === 'Kick Channel' ? { channel: true } : {}),
+      };
     };
 
     sets.forEach((set) => {

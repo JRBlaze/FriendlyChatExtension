@@ -55,25 +55,35 @@
      */
     async thirdParty(platform, channelLogin, platformUserId) {
       const store = {};
-      const put = (name, url, source) => {
+      /**
+       * @param channel whether this came from the channel's own set rather than
+       *   a provider's global one. Kept apart from `source`, which is the
+       *   provider's name and is what a tooltip shows: an emote is "7TV" either
+       *   way, and only the fetch it arrived on knows whose set it was in.
+       */
+      const put = (name, url, source, channel) => {
         if (!name || !url) return;
         if (!store[name]) store[name] = { url, source };
+        // Set even when the name is already there. These fetches race, so a
+        // name in both the channel's set and a global one would otherwise be
+        // marked or not depending on which request came back first.
+        if (channel) store[name].channel = true;
       };
 
-      const add7tv = (payload) => {
+      const add7tv = (payload, channel) => {
         if (!payload) return;
         const emotes = payload.emotes
           || (payload.emote_set && payload.emote_set.emotes)
           || [];
-        emotes.forEach((e) => put(e.name, FCM.sevenTvUrl(e), '7TV'));
+        emotes.forEach((e) => put(e.name, FCM.sevenTvUrl(e), '7TV', channel));
       };
 
-      const addFfz = (data) => {
+      const addFfz = (data, channel) => {
         if (!data) return;
         Object.values(data.sets || {}).forEach((set) => {
           (set.emoticons || []).forEach((e) => {
             const url = (e.urls && (e.urls[2] || e.urls[1] || e.urls[4])) || null;
-            put(e.name, url && url.startsWith('//') ? `https:${url}` : url, 'FFZ');
+            put(e.name, url && url.startsWith('//') ? `https:${url}` : url, 'FFZ', channel);
           });
         });
       };
@@ -85,7 +95,7 @@
       if (platformUserId) {
         jobs.push(FCM.getJson(
           `https://7tv.io/v3/users/${platform}/${encodeURIComponent(platformUserId)}`
-        ).then(add7tv));
+        ).then((d) => add7tv(d, true)));
       }
 
       if (platform === 'twitch') {
@@ -95,12 +105,12 @@
           ).then((data) => {
             if (!data) return;
             [...(data.channelEmotes || []), ...(data.sharedEmotes || [])].forEach((e) => {
-              put(e.code, `https://cdn.betterttv.net/emote/${e.id}/2x`, 'BTTV');
+              put(e.code, `https://cdn.betterttv.net/emote/${e.id}/2x`, 'BTTV', true);
             });
           }));
           jobs.push(FCM.getJson(
             `https://api.frankerfacez.com/v1/room/id/${encodeURIComponent(platformUserId)}`
-          ).then(addFfz));
+          ).then((d) => addFfz(d, true)));
         }
         jobs.push(FCM.getJson('https://api.betterttv.net/3/cached/emotes/global').then((list) => {
           (list || []).forEach((e) => put(e.code, `https://cdn.betterttv.net/emote/${e.id}/2x`, 'BTTV'));
@@ -132,15 +142,22 @@
       const headers = { 'Client-Id': clientId };
       if (token) headers.Authorization = `Bearer ${token}`;
 
-      const put = (e, fallback) => {
+      const put = (e, fallback, channel) => {
         if (!e || !e.name || !e.id) return;
-        if (store[e.name]) return;
-        store[e.name] = {
-          // 2.0 is the size the inline renderer uses, so the same emote is not
-          // fetched twice at two different sizes.
-          url: `${TWITCH_EMOTE_CDN}/${e.id}/default/dark/2.0`,
-          source: twitchEmoteSource(e) || fallback || 'Twitch',
-        };
+        if (!store[e.name]) {
+          store[e.name] = {
+            // 2.0 is the size the inline renderer uses, so the same emote is not
+            // fetched twice at two different sizes.
+            url: `${TWITCH_EMOTE_CDN}/${e.id}/default/dark/2.0`,
+            source: twitchEmoteSource(e) || fallback || 'Twitch',
+          };
+        }
+        // Marked whether or not the name was already known, because these
+        // fetches race and the channel's own list is the only one that can say
+        // an emote belongs to the channel being watched. The label is left
+        // alone: an emote is still a "Twitch Sub" emote, it is just this
+        // channel's.
+        if (channel) store[e.name].channel = true;
       };
 
       const get = (url) => FCM.getJson(url, { headers });
@@ -153,7 +170,7 @@
       if (broadcasterId) {
         jobs.push(
           get(`${FCM.TWITCH_HELIX}/chat/emotes?broadcaster_id=${encodeURIComponent(broadcasterId)}`)
-            .then((d) => (d && d.data ? d.data : []).forEach((e) => put(e, 'Twitch Channel')))
+            .then((d) => (d && d.data ? d.data : []).forEach((e) => put(e, 'Twitch Channel', true)))
         );
       }
 

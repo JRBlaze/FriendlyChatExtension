@@ -108,8 +108,40 @@
     renderLinks();
   });
 
+  // The emote cache is written by the worker and read here only to say how much
+  // of it there is, so "clear" is a decision someone can make with a number in
+  // front of them rather than a shrug.
+  async function renderEmoteCacheNote() {
+    const note = $('emote-cache-note');
+    const button = $('clear-emote-cache');
+    let channels = 0;
+    let emotes = 0;
+    try {
+      const stored = await chrome.storage.local.get(FCM.STORAGE_KEYS.emoteCache);
+      const all = stored[FCM.STORAGE_KEYS.emoteCache] || {};
+      Object.values(all).forEach((entry) => {
+        channels++;
+        Object.values((entry && entry.kinds) || {}).forEach((store) => {
+          emotes += Object.keys(store || {}).length;
+        });
+      });
+    } catch (e) { /* an unreadable cache is an empty one */ }
+    button.disabled = !channels;
+    note.textContent = channels
+      ? `${emotes.toLocaleString()} emotes from ${channels} channel${channels === 1 ? '' : 's'}`
+      : 'Nothing cached yet.';
+  }
+
+  $('clear-emote-cache').addEventListener('click', async () => {
+    try {
+      await chrome.storage.local.remove(FCM.STORAGE_KEYS.emoteCache);
+    } catch (e) { /* already gone */ }
+    renderEmoteCacheNote();
+  });
+
   $('version').textContent = `v${chrome.runtime.getManifest().version}`;
 
   bind();
   renderLinks();
+  renderEmoteCacheNote();
 })(self.FCM);
