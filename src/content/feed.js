@@ -19,6 +19,11 @@
     let msgCount = 0;
     const seen = new Set();
     let onCount = null;
+    // Told whenever the feed starts or stops following the live end, and how
+    // many messages have arrived since it stopped.
+    let onPinChange = null;
+    let wasPinned = true;
+    let missed = 0;
 
     function limit() {
       const s = getSettings();
@@ -37,6 +42,24 @@
       }
     }
 
+    /**
+     * Says whether the feed is following the live end, and how far behind it is.
+     *
+     * Called on every scroll, so it reads the three layout values it needs and
+     * nothing else — and only reports when the answer has actually changed,
+     * because a scrolling chat fires this continuously.
+     */
+    function notePinState() {
+      const pinned = isPinned();
+      if (pinned === wasPinned) return;
+      wasPinned = pinned;
+      // Coming back to the live end clears what was missed while away from it.
+      if (pinned) missed = 0;
+      if (onPinChange) onPinChange(pinned, missed);
+    }
+
+    feedEl.addEventListener('scroll', notePinState, { passive: true });
+
     function flush() {
       scheduled = false;
       if (!pending.length) return;
@@ -47,13 +70,28 @@
       // ever attached instead of attaching and immediately removing it.
       if (pending.length > cap) pending.splice(0, pending.length - cap);
 
+      // Counted before the queue is emptied. Only chat rows count: a status
+      // line arriving is not something the viewer scrolled up to avoid missing.
+      if (!pinned) {
+        missed += pending.filter((el) => el.classList
+          && el.classList.contains('fcm-msg')).length;
+      }
+
       const fragment = document.createDocumentFragment();
       pending.forEach((node) => fragment.appendChild(node));
       pending.length = 0;
       feedEl.appendChild(fragment);
 
       trim();
-      if (pinned) feedEl.scrollTop = feedEl.scrollHeight;
+      if (pinned) {
+        feedEl.scrollTop = feedEl.scrollHeight;
+      } else {
+        // Appending does not move the scroll position, so the feed has just
+        // fallen further behind. Say so, or the count on the button stops
+        // climbing while messages carry on arriving.
+        wasPinned = false;
+        if (onPinChange) onPinChange(false, missed);
+      }
     }
 
     /**
@@ -132,6 +170,9 @@
     return {
       get count() { return msgCount; },
       onCount(fn) { onCount = fn; },
+      // Called with (pinned, missed) whenever the feed leaves or rejoins the
+      // live end, and again as messages pile up while it is away from it.
+      onPinChange(fn) { onPinChange = fn; },
 
       addMessage(msg, activeFilter) {
         if (msg.messageId && !rememberSeen(msg.platform, msg.messageId)) return null;
@@ -192,10 +233,18 @@
         feedEl.replaceChildren();
         seen.clear();
         msgCount = 0;
+        missed = 0;
+        wasPinned = true;
         if (onCount) onCount(0);
+        if (onPinChange) onPinChange(true, 0);
       },
 
-      scrollToBottom() { feedEl.scrollTop = feedEl.scrollHeight; },
+      scrollToBottom() {
+        feedEl.scrollTop = feedEl.scrollHeight;
+        missed = 0;
+        wasPinned = true;
+        if (onPinChange) onPinChange(true, 0);
+      },
       isPinned,
       trim,
     };

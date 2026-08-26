@@ -507,6 +507,58 @@ suites.settings = function () {
     eq((await FCM.loadSettings()).showBadges, true, 'settings: values can be turned back on');
     eq((await FCM.loadSettings()).timestamps, false,
       'settings: turning one back on leaves the other alone');
+
+    // ── Surviving an update, and a storage area that says no ─────────────────
+    //
+    // Favourited emotes live in the settings and signed-in accounts live in
+    // storage.local, and neither is touched by an extension update — but a
+    // refused write used to be swallowed, so the star lit up, nothing was
+    // stored, and the favourites were gone at the next reload. Both areas are
+    // written now, so one refusing does not lose anything.
+    {
+      const areas = { sync: {}, local: {} };
+      let syncRefuses = false;
+      const area = (name) => ({
+        get: async (key) => ({ [key]: areas[name][key] }),
+        set: async (obj) => {
+          if (name === 'sync' && syncRefuses) throw new Error('QUOTA_BYTES_PER_ITEM quota exceeded');
+          Object.assign(areas[name], obj);
+        },
+      });
+      const box = makeSandbox({ chrome: { storage: { sync: area('sync'), local: area('local') } } });
+      const F = load(box, ...SHARED);
+      const KEY = F.STORAGE_KEYS.settings;
+
+      const favourites = ['PogU', 'catJAM', 'KEKW'];
+      await F.saveSettings({ favouriteEmotes: favourites });
+      eq((await F.loadSettings()).favouriteEmotes, favourites, 'settings: favourites are saved');
+      ok(areas.sync[KEY] && areas.local[KEY],
+        'settings: and written to both areas, so either can answer for them');
+
+      // An update is a new copy of the code against the same storage. Nothing
+      // in the extension clears it, so a freshly loaded namespace must find it.
+      const afterUpdate = load(makeSandbox({
+        chrome: { storage: { sync: area('sync'), local: area('local') } },
+      }), ...SHARED);
+      eq((await afterUpdate.loadSettings()).favouriteEmotes, favourites,
+        'settings: favourites survive the extension being updated');
+
+      // Sync starts refusing, the way it does at its write-rate limit.
+      syncRefuses = true;
+      await F.saveSettings({ favouriteEmotes: [...favourites, 'Sadge'] });
+      eq((await F.loadSettings()).favouriteEmotes.length, 4,
+        'settings: a favourite added while sync refuses is still stored');
+      eq(areas.sync[KEY].favouriteEmotes.length, 3,
+        'settings: sync genuinely did not take it');
+      eq(areas.local[KEY].favouriteEmotes.length, 4,
+        'settings: the local copy is what kept it');
+
+      // And the newer copy is the one that wins on load.
+      syncRefuses = false;
+      await F.saveSettings({ favouriteEmotes: ['OnlyThis'] });
+      eq((await F.loadSettings()).favouriteEmotes, ['OnlyThis'],
+        'settings: once sync works again the newest write is what is read back');
+    }
   })();
 };
 
@@ -2206,8 +2258,14 @@ suites.auth = function () {
           return { ok: true, json: async () => (configResponse || { client_id: 'kick-cid' }) };
         }
         if (u.includes('/kick-token') || u.includes('/kick-refresh')) {
+          // A refresh that cannot leave the machine at all, which is a
+          // different thing from one Kick turned down.
+          if (tokenResponse === 'offline') throw new TypeError('Failed to fetch');
           const body = tokenResponse || { access_token: 'KA', refresh_token: 'KR', expires_in: 3600 };
-          return { ok: !body.error, json: async () => body };
+          // Carries a status the way a real response does, so "the token is
+          // spent" can be told from "the proxy is having a bad day".
+          const status = body.error ? (body.__status || 400) : 200;
+          return { ok: !body.error, status, json: async () => body };
         }
         if (u.includes('/users')) {
           return { ok: true, json: async () => ({ data: [{ name: 'kickme', user_id: 7 }] }) };
@@ -2453,11 +2511,49 @@ suites.auth = function () {
       eq(rec.refreshToken, 'KR2', 'auth: the rotated refresh token is kept');
     }
 
-    // ── usable(): a refresh that fails logs out cleanly ──
+    // ── usable(): a refresh Kick turns down logs out cleanly ──
     {
       const { FCM } = build({ tokenResponse: { error: 'invalid_grant' } });
       await FCM.auth.set('kick', { accessToken: 'old', refreshToken: 'KR', expiresAt: Date.now() - 1000 });
-      eq(await FCM.auth.usable('kick', {}), null, 'auth: an unrefreshable token is cleared');
+      eq(await FCM.auth.usable('kick', {}), null, 'auth: an unrefreshable token is unusable');
+      eq(await FCM.auth.get('kick'), null,
+        'auth: and a token Kick has finished with is actually forgotten');
+    }
+
+    // ── A refresh that could not be delivered keeps the account ───────────────
+    //
+    // Signing in again is a real interruption and lasts months; the proxy being
+    // unreachable for a minute must not cost one. These are the shapes that are
+    // the service's problem rather than the account's.
+    {
+      const { FCM } = build({ tokenResponse: 'offline' });
+      await FCM.auth.set('kick', { accessToken: 'old', refreshToken: 'KR', expiresAt: Date.now() - 1000 });
+      let threw = null;
+      let rec;
+      try { rec = await FCM.auth.usable('kick', {}); } catch (e) { threw = String(e); }
+      eq(threw, null, 'auth: a refresh that cannot reach the network does not throw');
+      eq(rec, null, 'auth: and reports the token as unusable for now');
+      ok(await FCM.auth.get('kick'), 'auth: but the account is still there to try again with');
+    }
+    {
+      const { FCM } = build({ tokenResponse: { error: 'bad gateway', __status: 502 } });
+      await FCM.auth.set('kick', { accessToken: 'old', refreshToken: 'KR', expiresAt: Date.now() - 1000 });
+      eq(await FCM.auth.usable('kick', {}), null, 'auth: a 502 leaves the token unusable for now');
+      ok(await FCM.auth.get('kick'), 'auth: and does not throw the account away');
+    }
+    {
+      const { FCM } = build({ tokenResponse: { error: 'invalid_grant', __status: 500 } });
+      await FCM.auth.set('kick', { accessToken: 'old', refreshToken: 'KR', expiresAt: Date.now() - 1000 });
+      await FCM.auth.usable('kick', {});
+      eq(await FCM.auth.get('kick'), null,
+        'auth: invalid_grant means the token is spent whatever status carried it');
+    }
+    // A refresh token that was never stored cannot be refreshed at all.
+    {
+      const { FCM } = build({});
+      await FCM.auth.set('kick', { accessToken: 'old', expiresAt: Date.now() - 1000 });
+      eq(await FCM.auth.usable('kick', {}), null, 'auth: nothing to refresh with is unusable');
+      eq(await FCM.auth.get('kick'), null, 'auth: and that account is cleared');
     }
 
     // ── A token with no expiry at all is treated as live ──
@@ -3057,6 +3153,16 @@ suites.feed = function () {
     };
     Object.defineProperty(node, 'childElementCount', { get: () => node.children.length });
     Object.defineProperty(node, 'firstElementChild', { get: () => node.children[0] || null });
+    // The feed listens for its own scroll to know whether it is still following
+    // the live end. Scrolling is faked by setting the numbers and firing this.
+    node.__listeners = {};
+    node.addEventListener = (type, fn) => { (node.__listeners[type] = node.__listeners[type] || []).push(fn); };
+    node.removeEventListener = (type, fn) => {
+      const list = node.__listeners[type] || [];
+      const i = list.indexOf(fn);
+      if (i !== -1) list.splice(i, 1);
+    };
+    node.__fire = (type) => (node.__listeners[type] || []).slice().forEach((fn) => fn());
     const classes = new Set();
     node.classList = {
       add: (c) => classes.add(c),
@@ -3099,6 +3205,80 @@ suites.feed = function () {
 
   const filter = new Set(['twitch', 'kick']);
   const FCM_MIN_MESSAGES = build().FCM.MAX_MESSAGES_MIN;
+
+  // ── Scrolling up holds the feed still, and offers the way back ─────────────
+  //
+  // Reading something a few screens up must not be interrupted by the feed
+  // jumping to the newest line. It already held still; what was missing was any
+  // sign of how much was piling up, or a way back that was not a manual scroll.
+  {
+    const t = build();
+    const el = t.feedEl;
+    const seen = [];
+    t.feed.onPinChange((pinned, missed) => seen.push({ pinned, missed }));
+
+    // Pinned: the bottom is within a screen of the scroll position.
+    el.scrollHeight = 1000; el.clientHeight = 400; el.scrollTop = 600;
+    ok(t.feed.isPinned(), 'feed: at the bottom it is following the live end');
+
+    // Scrolled up several screens.
+    el.scrollTop = 100;
+    el.__fire('scroll');
+    eq(seen.length, 1, 'feed: leaving the live end is reported once');
+    eq(seen[0].pinned, false, 'feed: and reported as no longer pinned');
+
+    // More scrolling while already away from the bottom says nothing new.
+    el.scrollTop = 90; el.__fire('scroll');
+    el.scrollTop = 80; el.__fire('scroll');
+    eq(seen.length, 1, 'feed: scrolling about up there is not reported again');
+
+    // Messages arriving while up there are counted, and the count climbs.
+    t.feed.addMessage({ platform: 'twitch', author: 'a', text: '1', messageId: 'p1' }, filter);
+    t.feed.addMessage({ platform: 'twitch', author: 'b', text: '2', messageId: 'p2' }, filter);
+    t.flush();
+    eq(seen[seen.length - 1].missed, 2, 'feed: messages arriving while away are counted');
+    eq(seen[seen.length - 1].pinned, false, 'feed: and it is still not pinned');
+    eq(el.scrollTop, 80, 'feed: and the view is left exactly where it was');
+
+    t.feed.addMessage({ platform: 'kick', author: 'c', text: '3', messageId: 'p3' }, filter);
+    t.flush();
+    eq(seen[seen.length - 1].missed, 3, 'feed: the count keeps climbing as more arrive');
+
+    // A status line is not something anyone scrolled up to avoid missing.
+    t.feed.addSys('[Merged] connected');
+    t.flush();
+    eq(seen[seen.length - 1].missed, 3, 'feed: a status line does not count as a new message');
+
+    // The way back: scrolled to the bottom, count cleared, reported pinned.
+    t.feed.scrollToBottom();
+    eq(el.scrollTop, el.scrollHeight, 'feed: jumping to live goes to the bottom');
+    eq(seen[seen.length - 1].pinned, true, 'feed: and reports it is following again');
+    eq(seen[seen.length - 1].missed, 0, 'feed: with nothing left outstanding');
+
+    // Back at the live end, new messages scroll into view as before.
+    const before = el.scrollTop;
+    t.feed.addMessage({ platform: 'twitch', author: 'd', text: '4', messageId: 'p4' }, filter);
+    el.scrollHeight = 1200;
+    t.flush();
+    eq(el.scrollTop, 1200, 'feed: and it follows the newest line again');
+    ok(before !== 1200, 'feed: which is a move, not a coincidence');
+
+    // Scrolling back down by hand is the same as pressing the button.
+    el.scrollTop = 100; el.__fire('scroll');
+    eq(seen[seen.length - 1].pinned, false, 'feed: scrolling up again unpins');
+    t.feed.addMessage({ platform: 'twitch', author: 'e', text: '5', messageId: 'p5' }, filter);
+    t.flush();
+    ok(seen[seen.length - 1].missed > 0, 'feed: and starts counting again');
+    el.scrollTop = el.scrollHeight; el.__fire('scroll');
+    eq(seen[seen.length - 1].pinned, true, 'feed: scrolling down by hand also rejoins');
+    eq(seen[seen.length - 1].missed, 0, 'feed: and clears what was missed');
+
+    // Clearing the feed starts over at the live end.
+    el.scrollTop = 0; el.__fire('scroll');
+    t.feed.clear();
+    eq(seen[seen.length - 1].pinned, true, 'feed: a cleared feed is at the live end');
+    eq(seen[seen.length - 1].missed, 0, 'feed: with nothing missed');
+  }
 
   // ── Duplicates are dropped, and only real duplicates ──
   {
