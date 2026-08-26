@@ -16,7 +16,7 @@
 
   // Kick returns an array of emote sets: the channel's own set, "Global" and
   // "Emoji". Only numeric ids resolve on the CDN.
-  FCM.parseKickEmotePayload = function (data) {
+  FCM.parseKickEmotePayload = function (data, channelName) {
     const store = {};
     if (!data) return store;
 
@@ -36,13 +36,17 @@
       const name = emote?.name || emote?.slug || emote?.code;
       if (id === undefined || id === null || !name) return;
       if (!/^\d+$/.test(String(id))) return;
-      store[String(name)] = {
+      const record = {
         url: `https://files.kick.com/emotes/${id}/fullsize`,
         source,
-        // The picker puts the channel's own emotes first, and Kick is the one
-        // platform that says outright which set an emote came from.
-        ...(source === 'Kick Channel' ? { channel: true } : {}),
       };
+      // The picker groups by the channel an emote belongs to, and Kick is
+      // the one platform that says outright which set an emote came from.
+      if (source === 'Kick Channel') {
+        record.channel = true;
+        if (channelName) record.owner = channelName;
+      }
+      store[String(name)] = record;
     };
 
     sets.forEach((set) => {

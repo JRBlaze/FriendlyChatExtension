@@ -67,6 +67,38 @@
     return messages ? expandToChatColumn(messages) : null;
   }
 
+  /**
+   * The first match that is in the page at all, laid out or not.
+   *
+   * Everything else here insists on a box, because an element with no size is
+   * usually one the site has finished with. This is the one question where the
+   * absence of a box is the answer: a chat column that exists and measures
+   * nothing is a chat the viewer has collapsed.
+   */
+  function firstInDom(selectors) {
+    for (const sel of selectors) {
+      const el = document.querySelector(sel);
+      if (el) return el;
+    }
+    return null;
+  }
+
+  /**
+   * Whether the site's own chat is present but collapsed.
+   *
+   * Told by size rather than by a class, because both sites rename their
+   * classes and neither renames the fact that a collapsed column measures
+   * nothing. An element that is not there at all is a different answer — that
+   * is a page whose chat we never found, and the overlay has its own handling
+   * for that which this must not override.
+   */
+  function chatCollapsedIn(selectors) {
+    const el = firstInDom(selectors);
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    return r.width < 40 || r.height < 40;
+  }
+
   // The message list is the anchor the native-region code climbs from, so it is
   // resolved with a far looser layout test than the chat column: an empty or
   // barely-started chat is a few pixels tall and still the right element.
@@ -132,12 +164,6 @@
   }
 
   /**
-   * The thing to click for a control, which is not always the thing that shows
-   * its value. Kick's Kicks balance is a `<div>`, and clicking a div does
-   * nothing at all — which is exactly what it did.
-   */
-  // The real control around an element, or nothing if there is not one.
-  /**
    * A value safe to drop inside a CSS attribute selector.
    *
    * The value is a username that came off a chat message, so it is not ours and
@@ -152,6 +178,13 @@
     return String(value).replace(/["\\]/g, '\\$&');
   }
 
+  /**
+   * The thing to click for a control, which is not always the thing that shows
+   * its value. Kick's Kicks balance is a `<div>`, and clicking a div does
+   * nothing at all — which is exactly what it did.
+   *
+   * The real control around an element, or nothing if there is not one.
+   */
   function clickableStrict(el) {
     if (!el) return null;
     const tag = el.tagName;
@@ -298,6 +331,21 @@
           '.chat-list--default',
         ]
       );
+    },
+
+    /**
+     * Whether the viewer has collapsed Twitch's chat with its own control.
+     *
+     * Twitch keeps the right column in the page and gives it no size at all —
+     * column, chat room, message list and scroller all measure 0x0 — so the
+     * column being present and empty is the whole signal.
+     */
+    chatCollapsed() {
+      return chatCollapsedIn([
+        '.channel-root__right-column',
+        'div[data-a-target="right-column-chat-bar"]',
+        'section[data-test-selector="chat-room-component-layout"]',
+      ]);
     },
 
     // The element that, when hidden, removes the site's own chat without
@@ -458,6 +506,23 @@
           'div[class*="chat-message-list"]',
         ]
       );
+    },
+
+    /**
+     * Whether the viewer has collapsed Kick's chat with its own control.
+     *
+     * Same test as Twitch: the column is still in the page and has been given
+     * no size. Kick's collapse control did not respond to a synthetic click
+     * when this was written, so unlike Twitch's this has not been watched
+     * happening — if Kick removes the column instead of shrinking it, this
+     * says no and the overlay behaves exactly as it did before.
+     */
+    chatCollapsed() {
+      return chatCollapsedIn([
+        '#channel-chatroom',
+        '#chatroom',
+        '[data-testid="chat-container"]',
+      ]);
     },
 
     nativeChatBody() {

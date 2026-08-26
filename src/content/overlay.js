@@ -417,9 +417,40 @@
       observedTarget = target;
     }
 
+    // True while the viewer has collapsed the site's own chat. The overlay is a
+    // chat, so hiding the chat should hide it too — otherwise collapsing chat to
+    // watch full-width leaves this sitting over the video, which is the one
+    // thing the viewer just said they did not want.
+    let pageChatHidden = false;
+
+    /**
+     * Follows the site's own show/hide chat control.
+     *
+     * Nothing about the overlay's own visibility is touched, so whatever state
+     * it was in — open, or closed to its launcher — is what comes back when the
+     * chat does. The panel and the launcher are both taken off screen, because
+     * a floating button is still something in the way of a video someone has
+     * just cleared the chat off.
+     *
+     * Only asked once the chat has been found laid out at least once, so a page
+     * still building its chat column is never mistaken for one that has been
+     * collapsed.
+     */
+    function syncPageChatVisibility() {
+      const collapsed = !!(lastGoodRect && site.chatCollapsed && site.chatCollapsed());
+      if (collapsed === pageChatHidden) return;
+      pageChatHidden = collapsed;
+      root.classList.toggle('fcm-page-chat-hidden', collapsed);
+      // Nothing of ours is on screen to be covered, so nothing is standing
+      // aside for the site's menus either.
+      if (collapsed) setPeek(false);
+      else syncPlacement();
+    }
+
     function tick() {
       refreshCards();
       syncPlacement();
+      syncPageChatVisibility();
       syncPeek();
       renderNativeBar();
     }
