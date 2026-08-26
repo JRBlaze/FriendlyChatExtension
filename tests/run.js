@@ -84,6 +84,55 @@ const FCM_LINKS_KEY = 'fcm_channel_links_v1';
 
 const suites = {};
 
+// The version, in every place it is written down.
+//
+// The README carried a version badge that nobody remembered to touch, and it
+// sat at 1.5.0 through four releases while the extension shipped 1.6, 1.7,
+// 1.8 and 1.9. The badge now reads the manifest, and everything else that
+// names a version is checked here, because remembering is what failed.
+suites.repo = function () {
+  const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8'));
+  const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+  const version = manifest.version;
+
+  ok(/^\d+\.\d+\.\d+$/.test(version), `repo: the manifest version is a version (${version})`);
+
+  // The download link names one specific file, so it cannot be derived and has
+  // to be kept in step.
+  const zips = Array.from(new Set(readme.match(/FriendlyChatExtension-v[\d.]+\.zip/g) || []));
+  eq(zips.length, 1, `repo: the README names one release asset (${zips.join(", ") || "none"})`);
+  eq(zips[0], `FriendlyChatExtension-v${version}.zip`,
+    'repo: and it is the version the manifest is at');
+
+  // The badge is derived from the manifest rather than typed out, which is why
+  // there is no third place to forget.
+  ok(readme.includes('img.shields.io/badge/dynamic/json'),
+    'repo: the version badge reads the manifest rather than repeating it');
+  const hardcoded = readme.match(/badge\/version-[\d.]+/g) || [];
+  eq(hardcoded.length, 0,
+    `repo: no hand-written version badge is left to go stale (${hardcoded.join(', ')})`);
+
+  // Every script the manifest names has to exist, or the packaged extension
+  // fails to load with nothing to say about why.
+  const referenced = [manifest.background.service_worker];
+  manifest.content_scripts.forEach((entry) => {
+    (entry.js || []).forEach((f) => referenced.push(f));
+    (entry.css || []).forEach((f) => referenced.push(f));
+  });
+  (manifest.web_accessible_resources || []).forEach((res) => {
+    (res.resources || []).forEach((f) => { if (!f.includes('*')) referenced.push(f); });
+  });
+  const missing = referenced.filter((f) => !fs.existsSync(path.join(ROOT, f.replace(/^\//, ''))));
+  eq(missing, [], `repo: every file the manifest names exists (${missing.join(', ')})`);
+
+  // And nothing is loaded twice, which would run a module and its side effects
+  // a second time.
+  manifest.content_scripts.forEach((entry, i) => {
+    const js = entry.js || [];
+    eq(js.length, new Set(js).size, `repo: content script entry ${i} lists each file once`);
+  });
+};
+
 suites.irc = function () {
   const FCM = load(makeSandbox(), ...SHARED);
 
