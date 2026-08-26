@@ -413,125 +413,11 @@ are not currently browsing**, so a message can go to Twitch and Kick at once.
   application has to be registered as a *public* client.
 - **Kick** uses OAuth 2.1 with PKCE. Its token exchange requires a client secret, so the code is
   exchanged through the same Cloudflare Worker the desktop app uses; the secret stays on the
-  worker and never reaches the browser. Kick needs no setup — see below.
+  worker and never reaches the browser. Kick needs no setup.
 
 Tokens live in `chrome.storage.local`, never in `storage.sync`, so they are not replicated across
 your browsers. Kick tokens refresh silently; a Twitch implicit token cannot be refreshed, so when
 it expires the overlay says so and asks you to reconnect.
-
-### Setup you have to do yourself
-
-**Both platforms refuse the sign-in until this extension's redirect URL is registered with them.**
-
-Kick says so plainly (*invalid redirect uri*). Twitch does not, and its behaviour is worth
-understanding because the symptom points nowhere near the cause:
-
-> When the redirect URL is not registered, Twitch still shows you the consent screen. You click
-> Authorize, and Twitch then sends the browser to whichever redirect URL *is* registered on that
-> application, carrying `?error=redirect_mismatch`. If nothing is listening there, that page fails
-> to load and Chrome reports only **"Authorization page could not be loaded"** — which says
-> nothing about redirects at all.
-
-So if you see that message, look at the address bar of the window that flashed up. `redirect_mismatch`
-in the URL confirms it, and the host it went to is the redirect the application *does* have
-registered.
-
-The URL to register is fixed for this extension:
-
-```
-https://bbjieacidkcngofgddlfipiajcchdaik.chromiumapp.org/
-```
-
-It does not change when you move the folder, because `manifest.json` pins the extension's ID with
-a `key` field. Register it once and it keeps working.
-
-**On Twitch:** this extension ships with its own application — *Friendly Chat Extension*, client ID
-`4bfkouj78vsa1crhf7juucfkb273nv`, registered as a **Public** client with exactly the redirect URL
-above. If that is the application you are using, there is nothing to do.
-
-To use a different one, register it at the [developer console](https://dev.twitch.tv/console/apps):
-
-- **Client Type** must be **Public** — the implicit grant this extension uses is not available to
-  confidential clients.
-- Paste the redirect URL into **OAuth Redirect URLs**, click **Add**, then **Save**. Typing it
-  into the box is not enough on its own; it has to be added to the list.
-
-Then put its client ID into the extension's options page. Nothing else needs to change.
-
-**On Kick: nothing to do.** The extension uses the same proxy and the same registered redirect
-as the desktop app, so the Connect button works as shipped.
-
-It talks to the same worker
-(`https://friendly-chat-kick-proxy.jrblaze.workers.dev`), the same endpoints (`/kick-config`,
-`/kick-token`, `/kick-refresh`), and by default the same redirect the desktop app registers:
-`http://localhost:8080/friendly-chat.html`.
-
-The Kick client id is **not** kept in this repository. The worker holds the client secret, so
-only the worker knows which application that secret belongs to — the extension asks it at
-sign-in. A copy in the source could only go stale and send people to authorise against the wrong
-application, and it would buy nothing: if the worker is unreachable, the token exchange fails
-anyway, so the sign-in stops before the consent screen rather than after it.
-
-Reusing that redirect is what removes the setup step, and it needs one trick.
-`chrome.identity.launchWebAuthFlow` only ever finishes on a `chromiumapp.org` URL, so it cannot
-be used here. Instead the extension opens an ordinary tab, and watches for it reaching the
-redirect. That works even though nothing is listening on port 8080: the tab's address changes to
-the redirect — carrying the authorization code — before the load fails. The extension reads the
-code from there and closes the tab. **No local server has to be running.**
-
-If you would rather not lean on the desktop app's registration, the options page offers two
-alternatives, each needing one URL registered with Kick first:
-
-| Setting | Register with Kick |
-| --- | --- |
-| **Reuse the desktop app's URL** (default) | *nothing — already registered* |
-| Straight back to the extension | `https://bbjieacidkcngofgddlfipiajcchdaik.chromiumapp.org/` |
-| Via the proxy worker | `https://friendly-chat-kick-proxy.jrblaze.workers.dev/kick-callback` |
-
-Kick's token exchange requires a client secret even with PKCE — omitting it answers 400, a wrong
-one answers 401 — which is why the exchange goes through the worker rather than the browser. The
-client id itself is public and only starts the sign-in.
-
-### The worker
-
-`cloudflare-worker.js` and `wrangler.toml` in this folder deploy over the existing worker under
-the same name, so its URL does not change and its secrets survive:
-
-```bash
-wrangler deploy
-```
-
-It differs from the desktop app's worker in two ways, both of which came out of debugging this:
-
-- **Failures are reported properly.** Kick answers a rejected token request with 400 and an
-  *empty body*, and calling `.json()` on that threw — so every exchange failure arrived as
-  `Unexpected end of JSON input`, which says nothing. Responses are now read as text and only
-  parsed when there is something to parse, and the reply carries Kick's own words, the HTTP
-  status, and a hint naming the likely cause (401 means the worker's client secret does not match
-  its client id; 400 on an authorization code usually means the redirect did not match).
-- **`/kick-callback` bridges the redirect.** It reads the extension's own redirect out of the
-  `state` parameter and forwards every parameter Kick returned. It only ever forwards to a
-  `chromiumapp.org` URL, so it cannot be turned into an open redirect.
-
-It must match **exactly** — same scheme, same id, and the trailing slash included.
-
-If sign-in still fails, the overlay's **Settings → Accounts** panel shows the failure in full,
-with the URL to copy and whatever the platform actually said. It stays there until the account
-connects, rather than vanishing as a toast.
-
-That panel also carries an **Open the sign-in page in a tab** button, which is the test that
-separates the two possible causes:
-
-- **The consent screen appears** — the redirect *is* registered, and the problem is the sign-in
-  window rather than the registration.
-- **An error appears** — that error names exactly what still needs fixing, in the platform's own
-  words rather than Chrome's generic one.
-
-Note that Twitch only checks the redirect URL *after* you are signed in to Twitch, so an
-unregistered URL looks like an ordinary login page right up until the moment it fails.
-
-If you would rather use your own credentials, the options page takes a Twitch client id and a
-Kick proxy URL. Leave them alone to use the desktop app's.
 
 ## Where the data comes from
 
@@ -960,8 +846,9 @@ was never going to see in a friendly test:
   only go to the site you are on, through its own chat box. The target chips say which case you
   are in, and connecting an account is what unlocks sending to both at once.
 - **Sign-in needs a one-off registration step.** Both platforms reject the OAuth redirect until
-  the extension's `chromiumapp.org` URL is listed in their developer console — see
-  *Connecting accounts* above. Nothing in the extension can do that part for you.
+  the extension's redirect URL is registered with them. The overlay's *Settings -> Accounts*
+  panel shows the URL to register and whatever the platform actually said, and keeps it there
+  until the account connects. Nothing in the extension can do that part for you.
 - **Moderation needs a connected account** on the platform in question, with the scopes granted
   at sign-in. Without one the platform never tells us you hold the badge, so the tools stay
   hidden rather than appearing and then failing.

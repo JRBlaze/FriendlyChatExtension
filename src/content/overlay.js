@@ -147,7 +147,13 @@
 
         <div class="fcm-prompt fcm-hidden"></div>
 
-        <div class="fcm-feed"></div>
+        <div class="fcm-feed-wrap">
+          <div class="fcm-feed"></div>
+          <button class="fcm-jump fcm-hidden" type="button">
+            <span class="fcm-jump-arrow">&#8595;</span>
+            <span class="fcm-jump-text">Jump to live chat</span>
+          </button>
+        </div>
 
         <div class="fcm-native fcm-hidden"></div>
 
@@ -198,6 +204,30 @@
 
     const feed = FCM.createFeed(feedEl, () => settings);
     feed.onCount((n) => { countEl.textContent = `${n} message${n === 1 ? '' : 's'}`; });
+
+    // ── Scrolling back through the chat ───────────────────────────────────────
+    //
+    // Reading something a few screens up should not be interrupted by the feed
+    // jumping to the newest line — so it holds still, and this is the way back.
+    // The count is what makes holding still safe: you can see how much is
+    // waiting rather than wondering whether the chat has died.
+    const jumpEl = $('.fcm-jump');
+    const jumpTextEl = $('.fcm-jump-text');
+
+    feed.onPinChange((pinned, missed) => {
+      jumpEl.classList.toggle('fcm-hidden', pinned);
+      if (pinned) return;
+      jumpTextEl.textContent = missed
+        ? `${missed} new message${missed === 1 ? '' : 's'}`
+        : 'Jump to live chat';
+      jumpEl.title = missed
+        ? `${missed} new message${missed === 1 ? '' : 's'} since you scrolled up — click to catch up`
+        : 'Back to the newest messages';
+    });
+
+    // Scrolls and nothing else. Coming back to the live end is about reading,
+    // so the caret is left wherever the viewer put it.
+    jumpEl.addEventListener('click', () => feed.scrollToBottom());
 
     // ── Placement ─────────────────────────────────────────────────────────────
 

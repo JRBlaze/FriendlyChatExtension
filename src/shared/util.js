@@ -112,13 +112,42 @@
       .catch(() => null);
   };
 
-  FCM.loadSettings = async function () {
+  // Settings are written to sync so they follow the account between browsers,
+  // and mirrored to local so they survive sync refusing the write.
+  //
+  // Sync has quotas that local does not: 8KB per item and 120 writes a minute.
+  // Starring a run of emotes can reach the second of those, and a refused write
+  // used to be swallowed — the star lit up, nothing was stored, and the
+  // favourites were gone at the next reload. The mirror is what makes that
+  // recoverable rather than silent.
+  const stamped = (settings) => ({ ...settings, savedAt: Date.now() });
+
+  async function readArea(area) {
     try {
-      const stored = await chrome.storage.sync.get(FCM.STORAGE_KEYS.settings);
-      return { ...FCM.DEFAULT_SETTINGS, ...(stored[FCM.STORAGE_KEYS.settings] || {}) };
+      const stored = await chrome.storage[area].get(FCM.STORAGE_KEYS.settings);
+      return stored[FCM.STORAGE_KEYS.settings] || null;
     } catch (e) {
-      return { ...FCM.DEFAULT_SETTINGS };
+      return null;
     }
+  }
+
+  // An async wrapper, so an area that is not there at all rejects like a failed
+  // write rather than throwing where the call is written — which would take the
+  // other area's write down with it, and that is the one meant to be the
+  // backstop.
+  async function writeArea(area, value) {
+    await chrome.storage[area].set({ [FCM.STORAGE_KEYS.settings]: value });
+  }
+
+  FCM.loadSettings = async function () {
+    const [synced, local] = await Promise.all([readArea('sync'), readArea('local')]);
+    // Whichever was written last is the one the viewer meant. A device that has
+    // never saved has no local copy and simply uses what synced in.
+    const newest = (!local && !synced) ? null
+      : !local ? synced
+        : !synced ? local
+          : ((local.savedAt || 0) > (synced.savedAt || 0) ? local : synced);
+    return { ...FCM.DEFAULT_SETTINGS, ...(newest || {}) };
   };
 
   // Saving is read-modify-write, so two of them overlapping would let the second
@@ -130,11 +159,23 @@
   FCM.saveSettings = function (patch) {
     savingChain = savingChain.then(async () => {
       const current = await FCM.loadSettings();
-      const next = { ...current, ...patch };
-      await chrome.storage.sync.set({ [FCM.STORAGE_KEYS.settings]: next });
+      const next = stamped({ ...current, ...patch });
+      // Both areas, and neither failure is allowed to stop the other: local is
+      // the copy that has to survive, sync is the one that travels.
+      const results = await Promise.allSettled([
+        writeArea('local', next),
+        writeArea('sync', next),
+      ]);
+      // Only worth saying anything when nothing was written at all. One of the
+      // two refusing is exactly what the other is there for.
+      if (results.every((r) => r.status === 'rejected')) {
+        throw new Error('settings could not be stored');
+      }
       return next;
     }).catch(async () => {
-      // A failed write must not poison every save that follows it.
+      // A failed write must not poison every save that follows it, so the chain
+      // is handed a usable object either way — but nothing here pretends the
+      // write happened.
       const current = await FCM.loadSettings();
       return { ...current, ...patch };
     });

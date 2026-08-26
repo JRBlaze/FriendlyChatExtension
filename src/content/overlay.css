@@ -330,6 +330,50 @@
 
 /* ── Feed ──────────────────────────────────────────────────────────────────── */
 
+/* Holds the feed and the button that floats over the foot of it. The feed
+   itself scrolls, so the button has to sit outside it or it would scroll away
+   with the messages. */
+.fcm-feed-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Only there while the feed is holding still, which is the only time it means
+   anything. Centred over the foot of the messages, clear of the scrollbar. */
+.fcm-jump {
+  position: absolute;
+  left: 50%;
+  bottom: 10px;
+  transform: translateX(-50%);
+  display: inline-flex; align-items: center; gap: 6px;
+  max-width: calc(100% - 24px);
+  height: 26px; padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--accent);
+  background: var(--accent-fill);
+  color: #fff;
+  font-family: var(--fcm-mono);
+  font-size: max(10px, calc(var(--fcm-size) - 3px));
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  /* Above the rows, below the menus the composer opens over the feed. */
+  z-index: 3;
+}
+.fcm-jump:hover { filter: brightness(1.12); }
+.fcm-jump:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+.fcm-jump-arrow { font-size: 12px; line-height: 1; }
+.fcm-jump-text { overflow: hidden; text-overflow: ellipsis; }
+.fcm-root[data-animate="true"] .fcm-jump { animation: fcm-jump-in .16s ease; }
+@keyframes fcm-jump-in {
+  from { opacity: 0; transform: translate(-50%, 6px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
 .fcm-feed {
   flex: 1;
   min-height: 0;

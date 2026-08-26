@@ -395,29 +395,62 @@
     return { platform: 'kick', login: record.login };
   }
 
+  // Told apart from a new record so the caller knows whether the account is
+  // finished or merely out of reach. Signing back in is a real interruption,
+  // and it must not be the answer to the proxy being down for a minute.
+  const REFUSED = 'refused';
+
+  /**
+   * Trades Kick's refresh token for a new access token.
+   *
+   * @returns the new record, REFUSED when Kick says the refresh token is no
+   *   longer good, or null when it could not be asked at all — a network drop,
+   *   the proxy restarting, a 502 on the way through. Only the first of those
+   *   is a reason to forget the account.
+   */
   async function refreshKick(settings, record) {
-    if (!record.refreshToken) return null;
-    const res = await fetch(proxy(settings, '/kick-refresh'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refresh_token: record.refreshToken }),
-    });
+    if (!record.refreshToken) return REFUSED;
+    let res;
+    try {
+      res = await fetch(proxy(settings, '/kick-refresh'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: record.refreshToken }),
+      });
+    } catch (e) {
+      // Never reached Kick. That says nothing about the token, and throwing
+      // here used to take the whole channel join down with it.
+      return null;
+    }
     const data = await res.json().catch(() => ({}));
-    if (!res.ok || !data.access_token) return null;
-    const next = {
-      ...record,
-      accessToken: data.access_token,
-      refreshToken: data.refresh_token || record.refreshToken,
-      expiresAt: Date.now() + ((data.expires_in || 3600) * 1000),
-    };
-    await FCM.auth.set('kick', next);
-    return next;
+    if (res.ok && data.access_token) {
+      const next = {
+        ...record,
+        accessToken: data.access_token,
+        refreshToken: data.refresh_token || record.refreshToken,
+        expiresAt: Date.now() + ((data.expires_in || 3600) * 1000),
+      };
+      await FCM.auth.set('kick', next);
+      return next;
+    }
+    // 400 and 401 are Kick saying the refresh token is spent, and so is
+    // invalid_grant whatever status carried it. A 500, a 502 or a proxy that
+    // answered with something else is a service having a bad day, and the
+    // account outlives that.
+    if (res.status === 400 || res.status === 401) return REFUSED;
+    if (data && data.error === 'invalid_grant') return REFUSED;
+    return null;
   }
 
   /**
    * Returns a usable token record, refreshing it first if it is about to expire.
+   *
    * Kick can refresh silently; a Twitch implicit token cannot, so an expired one
    * is dropped and the caller is told to reconnect.
+   *
+   * An account is only forgotten when the platform says it is finished. Being
+   * unable to reach the platform is not the same thing, and treating it as one
+   * meant a minute of network trouble cost a sign-in that lasts months.
    */
   FCM.auth.usable = async function (platform, settings) {
     const record = await FCM.auth.get(platform);
@@ -428,7 +461,10 @@
 
     if (platform === 'kick') {
       const refreshed = await refreshKick(settings, record);
-      if (refreshed) return refreshed;
+      if (refreshed && refreshed !== REFUSED) return refreshed;
+      // Out of reach rather than refused: the account stays, and the next
+      // attempt tries again. Unusable this moment is not gone.
+      if (refreshed === null) return null;
     }
     await FCM.auth.clear(platform);
     return null;
