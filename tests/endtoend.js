@@ -50,10 +50,11 @@ function makeSocketClass(registry) {
  * Boots the worker and one tab's content script, wired together.
  * @param {string} startPath the channel path the tab opens on
  */
-function bootPair(startPath) {
+function bootPair(startPath, opts = {}) {
+  const host = opts.hostname || 'www.twitch.tv';
   const sockets = [];
   const FakeWebSocket = makeSocketClass(sockets);
-  const storage = { local: {}, sync: {} };
+  const storage = { local: { ...(opts.storage || {}) }, sync: {} };
   const timers = new Set();
   const track = {
     setTimeout: (fn, ms) => { const t = setTimeout(fn, ms); timers.add(t); return t; },
@@ -85,8 +86,12 @@ function bootPair(startPath) {
     ...track,
     crypto: { getRandomValues: (a) => a, subtle: { digest: async () => new ArrayBuffer(32) } },
     btoa: (s) => Buffer.from(s, 'binary').toString('base64'),
-    fetch: async (url) => {
+    fetch: async (url, init) => {
       const u = String(url);
+      if (opts.fetchImpl) {
+        const answered = await opts.fetchImpl(u, init);
+        if (answered) return answered;
+      }
       if (u.includes('gql.twitch.tv')) {
         return { ok: true, json: async () => ({ data: { user: null } }) };
       }
@@ -170,9 +175,9 @@ function bootPair(startPath) {
 
   // ── Content script ────────────────────────────────────────────────────────
   const location = {
-    hostname: 'www.twitch.tv',
+    hostname: host,
     pathname: startPath,
-    get href() { return 'https://www.twitch.tv' + this.pathname; },
+    get href() { return 'https://' + host + this.pathname; },
   };
   const overlays = [];
   // A page reload is a second content script against the same worker, so the
@@ -238,14 +243,16 @@ function bootPair(startPath) {
       channel: opts.channel, destroyed: false, statuses: [],
       // What the page was actually given, which is the whole question a reload
       // asks: a fresh page gets none of this unless the worker sends it again.
-      batches: [], emoteSets: [], badgeSets: [],
+      batches: [], emoteSets: [], badgeSets: [], counterparts: [],
       mount: async () => o,
       destroy() { o.destroyed = true; },
       sys() {}, event() {}, chat() {},
       batch(rows) { o.batches.push(rows || []); },
       setEmotes(platform, kind, store) { o.emoteSets.push({ platform, kind, store }); },
       setBadges(platform, badges) { o.badgeSets.push({ platform, badges }); },
-      deleteMessage() {}, deleteUser() {}, setCounterpart() {}, setAccounts() {},
+      deleteMessage() {}, deleteUser() {},
+      setCounterpart(info) { o.counterparts.push(info); },
+      setAccounts() {},
       setModerator() {}, modResult() {}, sendResult() {}, applyStoredSettings() {}, toast() {},
       setStatus(platform, state, channel) { o.statuses.push({ platform, state, channel }); },
     };
@@ -277,6 +284,13 @@ function bootPair(startPath) {
       await wait(400);
       return overlays[overlays.length - 1];
     },
+    // What the prompt’s Add button does, without needing the real overlay.
+    joinOther(platform, channel) {
+      livePorts.forEach((port) => {
+        if (port && !port.__dead) port.postMessage({ cmd: 'join', platform, channel });
+      });
+    },
+    storage,
     ircSockets() { return sockets.filter((s) => s.url.includes('irc-ws')); },
     joins() {
       return this.ircSockets().flatMap((s) => s.sent.filter((l) => l.startsWith('JOIN ')));

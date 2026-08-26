@@ -4901,6 +4901,36 @@ suites.counterpartswitch = function () {
       } finally { w.teardown(); }
     }
 
+    // ── A page still running the previous version cannot cause it ──
+    //
+    // Reloading an extension restarts the worker and leaves the old content
+    // script running in every tab already open, until each one is reloaded.
+    // On a single-page app, clicking between channels never reloads the
+    // document, so that can go on for a long time — and the old page half
+    // still sends the links it read at the wrong moment.
+    //
+    // The worker is the half that can be sure it is current, so it discards
+    // them rather than trusting the page to have stopped sending them.
+    {
+      const w = boot();
+      try {
+        w.connect();
+        w.send({ cmd: 'hello', site: 'kick', channel: 'cashmeow', hints: [] });
+        await wait(300);
+        // An old content script announcing the new channel, carrying the
+        // links it scraped off the one being left.
+        w.clear();
+        w.send({ cmd: 'hello', site: 'kick', channel: 'irongoddess',
+          hints: ['https://twitch.tv/cashmeow'] });
+        await wait(500);
+        eq(seen(w), 'irongoddess',
+          'switch: links sent with the announcement are ignored, whatever the page sends');
+        const links = w.storage.local.fcm_channel_links_v1;
+        eq(links['kick:irongoddess'].channel, 'irongoddess',
+          'switch: so a stale page cannot write a wrong pairing down either');
+      } finally { w.teardown(); }
+    }
+
     // ── A pairing written down by the old fault is not used at all ──
     //
     // Anyone who hit this has kick:irongoddess -> cashmeow in storage, and
