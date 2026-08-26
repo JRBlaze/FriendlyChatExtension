@@ -123,9 +123,34 @@
     // rendered on screen.
     let changed = false;
     Object.keys(store).forEach((name) => {
-      if (target[name]) return;
-      target[name] = store[name];
-      changed = true;
+      const incoming = store[name];
+      const existing = target[name];
+      if (!existing) {
+        target[name] = incoming;
+        changed = true;
+        return;
+      }
+
+      // The same emote arrives more than once, and the first arrival is not the
+      // best informed. Emotes come from the cache before the network answers,
+      // and on Twitch the account's own emote list arrives before the channel's
+      // does — so a subscriber's emotes for the channel they are watching land
+      // unowned first and were then locked that way for good. The picker groups
+      // by owner, so the channel's section came up empty on the very load where
+      // it matters most.
+      //
+      // The url is still first-come: replacing it would swap the picture under
+      // a message already on screen. Who an emote belongs to is different — it
+      // is only ever learnt, never contradicted, so a later arrival that knows
+      // is allowed to say so.
+      if (incoming.channel && !existing.channel) {
+        existing.channel = true;
+        changed = true;
+      }
+      if (incoming.owner && !existing.owner) {
+        existing.owner = incoming.owner;
+        changed = true;
+      }
     });
     if (changed) view.emoteVersion++;
   };

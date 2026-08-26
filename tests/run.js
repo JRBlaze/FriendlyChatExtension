@@ -619,6 +619,47 @@ suites.compose = function () {
   const FCM = load(sandbox, ...SHARED, 'src/content/render.js', 'src/content/compose.js');
   FCM.setViewSettings(FCM.DEFAULT_SETTINGS);
 
+  // ── Learning whose an emote is, after the fact ────────────────────────────
+  //
+  // The same emote arrives more than once and the first arrival is the least
+  // informed: the cache answers before the network, and Twitch hands over the
+  // account's own emote list before it says which channel is being watched. The
+  // picker groups by owner, so an emote locked in as unowned never appeared
+  // under its channel — on the very first load, which is when it matters.
+  {
+    FCM.setEmotes('twitch', 'thirdparty', {
+      Learned: { url: 'first', source: '7TV Global' },
+      StaysGlobal: { url: 'g', source: '7TV Global' },
+    });
+    FCM.setEmotes('twitch', 'thirdparty', {
+      Learned: { url: 'second', source: '7TV', channel: true, owner: 'Jynxzi' },
+    });
+    const rec = FCM.view.emotes.twitch.thirdparty.Learned;
+    eq(rec.owner, 'Jynxzi', 'compose: a later arrival that knows the owner is believed');
+    eq(rec.channel, true, 'compose: and that it is the channel being watched');
+    eq(rec.url, 'first', 'compose: but the picture does not change under a rendered message');
+
+    // Knowing less later must not unset it.
+    FCM.setEmotes('twitch', 'thirdparty', { Learned: { url: 'third', source: '7TV Global' } });
+    eq(FCM.view.emotes.twitch.thirdparty.Learned.owner, 'Jynxzi',
+      'compose: ownership is learnt, never contradicted');
+    ok(!FCM.view.emotes.twitch.thirdparty.StaysGlobal.owner,
+      'compose: and an emote nobody claimed stays unclaimed');
+  }
+
+  // The platform’s own list and a provider’s list are separate stores, and only
+  // one of them can know. Listed once, and by whoever knew.
+  {
+    FCM.setEmotes('twitch', 'native', { BothStores: { url: 'n', source: 'Twitch Sub' } });
+    FCM.setEmotes('twitch', 'thirdparty', {
+      BothStores: { url: 't', source: '7TV', channel: true, owner: 'Jynxzi' },
+    });
+    const found = FCM.allEmoteEntries().filter((e) => e.name === 'BothStores');
+    eq(found.length, 1, 'compose: a name in both stores is one emote in the list');
+    eq(found[0].owner, 'Jynxzi', 'compose: owned by whichever store knew');
+    eq(found[0].url, 'n', 'compose: drawn as the first store had it');
+  }
+
   // ── What the picker groups by ─────────────────────────────────────────────
   //
   // Favourites first, then the channel's own emotes, then everything else by

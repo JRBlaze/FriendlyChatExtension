@@ -670,6 +670,10 @@ function loadSources(bust) {
       location.reload();
     },
   };
+  // Start with the chat already collapsed, the way a viewer who keeps it that
+  // way arrives at the page.
+  if (new URLSearchParams(location.search).get('collapsed') === '1') acts['collapse-chat']();
+
   document.querySelectorAll('.devbar button').forEach((b) => {
     b.addEventListener('click', () => acts[b.dataset.act]());
   });
