@@ -14,6 +14,20 @@
     </div>
   </header>
 
+  <section id="update" class="card update hidden">
+    <div class="update-head">
+      <strong id="update-title">Update available</strong>
+      <button id="update-dismiss" type="button" title="Hide this until the next release">&times;</button>
+    </div>
+    <p class="muted" id="update-note"></p>
+    <div class="update-actions">
+      <button id="update-get" type="button" class="primary">Download</button>
+      <button id="update-install" type="button" title="Open chrome://extensions">Extensions page</button>
+    </div>
+    <p class="muted small">Drop the unzipped folder onto the extensions page, or press Reload if
+      you already load it from a folder. Chrome cannot update an extension it did not install.</p>
+  </section>
+
   <section id="status" class="card hidden">
     <div class="row">
       <span class="label">Watching</span>
@@ -58,6 +72,7 @@
 
   <footer>
     <a id="open-options" href="#">All settings</a>
+    <a id="check-updates" href="#">Check for updates</a>
     <span id="version"></span>
   </footer>
 

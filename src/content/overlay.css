@@ -414,6 +414,36 @@
    then removed, and still has to be readable. */
 .fcm-deleted .fcm-body { text-decoration: line-through; color: var(--text-muted); }
 
+/* Somebody's first ever message in this channel, on Twitch's say-so rather than
+   ours. Marked the way the site marks it — a tinted row and a label — because
+   the point of it is to be noticed by a moderator scanning past.
+
+   Quieter than a mention: a row that names you is about you, and a first
+   message is about somebody else. A row that is both keeps the mention's
+   colour, which is why this is written first and at the same weight.
+
+   Only Twitch marks this, so there is no per-platform variant to pick between
+   — the tint is Twitch's own purple. */
+.fcm-msg.fcm-first {
+  /* 0.07, not the 0.1 this started at. A tint sits behind every piece of text
+     in the row, and on the light theme 0.1 pulled the timestamp, the colon, the
+     username and any @mention in it down to 4.4:1 — under the bar the rest of
+     the overlay holds. Measured with tests/contrast.js against what is actually
+     painted, panel opacity included: 0.08 is the last value that clears it and
+     this leaves a little room. The left bar carries the rest of the signal. */
+  background: rgba(145, 70, 255, 0.07);
+  box-shadow: inset 2px 0 0 var(--twitch);
+}
+.fcm-first-tag {
+  display: inline-flex; align-items: center; height: 15px; padding: 0 5px;
+  margin-right: 5px;
+  border-radius: 3px;
+  background: rgba(145, 70, 255, 0.22); color: var(--badge-sub);
+  font-family: var(--fcm-mono); font-size: 8.5px; font-weight: 700;
+  letter-spacing: 0.04em; line-height: 1; text-transform: uppercase;
+  vertical-align: middle;
+}
+
 .fcm-msg.fcm-mentioned {
   background: rgba(124, 107, 255, 0.09);
   box-shadow: inset 2px 0 0 var(--accent);
@@ -502,6 +532,57 @@
   background: var(--mention-bg); color: var(--mention-text);
   border-radius: 3px; padding: 0 3px; font-weight: 600;
 }
+
+/* Somebody else's name written into a message, and the name above a reply.
+   Both are a person, so both are drawn in that person's own colour when this
+   feed has seen them speak. The platform's tint is the fallback for a name
+   nobody here has heard from yet — never a colour we made up for them. */
+.fcm-mention-user, .fcm-replyto-name { font-weight: 600; }
+.fcm-mention-twitch { color: var(--twitch-text); }
+.fcm-mention-kick { color: var(--kick-text); }
+.fcm-mention-user[style*="--author-dark"],
+.fcm-replyto-name[style*="--author-dark"] { color: var(--author-dark); }
+.fcm-root[data-theme="light"] .fcm-mention-user[style*="--author-light"],
+.fcm-root[data-theme="light"] .fcm-replyto-name[style*="--author-light"] { color: var(--author-light); }
+
+/* `/me`. Both platforms drop the colon and paint the line in the sender's
+   colour, which is the only thing left saying this is an action once the CTCP
+   wrapper has been taken off. */
+.fcm-msg.fcm-action .fcm-author { margin-right: 5px; }
+.fcm-msg.fcm-action .fcm-body { font-style: italic; }
+.fcm-msg.fcm-action[data-platform="twitch"] .fcm-body { color: var(--twitch-text); }
+.fcm-msg.fcm-action[data-platform="kick"] .fcm-body { color: var(--kick-text); }
+.fcm-msg.fcm-action .fcm-body[style*="--author-dark"] { color: var(--author-dark); }
+.fcm-root[data-theme="light"] .fcm-msg.fcm-action .fcm-body[style*="--author-light"] {
+  color: var(--author-light);
+}
+
+/* The message a reply is answering, above the reply itself.
+   One line and clipped: it is context, and a long original must not push the
+   answer down the feed. Flex rather than inline so the clipping has something
+   to clip against — the row it sits in flows inline. */
+.fcm-replyto {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  max-width: 100%;
+  margin-bottom: 1px;
+  font-size: max(10px, calc(var(--fcm-size) - 3px));
+  line-height: 1.35;
+  color: var(--text-dim);
+}
+.fcm-replyto-icon, .fcm-replyto-name { flex-shrink: 0; }
+.fcm-replyto-text {
+  min-width: 0;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.fcm-replyto-gone { font-style: italic; }
+/* Quoted, so nothing in it competes with the message underneath: emotes come
+   down to the size of the text and a link stops looking clickable, because it
+   is a copy of a link and not the link itself. */
+.fcm-replyto .fcm-emote { max-height: 16px; margin: -1px 1px; }
+.fcm-replyto .fcm-link { color: inherit; text-decoration: none; }
+.fcm-replyto .fcm-mention { background: none; color: inherit; padding: 0; }
 
 .fcm-badges { display: inline-flex; align-items: center; gap: 3px; margin-right: 4px; vertical-align: middle; }
 .fcm-badge-img { width: 16px; height: 16px; border-radius: 3px; vertical-align: middle; object-fit: cover; }
@@ -714,6 +795,8 @@
    has just completed a name, and the caret would jump back over it. */
 .fcm-input {
   flex: 1;
+  /* The placeholder is positioned against this box. */
+  position: relative;
   min-width: 0;
   min-height: 28px;
   max-height: 84px;
@@ -735,11 +818,25 @@
 }
 .fcm-input:focus { border-color: var(--accent); }
 /* Shown by the class rather than by :empty, because an editable box keeps a
-   stray text node around long after it looks empty. */
+   stray text node around long after it looks empty.
+
+   Taken out of flow, which is the whole point of it being positioned. Generated
+   content inside an editable box is laid out as part of the line, so the empty
+   box had two places a caret could reasonably go — before the placeholder and
+   after it — and which one a click produced depended on where in the box the
+   click landed. The caret blinked at the start sometimes and at the end of
+   "Message Twitch…" other times, for a box that was empty either way. Out of
+   flow there is only one position left, so it is always the same one. */
 .fcm-input.fcm-input-empty::before {
   content: attr(data-placeholder);
+  position: absolute;
+  left: 9px; right: 9px; top: 5px;
   color: var(--text-dim);
   pointer-events: none;
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .fcm-input-emote {
   height: 1.55em;
@@ -989,11 +1086,19 @@
 .fcm-um {
   position: absolute;
   min-width: 178px;
+  /* Their recent messages can be as wide as a message; the menu cannot. */
+  max-width: 340px;
   background: var(--surface);
   border: 1px solid var(--border2);
   border-radius: 8px;
   box-shadow: var(--shadow);
-  overflow: hidden;
+  /* Never taller than the panel it is positioned inside. The menu grew a list
+     of the person's recent messages, and with a profile above it and the
+     moderation controls below it there is more in here than there is room for
+     on a short panel — so it scrolls rather than hanging off the bottom. */
+  max-height: calc(100% - 8px);
+  overflow-y: auto;
+  overflow-x: hidden;
   z-index: 7;
   padding: 3px 0;
 }
@@ -1032,6 +1137,30 @@
 .fcm-um-fact-quiet .fcm-um-fact-val {
   color: var(--text-dim); font-weight: 400; font-style: italic;
 }
+
+/* The messages this feed still holds from them, for the moderator deciding
+   what to do about it. Bounded and scrollable: it is a sample to judge by, not
+   a second chat window. */
+.fcm-um-history {
+  max-height: 132px;
+  overflow-y: auto;
+  padding: 2px 11px 6px;
+  margin-bottom: 3px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+.fcm-um-history[data-state="empty"] { color: var(--text-dim); font-style: italic; }
+.fcm-um-hline { display: flex; align-items: baseline; gap: 6px; padding: 1px 0; }
+.fcm-um-htime {
+  flex-shrink: 0;
+  font-family: var(--fcm-mono); font-size: 9.5px; color: var(--text-dim);
+}
+.fcm-um-htext { min-width: 0; word-break: break-word; color: var(--text-muted); }
+/* Already removed by a moderator, and still part of the picture. */
+.fcm-um-hline-deleted .fcm-um-htext { text-decoration: line-through; color: var(--text-dim); }
+.fcm-um-history .fcm-emote { max-height: 18px; }
 
 .fcm-um-action {
   display: flex; align-items: center; gap: 8px; width: 100%;

@@ -185,8 +185,8 @@
 
       addSys(text) { queue(FCM.buildSysEl(text)); },
 
-      addEvent(platform, text, activeFilter) {
-        queue(FCM.buildEventEl(platform, text, activeFilter));
+      addEvent(platform, text, activeFilter, meta) {
+        queue(FCM.buildEventEl(platform, text, activeFilter, meta));
       },
 
       // Dim every message from a user after a timeout or ban, the way the

@@ -154,8 +154,18 @@
           }
 
           if (command === 'USERNOTICE') {
-            const notice = FCM.twitchUserNoticeSummary(tags, (params[1] || '').trim());
-            if (notice) sink.event(notice);
+            // The summary is ours and the message under it is the viewer's, so
+            // they are kept apart: only the second half is run through the
+            // emote pipeline, and a display name that happens to spell an
+            // emote name stays a name.
+            const said = FCM.parseIrcAction(params[1] || '').text.trim();
+            const notice = FCM.twitchUserNoticeSummary(tags);
+            if (notice) {
+              sink.event(notice, {
+                body: said,
+                emoteMap: FCM.parseTwitchEmoteMap(tags.emotes),
+              });
+            }
             return;
           }
 
@@ -163,7 +173,12 @@
 
           const badgesTag = tags.badges || '';
           const displayName = tags['display-name'] || FCM.ircNick(prefix) || 'unknown';
-          const text = (params[1] || '').trim();
+          // `/me` is a PRIVMSG wearing a CTCP wrapper. It has to come off here,
+          // before the emptiness check and before the emote positions in the
+          // tags are handed on, because those are counted from the text inside
+          // the wrapper rather than from the line as sent.
+          const spoken = FCM.parseIrcAction(params[1] || '');
+          const text = spoken.text.trim();
           if (!text) return;
 
           if (tags.bits && Number(tags.bits) > 0) {
@@ -177,6 +192,13 @@
             platform: 'twitch',
             author: displayName,
             text,
+            action: spoken.action,
+            reply: FCM.twitchReplyContext(tags),
+            // Twitch's own answer to "has this person ever spoken here before".
+            // It is the only trustworthy one: the feed has seen this channel
+            // for as long as the panel has been open, and Twitch has seen it
+            // since the channel existed.
+            firstMessage: tags['first-msg'] === '1',
             color: tags.color || '',
             badgesRaw: badgesTag,
             badgeClass: FCM.twitchBadgeClass(badgesTag, tags),
@@ -237,13 +259,22 @@
         messages.forEach((raw) => {
           const { tags, prefix, command, params } = FCM.parseIrcLine(raw);
           if (command !== 'PRIVMSG') return;
-          const text = params[1] || '';
+          const spoken = FCM.parseIrcAction(params[1] || '');
+          const text = spoken.text;
           if (!text) return;
           const badgesTag = tags.badges || '';
           rows.push({
             platform: 'twitch',
             author: tags['display-name'] || FCM.ircNick(prefix) || 'unknown',
             text,
+            action: spoken.action,
+            reply: FCM.twitchReplyContext(tags),
+            // Deliberately not carried into the replay, even though the tag
+            // is there. The highlight is a prompt to do something — say hello,
+            // keep an eye on them — and acting on it is meaningless for a
+            // message from an hour ago that the same person has already
+            // followed with a dozen more. Twitch's own chat does not mark
+            // history either.
             color: tags.color || '',
             badgesRaw: badgesTag,
             badgeClass: FCM.twitchBadgeClass(badgesTag, tags),

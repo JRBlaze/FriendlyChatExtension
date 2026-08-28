@@ -38,8 +38,33 @@ feed. Open a Kick channel and it works the other way round.
   Kick badge labels render inline.
 - **Recent history on join,** with the original timestamps, so you are not staring at an empty
   panel when you arrive mid-stream.
-- **Events**: subs, resubs, gifted subs, raids, cheers, hype trains, timeouts and bans, shown as
-  muted rows so they never look like something a viewer typed.
+- **Events**: subs, resubs, gifted subs, raids, cheers, hype trains, redemptions, timeouts and
+  bans, shown as muted rows so they never look like something a viewer typed. The half of an
+  event the viewer actually typed — the message under a resub, the text of an announcement — is
+  drawn with its emotes; the summary around it is not, so a display name that happens to spell an
+  emote name stays a name.
+- **Channel point redemptions**, including the ones that never reach a chat socket. A reward that
+  asks for a message arrives over IRC and always has; a reward that asks for nothing is drawn by
+  Twitch's own page from a private live-update channel and is sent to nobody. Those are read back
+  off the page the site has already painted — Twitch only, only while the panel is showing the
+  same channel the page is, and only for lines that actually say a redemption happened. See
+  [Reading redemptions off the page](#reading-redemptions-off-the-page).
+- **`/me` renders as an action**, not as `\x01ACTION waves\x01`. The wrapper comes off before
+  anything else looks at the message, because the emote positions Twitch sends are counted from
+  the text inside it.
+- **Replies say what they are answering.** Both platforms send the original message alongside the
+  reply, so the row carries a quoted line naming who was answered and what they said — which is
+  the point, because the original has usually scrolled away by the time the answer arrives.
+  Replying from the username menu threads the reply properly on Twitch rather than only
+  @mentioning them.
+- **First messages are marked**, on Twitch's own say-so. Twitch flags the first message a person
+  has ever sent in a channel and that flag is the only thing this uses — never a guess from what
+  the panel happens to have seen since it opened. The replayed history is left unmarked: the
+  highlight is a prompt to do something about somebody who has just turned up, and acting on it an
+  hour late is meaningless.
+- **@mentions wear the mentioned person's colour**, once this feed has seen them speak. Somebody
+  nobody here has heard from falls back to the platform's own tint rather than a colour invented
+  for them.
 - **A full composer**: an emote picker grouped by source with search, `:emote` and `@name`
   autocomplete with Tab completion, and click-a-username for reply.
 - **Emotes appear as you type them.** Finish an emote name, press space, and it is drawn in the
@@ -64,7 +89,13 @@ feed. Open a Kick channel and it works the other way round.
 - **Link two channels by hand when the names differ.** `twitch.tv/chefsteve330` and
   `kick.com/chefsteve` are one person; type the name (or paste the address) once and the pair is
   remembered both ways, so arriving from either side merges the right chat.
-- **Moderation tools** in the username menu, for the channels you actually moderate.
+- **Moderation tools** in the username menu, for the channels you actually moderate — with the
+  last few messages that person sent shown above the buttons, so a timeout is a judgement about
+  something you can still read.
+- **Tells you when there is a new release.** The releases page is checked in the background and
+  the toolbar icon gets a dot when there is something newer; the popup turns that into the file
+  and the page to drop it on. Nothing installs itself — no extension outside the Web Store can —
+  but the steps that are left are two clicks rather than a trip to GitHub you had to think of.
 - **Follows the site's own theme.** Twitch or Kick in dark mode gets a dark overlay, light mode
   gets a light one, and it switches the moment you change it on the site.
 - **Several streams at once.** Each tab keeps its own sockets, channels and feed.
@@ -74,7 +105,7 @@ feed. Open a Kick channel and it works the other way round.
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.10.4.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.11.0.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and a folder named `FriendlyChatExtension-main`. The
@@ -107,6 +138,15 @@ so its button is always visible for quick settings.
 | Nothing at all after a Chrome restart | Developer-mode extensions stay installed, but Chrome may prompt you to keep them. Re-enable it on `chrome://extensions`. |
 
 ### Updating or removing it
+
+Chrome only updates extensions it installed itself, and it did not install this one. So the
+extension watches for you: it asks GitHub for the latest release every six hours, and when there
+is one newer than the version running, the toolbar icon gets a dot. Open the popup and it names
+the version, offers the zip and offers `chrome://extensions` to drop it on. Dismissing it hides
+that one version, not every future one. *Check for updates* in the popup's footer asks now.
+
+Nothing here can install the update. An extension cannot replace itself, and no permission
+changes that — what this removes is having to remember to go and look.
 
 - **After editing any file**, go back to `chrome://extensions` and click the circular reload arrow
   on the extension's card, then reload the Twitch or Kick tab.
@@ -484,6 +524,32 @@ tests/
 cloudflare-worker.js   the Kick token-exchange proxy, deployed separately
 wrangler.toml
 ```
+
+### Reading redemptions off the page
+
+Almost everything in the feed arrives over a socket. Channel point redemptions are the exception,
+and only some of them.
+
+A reward that asks the viewer for a message is delivered over IRC as an ordinary `PRIVMSG` with a
+`custom-reward-id` tag. Those have always been in the feed. A reward that asks for nothing — most
+of them — is not sent over IRC at all: Twitch's own web client draws that line from a private
+live-update channel, and the public API for redemptions only answers to the broadcaster's own
+token, so there is nothing to subscribe to for a channel you are merely watching. The only copy of
+that event in the tab is the one the site has already painted.
+
+So `src/content/native-events.js` reads it back, and is written to fail closed at every step:
+
+- Twitch only, and only while the panel is showing the very channel the page is. Reading one
+  channel's page into a feed joined to another would be worse than the row being missing.
+- Only lines the site marks as a notice, and only those carrying no chat message of their own —
+  a reward with a message is already in the feed from IRC, and twice is not an improvement.
+- Only lines that say a redemption happened. Subs, resubs, raids and watch streaks are drawn as
+  notices too, and every one of them arrives as a `USERNOTICE` with the platform's own structured
+  fields, which is a better source than words read off a screen.
+
+The last of those is why nothing there tries to be clever about wording. If the site is not in
+English, or Twitch rewrites the line, this finds nothing and the feed is exactly as complete as it
+was before. It can go quiet; it cannot start inventing rows.
 
 ### Why the sockets live in the service worker
 

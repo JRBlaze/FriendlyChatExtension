@@ -180,6 +180,7 @@
     <button data-act="kick">+ kick msg</button>
     <button data-act="burst">+ 40 burst</button>
     <button data-act="event">+ event</button>
+    <button data-act="rows">+ action/reply/first</button>
     <button data-act="sys">+ status</button>
     <button data-act="prompt">show live prompt</button>
     <button data-act="connect-kick">connect kick</button>
@@ -426,6 +427,7 @@ const SOURCES = [
   '/src/content/emote-input.js',
   '/src/content/compose.js',
   '/src/content/native.js',
+  '/src/content/native-events.js',
   '/src/content/overlay.js',
   '/src/content/sites.js',
 ];
@@ -529,6 +531,38 @@ function loadSources(bust) {
     kick:   () => push('kick'),
     burst:  () => { for (let i = 0; i < 40; i++) push(i % 2 ? 'kick' : 'twitch'); },
     event:  () => overlay.event('twitch', 'BigDonor is raiding with 4,120 viewers.'),
+    // The row kinds that only exist once a platform has said something extra
+    // about a message: an action, a threaded reply, a first-ever message, and
+    // an event carrying the viewer's own text.
+    rows: () => {
+      const at = Date.now();
+      overlay.chat({
+        platform: 'twitch', author: 'ColourfulViewer', text: 'hello everyone',
+        color: '#1E90FF', messageId: `r1-${at}`, timestamp: at,
+      });
+      overlay.chat({
+        platform: 'twitch', author: 'Waver', text: 'waves at the whole channel',
+        action: true, color: '#00C7AC', messageId: `r2-${at}`, timestamp: at,
+      });
+      overlay.chat({
+        platform: 'twitch', author: 'Answerer', text: 'it is Elden Ring, they are on NG+3',
+        color: '#FF7A00', messageId: `r3-${at}`, timestamp: at,
+        reply: {
+          name: 'ColourfulViewer', login: 'colourfulviewer', messageId: `r1-${at}`,
+          text: 'hello everyone — what game is this, and how far in are they exactly',
+        },
+      });
+      overlay.chat({
+        platform: 'twitch', author: 'NewHere', text: 'first time here, hi @ColourfulViewer',
+        firstMessage: true, messageId: `r4-${at}`, timestamp: at,
+      });
+      overlay.chat({
+        platform: 'kick', author: 'KickRegular', text: 'saying hi to @ColourfulViewer and @Nobody',
+        color: '#53fc18', messageId: `r5-${at}`, timestamp: at,
+      });
+      overlay.event('twitch', 'Fan resubscribed (24 months).', { body: 'thanks for the year!' });
+      overlay.event('twitch', 'JRBlaze redeemed Feed your hedgehog (50 points).');
+    },
     sys:    () => overlay.sys('Kick: disconnected'),
     prompt: () => overlay.setCounterpart({
       platform: 'kick', channel: 'examplestreamer-kick', exists: true, live: true,

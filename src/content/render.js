@@ -167,11 +167,15 @@
   const chatters = new Map(); // "platform:lowername" -> { name, platform, time }
   const CHATTER_LIMIT = 200;
 
-  FCM.rememberChatter = function (platform, author) {
+  FCM.rememberChatter = function (platform, author, color) {
     const key = `${platform}:${String(author).toLowerCase()}`;
     const existing = chatters.get(key);
     if (existing) {
       existing.time = Date.now();
+      // A colour is only ever learnt here, never unlearnt: a message that
+      // arrived without one must not blank the colour an earlier message
+      // established, or an @mention of them would flicker between the two.
+      if (color) existing.color = color;
       // Re-inserted so the map's own order is recency order. Without this the
       // oldest *key* was dropped rather than the least recently heard from, so
       // in a channel with more than a few hundred names a regular who had been
@@ -181,9 +185,26 @@
       chatters.set(key, existing);
       return;
     }
-    chatters.set(key, { name: author, platform, time: Date.now() });
+    chatters.set(key, { name: author, platform, time: Date.now(), color: color || '' });
     if (chatters.size > CHATTER_LIMIT) chatters.delete(chatters.keys().next().value);
   };
+
+  /**
+   * The colour a person's own name is drawn in, for the times their name is
+   * written by somebody else.
+   *
+   * Only from what this feed has actually seen: there is no lookup for
+   * "what colour is this name", and inventing one would mean an @mention
+   * rendering in a colour the person does not have.
+   *
+   * @returns {string} a #rrggbb colour, or '' when nobody by that name has
+   *   spoken here yet
+   */
+  function chatterColor(platform, name) {
+    const hit = chatters.get(`${platform}:${String(name).toLowerCase()}`);
+    return (hit && hit.color) || '';
+  }
+  FCM.chatterColor = chatterColor;
 
   FCM.recentChatters = function () {
     return [...chatters.values()];
@@ -297,6 +318,33 @@
   // Trailing punctuation is almost never part of the link.
   const TRAILING_PUNCT = /[.,!?;:'")\]}>]+$/;
 
+  // "@name," — a name on both platforms is letters, digits and underscores, and
+  // whatever sentence punctuation follows it is not part of it.
+  const AT_MENTION_RE = /^@([A-Za-z0-9_]{2,30})([^A-Za-z0-9_]*)$/;
+
+  /**
+   * A token for one person's name written into a message, drawn in the colour
+   * that person's own name is drawn in.
+   *
+   * Someone else's name is the case this handles. The viewer's own names are
+   * deliberately left as text so `highlightMentionTokens` still turns them into
+   * the highlight that says the message is addressed to them — that is a
+   * different fact from "this row names somebody", and the louder one wins.
+   *
+   * @returns {{token: object, tail: string}|null}
+   */
+  function mentionTokenFor(word, platform) {
+    if (!platform || word.charCodeAt(0) !== 64) return null;
+    const match = AT_MENTION_RE.exec(word);
+    if (!match) return null;
+    const name = match[1];
+    if (view.selfNames.includes(name.toLowerCase())) return null;
+    return {
+      token: { type: 'user', text: `@${name}`, platform, color: chatterColor(platform, name) },
+      tail: match[2],
+    };
+  }
+
   // A bare host only becomes a link when its last label is a real top-level
   // domain, because "any dotted word" would turn "node.js", "README.md" and
   // "run.sh" into links pointing at nothing. Anything under www. is taken on
@@ -368,6 +416,14 @@
       if (emote) {
         flush();
         out.push({ type: 'emote', url: emote.url, name: word, cls: 'thirdparty-emote', source: emote.source });
+        return;
+      }
+
+      const mention = mentionTokenFor(word, platform);
+      if (mention) {
+        flush();
+        out.push(mention.token);
+        if (mention.tail) buffer += mention.tail;
         return;
       }
 
@@ -519,6 +575,13 @@
       if (token.type === 'mention') {
         return `<span class="fcm-mention">${FCM.escapeHtml(token.text)}</span>`;
       }
+      if (token.type === 'user') {
+        // The same per-theme colour pair a username carries, so a mention stays
+        // readable when the panel switches theme under a row already drawn. No
+        // colour known yet falls back to the platform's own tint in CSS.
+        return `<span class="fcm-mention-user fcm-mention-${token.platform}"`
+          + `${FCM.authorColorStyle(token.color)}>${FCM.escapeHtml(token.text)}</span>`;
+      }
       return FCM.escapeHtml(token.text);
     }).join('');
   }
@@ -635,6 +698,31 @@
 
   // ── Row builders ────────────────────────────────────────────────────────────
 
+  /**
+   * The line above a reply saying what it is answering.
+   *
+   * Both platforms send the original's text along with the reply, which is what
+   * makes this worth drawing: the message being answered is usually long gone
+   * from the feed by the time the answer arrives, and a bare "@someone" leaves
+   * the reader scrolling for something that is no longer there.
+   *
+   * Rendered through the message pipeline so an emote quoted back is an emote,
+   * and trimmed to one line by CSS rather than by cutting the text, so nothing
+   * is lost from the title.
+   */
+  function replyContextHtml(platform, reply) {
+    if (!reply || !reply.name) return '';
+    const name = FCM.escapeHtml(`@${reply.name}`);
+    const quoted = reply.text
+      ? FCM.renderMessageBody(platform, reply.text, {}).html
+      : '<span class="fcm-replyto-gone">message unavailable</span>';
+    return '<span class="fcm-replyto" aria-label="Replying to">'
+      + '<span class="fcm-replyto-icon" aria-hidden="true">&#8617;</span>'
+      + `<span class="fcm-replyto-name fcm-mention-${platform}"`
+      + `${FCM.authorColorStyle(FCM.chatterColor(platform, reply.name))}>${name}</span>`
+      + `<span class="fcm-replyto-text">${quoted}</span></span>`;
+  }
+
   FCM.buildMessageEl = function (msg, activeFilter) {
     const platform = msg.platform;
     const el = document.createElement('div');
@@ -645,6 +733,15 @@
     const authorLower = String(msg.author || '').toLowerCase();
     const isSelf = view.selfNames.includes(authorLower);
     if (body.mentioned && !isSelf) classes.push('fcm-mentioned');
+    // `/me`: the platform's own chats drop the colon and paint the whole line
+    // in the sender's colour, which is the only thing that tells an action
+    // apart from an ordinary message once the wrapper has been taken off.
+    if (msg.action) classes.push('fcm-action');
+    // Only ever set from the platform's own flag. There is no guessing here on
+    // purpose: "we have not seen them since the panel opened" is a different
+    // claim from "they have never spoken in this channel", and it is the second
+    // one this row makes.
+    if (msg.firstMessage) classes.push('fcm-first');
 
     el.className = classes.join(' ');
     el.dataset.platform = platform;
@@ -653,7 +750,7 @@
     // resolving their id from the username all over again.
     if (msg.userId) el.dataset.userId = String(msg.userId);
     el.dataset.user = authorLower;
-    FCM.rememberChatter(platform, msg.author);
+    FCM.rememberChatter(platform, msg.author, msg.color);
 
     // The per-badge labels already say MOD/SUB/VIP, so the summary chip is only
     // rendered when nothing else identified the role — otherwise every Kick row
@@ -674,14 +771,21 @@
     // each theme is emitted and CSS picks.
     const colorAttr = FCM.authorColorStyle(msg.color);
 
-    el.innerHTML = `<span class="fcm-dot fcm-dot-${platform}"></span>`
+    const firstTag = msg.firstMessage
+      ? '<span class="fcm-first-tag" title="Their first ever message in this channel">'
+        + 'FIRST MESSAGE</span>'
+      : '';
+
+    el.innerHTML = replyContextHtml(platform, msg.reply)
+      + `<span class="fcm-dot fcm-dot-${platform}"></span>`
       + time
+      + firstTag
       + `<span class="fcm-author fcm-author-${platform}"${colorAttr}`
       + ` data-name="${FCM.escapeHtml(msg.author)}" data-platform="${platform}"`
       + ` title="${FCM.escapeHtml(msg.author)} — click for reply and more">`
       + `${badgeHtml}${chip}${FCM.escapeHtml(msg.author)}</span>`
-      + '<span class="fcm-colon">:</span>'
-      + `<span class="fcm-body">${body.html}</span>`;
+      + (msg.action ? '' : '<span class="fcm-colon">:</span>')
+      + `<span class="fcm-body"${msg.action ? colorAttr : ''}>${body.html}</span>`;
 
     return el;
   };
@@ -701,14 +805,30 @@
     return el;
   };
 
-  FCM.buildEventEl = function (platform, text, activeFilter) {
+  /**
+   * An event row: a sub, a raid, a gift, a redemption.
+   *
+   * Two halves, and they are not rendered the same way. The summary is ours and
+   * goes through `renderLinkedText`, which draws no emotes — a display name
+   * that happens to spell an emote name is a name, not a picture. Anything the
+   * viewer actually typed alongside it — the message under a resub, the text of
+   * an announcement — is theirs, and goes through the same pipeline a chat
+   * message does, so the emotes in it are emotes.
+   *
+   * @param {object} [meta] { body, emoteMap, emotes } — the viewer's own half
+   *   of the event and whatever the platform said about the emotes in it
+   */
+  FCM.buildEventEl = function (platform, text, activeFilter, meta) {
     const el = document.createElement('div');
     el.className = `fcm-sys fcm-sys-event${activeFilter && !activeFilter.has(platform) ? ' fcm-hide' : ''}`;
     el.dataset.platform = platform;
+    const said = meta && meta.body
+      ? ` <span class="fcm-sys-said">${FCM.renderMessageBody(platform, meta.body, meta).html}</span>`
+      : '';
     el.innerHTML = `<span class="fcm-sys-time">${FCM.ftime()}</span>`
       + '<span class="fcm-sys-tag">EVENT</span>'
       + `<span class="fcm-sys-label fcm-sys-${platform}">${FCM.escapeHtml(FCM.PLATFORM_META[platform].name)}</span>`
-      + `<span class="fcm-sys-body">${FCM.renderLinkedText(text)}</span>`;
+      + `<span class="fcm-sys-body">${FCM.renderLinkedText(text)}${said}</span>`;
     return el;
   };
 })(self.FCM);

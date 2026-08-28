@@ -107,7 +107,7 @@
 
     switch (msg.type) {
       case 'sys': overlay.sys(msg.text); break;
-      case 'event': overlay.event(msg.platform, msg.text); break;
+      case 'event': overlay.event(msg.platform, msg.text, msg.meta); break;
       case 'chat': overlay.chat(msg.msg); break;
       case 'batch': overlay.batch(msg.rows || []); break;
       case 'emotes': overlay.setEmotes(msg.platform, msg.kind, msg.store); break;

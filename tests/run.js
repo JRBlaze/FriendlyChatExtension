@@ -179,6 +179,64 @@ suites.irc = function () {
     'msg-param-sub-plan': '2000',
   });
   eq(resub, 'Fan resubscribed (24 months) (Tier 2).', 'irc: resub summary');
+
+  // `/me`. The wrapper has to come off, and the emote positions in the tags are
+  // counted from the text inside it — so unwrapping is not cosmetic, it is what
+  // keeps the emotes landing on the right characters.
+  const SOH = '\u0001';
+  const action = FCM.parseIrcAction(`${SOH}ACTION waves Kappa${SOH}`);
+  eq(action, { action: true, text: 'waves Kappa' }, 'irc: /me is unwrapped');
+  eq(FCM.parseIrcAction(`${SOH}ACTION waves`), { action: true, text: 'waves' },
+    'irc: a line cut off before the closing byte is still an action');
+  eq(FCM.parseIrcAction('hello there'), { action: false, text: 'hello there' },
+    'irc: an ordinary message is left exactly as it came');
+  eq(FCM.parseIrcAction('ACTION is not wrapped'),
+    { action: false, text: 'ACTION is not wrapped' },
+    'irc: the word ACTION in a message is not an action');
+  eq(FCM.parseIrcAction(null), { action: false, text: '' }, 'irc: nothing stays nothing');
+
+  // An action line end to end, as Twitch sends it. The emote sits at 6 in the
+  // unwrapped text and nowhere near that in the line as received.
+  const meLine = '@display-name=Waver;emotes=25:6-10 '
+    + `:waver!waver@waver.tmi.twitch.tv PRIVMSG #c :${SOH}ACTION waves Kappa${SOH}`;
+  const meParsed = FCM.parseIrcLine(meLine);
+  const meBody = FCM.parseIrcAction(meParsed.params[1]);
+  eq(meBody.text, 'waves Kappa', 'irc: the action body survives the line parser');
+  eq(meBody.text.slice(6, 11), 'Kappa',
+    'irc: and the emote range in the tags lands on the emote');
+
+  // Replies. Twitch sends the whole original alongside the answer, which is
+  // what lets a row show what it is answering after the original has scrolled.
+  const reply = FCM.twitchReplyContext({
+    'reply-parent-display-name': 'Asker',
+    'reply-parent-user-login': 'asker',
+    'reply-parent-msg-body': 'what game is this',
+    'reply-parent-msg-id': 'parent-1',
+  });
+  eq(reply, {
+    name: 'Asker', login: 'asker', text: 'what game is this', messageId: 'parent-1',
+  }, 'irc: reply context is read from the tags');
+  eq(FCM.twitchReplyContext({}), null, 'irc: an ordinary message replies to nothing');
+  eq(FCM.twitchReplyContext({
+    'reply-parent-display-name': 'Actor',
+    'reply-parent-msg-body': `${SOH}ACTION waves${SOH}`,
+  }).text, 'waves', 'irc: an action quoted back is unwrapped too');
+
+  // The tag escaping matters here more than anywhere: a reply to a message with
+  // a semicolon in it would otherwise end the tag list early.
+  const escapedReply = FCM.parseIrcLine(
+    '@reply-parent-display-name=Asker;reply-parent-msg-body=one\\stwo\\:three '
+    + ':a!a@a.tmi.twitch.tv PRIVMSG #c :answer'
+  );
+  eq(FCM.twitchReplyContext(escapedReply.tags).text, 'one two;three',
+    'irc: the quoted original is unescaped like any other tag');
+
+  // Twitch's own answer to "has this person ever spoken here", which is the
+  // only one worth acting on.
+  const firstLine = FCM.parseIrcLine(
+    '@display-name=NewHere;first-msg=1 :n!n@n.tmi.twitch.tv PRIVMSG #c :hi'
+  );
+  eq(firstLine.tags['first-msg'], '1', 'irc: the first-message flag is carried');
 };
 
 suites.kick = function () {
@@ -238,6 +296,158 @@ function stubDocument() {
     createElement: () => ({ dataset: {}, className: '', innerHTML: '', style: {} }),
   };
 }
+
+suites.kickextras = function () {
+  const FCM = load(makeSandbox(), ...SHARED);
+
+  // Kick hangs the message being answered off the reply's metadata.
+  eq(
+    FCM.kickReplyContext({
+      metadata: {
+        original_sender: { id: 7, username: 'Asker' },
+        original_message: { id: 'm-1', content: 'what game is this' },
+      },
+    }),
+    { name: 'Asker', text: 'what game is this', messageId: 'm-1' },
+    'kick: reply context is read from the metadata'
+  );
+  eq(FCM.kickReplyContext({ content: 'hi' }), null,
+    'kick: an ordinary message replies to nothing');
+  eq(FCM.kickReplyContext(null), null, 'kick: a null payload is not a reply');
+  // Kick has been known to send the sender without the message.
+  eq(
+    FCM.kickReplyContext({ metadata: { original_sender: { username: 'Asker' } } }),
+    { name: 'Asker', text: '', messageId: '' },
+    'kick: a reply whose original is missing still names who was answered'
+  );
+
+  // What was redeemed is worth more than "channel points".
+  eq(
+    FCM.formatKickEventSummary('App' + '\\' + 'Events' + '\\' + 'RewardRedeemedEvent', {
+      username: 'Someone', reward_title: 'Feed the cat',
+    }),
+    'Someone redeemed Feed the cat.',
+    'kick: a redemption names the reward'
+  );
+  eq(
+    FCM.formatKickEventSummary('App' + '\\' + 'Events' + '\\' + 'ChannelPointsRedeemedEvent', {
+      username: 'Someone',
+    }),
+    'Someone redeemed channel points.',
+    'kick: a redemption that does not say falls back to what it can'
+  );
+};
+
+// Channel point redemptions that carry no message are never sent over IRC, so
+// the only copy in the tab is the one the site has already drawn. This reads it
+// back, and everything about it is written to fail closed.
+suites.nativeevents = function () {
+  const sandbox = makeSandbox({ document: stubDocument() });
+  const FCM = load(sandbox, ...SHARED, 'src/content/native-events.js');
+
+  // A notice line, as the site lays one out: the reward's cost ends up on a
+  // line of its own once innerText breaks the row up.
+  const notice = (text, hasMessage) => ({
+    innerText: text,
+    querySelector: () => (hasMessage ? {} : null),
+  });
+
+  eq(
+    FCM.readNativeRedemption(notice('JRBlaze redeemed Feed your hedgehog\n50')),
+    { text: 'JRBlaze redeemed Feed your hedgehog (50 points).' },
+    'nativeevents: a redemption is read back with its reward and its cost'
+  );
+  eq(
+    FCM.readNativeRedemption(notice('JRBlaze redeemed Feed your hedgehog')),
+    { text: 'JRBlaze redeemed Feed your hedgehog.' },
+    'nativeevents: and without a cost when the site did not draw one'
+  );
+
+  // A reward that asks for a message arrives over IRC already. Reading it here
+  // as well would put it in the feed twice.
+  eq(
+    FCM.readNativeRedemption(notice('Redeemed Highlight My Message\n100\nsomeone: hi', true)),
+    null,
+    'nativeevents: a redemption carrying a message is left to IRC'
+  );
+
+  // Everything else the site draws as a notice is a USERNOTICE, and is already
+  // handled from the platform's own structured fields.
+  eq(FCM.readNativeRedemption(notice('someone\nSubscribed at Tier 1')), null,
+    'nativeevents: a sub notice is not a redemption');
+  eq(FCM.readNativeRedemption(notice('someone\nWatch Streak reached!')), null,
+    'nativeevents: a watch streak is not a redemption');
+  eq(FCM.readNativeRedemption(notice('Streamer is raiding with 1200 viewers')), null,
+    'nativeevents: a raid is not a redemption');
+  eq(FCM.readNativeRedemption(notice('')), null, 'nativeevents: an empty notice says nothing');
+  eq(FCM.readNativeRedemption(null), null, 'nativeevents: no element says nothing');
+  eq(FCM.readNativeRedemption(notice(`a redeemed ${'x'.repeat(400)}`)), null,
+    'nativeevents: a block of text far too long to be a notice is refused');
+
+  // Kick sends its redemptions down the socket, so there is nothing to watch.
+  const watcher = FCM.createNativeEventWatcher({ id: 'kick', messageList: () => ({}) }, () => {
+    throw new Error('kick should not be scraped');
+  });
+  watcher.start();
+  watcher.stop();
+  ok(true, 'nativeevents: the watcher does nothing on Kick');
+};
+
+// An extension installed from a zip is never updated by Chrome, so it has to
+// notice for itself. Getting the comparison wrong is how "1.10.4 is newer than
+// 1.9.0" turns into an update that is never offered.
+suites.updates = function () {
+  const FCM = load(makeSandbox(), 'src/shared/namespace.js', 'src/shared/constants.js',
+    'src/shared/util.js', 'src/background/updates.js');
+  const cmp = FCM.compareVersions;
+
+  ok(cmp('1.11.0', '1.10.4') > 0, 'updates: a new minor is newer');
+  ok(cmp('1.10.4', '1.9.0') > 0, 'updates: ten is newer than nine, not older');
+  ok(cmp('1.10.4', '1.10.4') === 0, 'updates: the version you are on is not an update');
+  ok(cmp('1.10.3', '1.10.4') < 0, 'updates: an older release is not offered');
+  ok(cmp('v1.11.0', '1.10.4') > 0, 'updates: a v prefix on the tag is ignored');
+  ok(cmp('2.0.0', '1.99.99') > 0, 'updates: a major bump wins');
+  ok(cmp('1.11', '1.11.0') === 0, 'updates: a missing patch counts as zero');
+  ok(cmp('1.11.0-beta.1', '1.11.0') === 0,
+    'updates: a pre-release of a version is that version for this purpose');
+  ok(cmp('', '1.0.0') < 0, 'updates: nothing is not newer than something');
+
+  ok(FCM.STORAGE_KEYS.update, 'updates: the check has somewhere to record itself');
+  ok(FCM.GITHUB_RELEASES_URL.includes('JRBlaze'), 'updates: the releases page is this repo');
+};
+
+// The replayed history goes through the same parser as the live feed, so
+// everything the parser learnt has to be right there too — and one thing is
+// deliberately left behind.
+suites.twitchhistory = function () {
+  const SOH = '';
+  const lines = [
+    '@display-name=Waver;id=h1 '
+      + `:waver!waver@waver.tmi.twitch.tv PRIVMSG #c :${SOH}ACTION waves${SOH}`,
+    '@display-name=Answerer;id=h2;reply-parent-display-name=Asker;'
+      + 'reply-parent-msg-body=what\sgame :a!a@a.tmi.twitch.tv PRIVMSG #c :Elden Ring',
+    '@display-name=NewHere;id=h3;first-msg=1 :n!n@n.tmi.twitch.tv PRIVMSG #c :hello',
+  ];
+
+  const sandbox = makeSandbox({
+    fetch: async () => ({ ok: true, json: async () => ({ messages: lines }) }),
+  });
+  const FCM = load(sandbox, ...SHARED, 'src/background/twitch-source.js');
+
+  return (async () => {
+    const batches = [];
+    await FCM.twitchSource.fetchHistory('c', { sys() {}, batch: (rows) => batches.push(rows) }, 60);
+    const rows = batches[0] || [];
+    eq(rows.length, 3, 'history: every replayed message becomes a row');
+    eq(rows[0].text, 'waves', 'history: a replayed /me is unwrapped too');
+    eq(rows[0].action, true, 'history: and still reads as an action');
+    eq(rows[1].reply.name, 'Asker', 'history: a replayed reply still says what it answered');
+    // The highlight is a prompt to do something about somebody who has just
+    // turned up. Acting on it an hour late is meaningless, so it is left off.
+    ok(!rows[2].firstMessage,
+      'history: a first message replayed from an hour ago is not flagged as new');
+  })();
+};
 
 suites.render = function () {
   const sandbox = makeSandbox({
@@ -402,6 +612,22 @@ suites.render = function () {
   contains(eventRow.innerHTML, 'fcm-sys-twitch">Twitch<', 'render: event row names its platform');
   eq(eventRow.dataset.platform, 'twitch', 'render: event rows are filterable by platform');
 
+  // The half of an event the viewer actually typed is drawn like a message, so
+  // the emotes in a resub message are emotes.
+  FCM.setEmotes('twitch', 'native', { Kappa: { url: 'https://cdn/kappa.png', source: 'Twitch' } });
+  const resubRow = FCM.buildEventEl('twitch', 'Fan resubscribed (24 months).',
+    new Set(['twitch']), { body: 'thanks Kappa' });
+  contains(resubRow.innerHTML, 'cdn/kappa.png', 'render: an event message draws its emotes');
+  contains(resubRow.innerHTML, 'fcm-sys-said', 'render: what they said is marked apart from the summary');
+  // ...and the summary is still ours, so a name that spells an emote stays a name.
+  const emoteNamed = FCM.buildEventEl('twitch', 'Kappa subscribed.', new Set(['twitch']));
+  missing(emoteNamed.innerHTML, 'cdn/kappa.png',
+    'render: a display name that spells an emote is not turned into one');
+  const eventXssBody = FCM.buildEventEl('twitch', 'Fan resubscribed.', null,
+    { body: '<img src=x onerror=alert(1)>' });
+  missing(eventXssBody.innerHTML, '<img src=x',
+    'render: an event message cannot inject markup either');
+
   // The role chip is a fallback only, so a Kick row never reads "SUBSUBname".
   const kickRow = FCM.buildMessageEl({
     platform: 'kick', author: 'someone', text: 'hi',
@@ -409,6 +635,66 @@ suites.render = function () {
   }, new Set(['kick']));
   eq((kickRow.innerHTML.match(/SUB/g) || []).length, 1, 'render: role is labelled exactly once');
   contains(kickRow.innerHTML, 'data-name="someone"', 'render: author carries its own name for the menu');
+
+  // `/me`: no colon, and the body wears the sender's colour.
+  const actionRow = FCM.buildMessageEl({
+    platform: 'twitch', author: 'Waver', text: 'waves', action: true, color: '#1E90FF',
+  }, new Set(['twitch']));
+  contains(actionRow.className, 'fcm-action', 'render: an action row is marked as one');
+  missing(actionRow.innerHTML, 'fcm-colon', 'render: an action has no colon after the name');
+  contains(actionRow.innerHTML, 'fcm-body" style="--author-dark',
+    'render: an action body carries the sender colour');
+  const plainRow = FCM.buildMessageEl({
+    platform: 'twitch', author: 'Talker', text: 'hello',
+  }, new Set(['twitch']));
+  contains(plainRow.innerHTML, 'fcm-colon', 'render: an ordinary message keeps its colon');
+
+  // The message a reply is answering, drawn above the reply.
+  const replyRow = FCM.buildMessageEl({
+    platform: 'twitch', author: 'Answerer', text: 'it is Elden Ring',
+    reply: { name: 'Asker', text: 'what game is this Kappa', messageId: 'p1' },
+  }, new Set(['twitch']));
+  contains(replyRow.innerHTML, 'fcm-replyto', 'render: a reply says what it is answering');
+  contains(replyRow.innerHTML, '@Asker', 'render: and who it is answering');
+  contains(replyRow.innerHTML, 'cdn/kappa.png', 'render: the quoted original draws its emotes');
+  missing(plainRow.innerHTML, 'fcm-replyto',
+    'render: a message that is not a reply gets no context line');
+  const replyXss = FCM.buildMessageEl({
+    platform: 'twitch', author: 'A', text: 'x',
+    reply: { name: '<script>', text: '<img src=x onerror=alert(1)>' },
+  }, new Set(['twitch']));
+  missing(replyXss.innerHTML, '<img src=x', 'render: a quoted original cannot inject markup');
+  missing(replyXss.innerHTML, '<script>', 'render: nor can the name of who was replied to');
+
+  // Somebody's first ever message in the channel, on the platform's say-so.
+  const firstRow = FCM.buildMessageEl({
+    platform: 'twitch', author: 'NewHere', text: 'hi', firstMessage: true,
+  }, new Set(['twitch']));
+  contains(firstRow.className, 'fcm-first', 'render: a first message is marked');
+  contains(firstRow.innerHTML, 'FIRST MESSAGE', 'render: and says so in words');
+  missing(plainRow.className, 'fcm-first',
+    'render: every other message is left alone — this is never guessed at');
+
+  // @mentions wear the colour of the person named, once this feed has seen
+  // them speak. Nobody's colour is ever invented.
+  FCM.buildMessageEl({
+    platform: 'twitch', author: 'Coloured', text: 'hi', color: '#1E90FF',
+  }, new Set(['twitch']));
+  const mentionsKnown = FCM.renderMessageBody('twitch', 'hey @Coloured how are you', {});
+  contains(mentionsKnown.html, 'fcm-mention-user', 'render: a name written into a message is marked');
+  contains(mentionsKnown.html, '--author-dark', 'render: and drawn in that person\'s own colour');
+  const mentionsUnknown = FCM.renderMessageBody('twitch', 'hey @NeverSpokenHere', {});
+  contains(mentionsUnknown.html, 'fcm-mention-twitch',
+    'render: a stranger falls back to the platform tint');
+  missing(mentionsUnknown.html, '--author-dark',
+    'render: rather than a colour we made up for them');
+  // The viewer's own name stays the louder highlight.
+  const self = FCM.renderMessageBody('twitch', 'hey @MyName', {});
+  contains(self.html, 'fcm-mention"', 'render: your own name keeps the mention highlight');
+  missing(self.html, 'fcm-mention-user', 'render: and is not demoted to a coloured name');
+  // A trailing comma is punctuation, not part of the name.
+  const punctuated = FCM.renderMessageBody('twitch', '@Coloured, hello', {});
+  contains(punctuated.html, '>@Coloured</span>,', 'render: punctuation after a name stays text');
 
   const twitchRow = FCM.buildMessageEl({
     platform: 'twitch', author: 'mod', text: 'hi',
@@ -2946,6 +3232,22 @@ suites.send = function () {
       eq(body.sender_id, '55', 'send: sent as the connected account');
       eq(body.message, 'hello there', 'send: the text is passed through unchanged');
       eq(call.headers['Client-Id'], 'cid', 'send: the client id that owns the token is used');
+      ok(!('reply_parent_message_id' in body),
+        'send: an ordinary message says nothing about replying');
+    }
+
+    // A reply threads onto the original, so the platform draws it as a reply
+    // and everyone reading gets the context the sender had.
+    {
+      const { FCM, calls } = build(() => ({ ok: true, json: async () => ({ data: [{ is_sent: true }] }) }));
+      await FCM.sendMessage('twitch', 'Elden Ring', { roomId: '4242' }, {}, { replyToId: 'msg-1' });
+      eq(JSON.parse(calls[0].body).reply_parent_message_id, 'msg-1',
+        'send: the message being answered is named');
+      // Twitch refuses the whole request for a parent it does not know, so an
+      // empty id must never be sent in place of "not a reply".
+      await FCM.sendMessage('twitch', 'hi', { roomId: '4242' }, {}, { replyToId: '' });
+      ok(!('reply_parent_message_id' in JSON.parse(calls[1].body)),
+        'send: an empty parent id is left out rather than sent empty');
     }
 
     // Twitch accepting the request but dropping the message is not success.
@@ -5388,6 +5690,48 @@ suites.background = function () {
       eq(chat.msg.messageId, 'msg-1', 'bg: message id kept for dedupe and deletion');
       eq(chat.msg.emoteMap[0].id, '25', 'bg: emote positions parsed');
       eq(chat.msg.timestamp, 1700000000000, 'bg: the original send time is kept');
+
+      // ── `/me` arrives as a PRIVMSG wearing a CTCP wrapper ──
+      w.clear();
+      const SOH = '\u0001';
+      irc.push('@display-name=Waver;emotes=25:6-10;id=msg-me '
+        + `:waver!waver@waver.tmi.twitch.tv PRIVMSG #somechannel :${SOH}ACTION waves Kappa${SOH}\r\n`);
+      const me = w.last('chat');
+      eq(me.msg.text, 'waves Kappa', 'bg: the action wrapper is taken off the message');
+      eq(me.msg.action, true, 'bg: and the row is told it is an action');
+      // The positions in the tags are counted from the unwrapped text, so this
+      // is the assertion that would fail if the wrapper came off any later.
+      eq(me.msg.text.slice(6, 11), 'Kappa', 'bg: the emote range still lands on the emote');
+
+      // ── a threaded reply carries the message it is answering ──
+      w.clear();
+      irc.push('@display-name=Answerer;id=msg-2;reply-parent-display-name=Asker;'
+        + 'reply-parent-user-login=asker;reply-parent-msg-id=msg-1;'
+        + 'reply-parent-msg-body=what\\sgame\\sis\\sthis '
+        + ':answerer!answerer@answerer.tmi.twitch.tv PRIVMSG #somechannel :Elden Ring\r\n');
+      const answered = w.last('chat');
+      eq(answered.msg.reply, {
+        name: 'Asker', login: 'asker', text: 'what game is this', messageId: 'msg-1',
+      }, 'bg: a reply carries the original through to the feed');
+      eq(me.msg.reply, null, 'bg: an ordinary message answers nothing');
+
+      // ── somebody's first ever message in the channel, on Twitch's say-so ──
+      w.clear();
+      irc.push('@display-name=NewHere;first-msg=1;id=msg-3 '
+        + ':newhere!newhere@newhere.tmi.twitch.tv PRIVMSG #somechannel :hello\r\n');
+      eq(w.last('chat').msg.firstMessage, true, 'bg: a first message is flagged from the tag');
+      eq(answered.msg.firstMessage, false, 'bg: and nothing else is');
+
+      // ── a resub keeps our summary and the viewer's own message apart ──
+      w.clear();
+      irc.push('@msg-id=resub;display-name=Fan;msg-param-cumulative-months=24;emotes=25:7-11 '
+        + ':tmi.twitch.tv USERNOTICE #somechannel :thanks Kappa\r\n');
+      const resubEvent = w.last('event');
+      eq(resubEvent.text, 'Fan resubscribed (24 months).',
+        'bg: the summary is ours and carries none of their text');
+      eq(resubEvent.meta.body, 'thanks Kappa', 'bg: what they said comes through separately');
+      eq(resubEvent.meta.emoteMap[7].id, '25',
+        'bg: with the emote positions that belong to it, so it can be drawn with emotes');
 
       // Messages for a channel are not filtered by room, but ROOMSTATE gives us
       // the broadcaster id every third-party emote provider is keyed by.

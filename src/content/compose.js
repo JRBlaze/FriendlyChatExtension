@@ -548,14 +548,20 @@
 
     function closeMenu() { menu.classList.add('fcm-hidden'); menu.innerHTML = ''; }
 
-    function insertMention(name, platform) {
+    /**
+     * @param {string} [messageId] the message being answered, when the reply
+     *   was started from a row rather than from the autocomplete. It is what
+     *   lets the platform thread the reply onto the original instead of
+     *   posting a message that merely names somebody.
+     */
+    function insertMention(name, platform, messageId) {
       const prefix = `@${name} `;
       const current = inputEl.value;
       // Replying to a second person should add to the message, not replace it.
       inputEl.value = current.trim() ? `${current.replace(/\s*$/, ' ')}${prefix}` : prefix;
       inputEl.focus();
       inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
-      if (platform) onReplyTo(platform, name);
+      if (platform) onReplyTo(platform, name, messageId);
     }
 
     // Kick counts timeouts in whole minutes, so a one-second purge is not a
@@ -612,7 +618,31 @@
      * someone else in the meantime must not be handed this answer — clicking
      * quickly through a busy chat does exactly that.
      */
+    /**
+     * Slides the menu back up when it is hanging off the bottom of the panel.
+     *
+     * Called after it is placed and again whenever something lands in it late,
+     * because the menu's height is not settled when it opens: the profile is
+     * fetched and fills in a moment later, and a menu that fitted when it was
+     * positioned did not once three more lines arrived in it. What was hanging
+     * past the bottom was the moderation controls, over the composer.
+     */
+    function keepMenuInPanel() {
+      if (menu.classList.contains('fcm-hidden')) return;
+      const panelRect = panel.getBoundingClientRect();
+      const menuRect = menu.getBoundingClientRect();
+      const spill = menuRect.bottom - (panelRect.bottom - 4);
+      if (spill <= 0) return;
+      const top = parseFloat(menu.style.top) || 0;
+      menu.style.top = `${Math.round(Math.max(4, top - spill))}px`;
+    }
+
     async function fillProfile(platform, name) {
+      await renderProfile(platform, name);
+      keepMenuInPanel();
+    }
+
+    async function renderProfile(platform, name) {
       const profile = await onProfile(platform, name);
       const row = menu.querySelector('.fcm-um-profile');
       if (!row || menu.classList.contains('fcm-hidden')) return;
@@ -668,6 +698,78 @@
       });
     }
 
+    // Enough to see the shape of what somebody has been doing without the
+    // menu becoming a second chat window.
+    const HISTORY_LIMIT = 6;
+
+    /**
+     * The rows this feed still holds from one person, oldest first.
+     *
+     * Read out of the feed rather than fetched: no platform offers a
+     * "what has this user said here" endpoint to an ordinary moderator, and
+     * what is on screen is exactly what the decision is being made about.
+     * A message the platform has already removed is kept and marked, because
+     * "this was deleted" is part of the picture.
+     */
+    function recentMessagesFrom(platform, name) {
+      const lower = String(name).toLowerCase();
+      const rows = [];
+      // The platform is one of a fixed pair, so it needs no escaping; the name
+      // is compared as a value rather than written into the selector.
+      feedEl.querySelectorAll(`.fcm-msg[data-platform="${platform}"]`).forEach((row) => {
+        if (row.dataset.user === lower) rows.push(row);
+      });
+      return rows.slice(-HISTORY_LIMIT);
+    }
+
+    /**
+     * Adds their recent messages to the menu.
+     *
+     * The bodies are cloned from rows already in the feed rather than rebuilt
+     * from text, so emotes stay emotes and nothing is re-parsed as markup on
+     * the way — the escaping that made those rows safe is not repeated and so
+     * cannot be got wrong a second time.
+     */
+    function addHistory(platform, name) {
+      const heading = document.createElement('div');
+      heading.className = 'fcm-um-section';
+      heading.textContent = 'Recent messages';
+      menu.appendChild(heading);
+
+      const rows = recentMessagesFrom(platform, name);
+      const box = document.createElement('div');
+      box.className = 'fcm-um-history';
+      if (!rows.length) {
+        box.dataset.state = 'empty';
+        box.textContent = 'Nothing from them in this feed yet';
+        menu.appendChild(box);
+        return;
+      }
+
+      rows.forEach((row) => {
+        const line = document.createElement('div');
+        line.className = 'fcm-um-hline';
+        if (row.classList.contains('fcm-deleted')) line.classList.add('fcm-um-hline-deleted');
+
+        const stamp = row.querySelector('.fcm-time');
+        const when = document.createElement('span');
+        when.className = 'fcm-um-htime';
+        when.textContent = stamp ? stamp.textContent : '';
+
+        // The whole body element is cloned rather than its children moved:
+        // childNodes is live, so appending them one at a time elsewhere
+        // renumbers the list underneath the walk and drops every other node.
+        const body = row.querySelector('.fcm-body');
+        const said = body ? body.cloneNode(true) : document.createElement('span');
+        said.classList.add('fcm-um-htext');
+
+        line.appendChild(when);
+        line.appendChild(said);
+        box.appendChild(line);
+      });
+      menu.appendChild(box);
+    }
+
     function openMenu(event, authorEl) {
       event.preventDefault();
       event.stopPropagation();
@@ -692,7 +794,7 @@
 
       addAction(`Reply on ${meta.name}`, {
         hint: `@${name}`,
-        run: () => { insertMention(name, platform); closeMenu(); },
+        run: () => { insertMention(name, platform, target.messageId); closeMenu(); },
       });
       // The site's own card, which carries what only a logged-in session can
       // see — badges, when they followed, the gift button on Twitch, the join
@@ -732,6 +834,11 @@
           onModerate(platform, action, Object.assign({}, target, extra));
           closeMenu();
         };
+
+        // What they have been saying comes before the buttons that act on
+        // it: a timeout is a judgement about the messages, and scrolling the
+        // feed back for them with the menu already open is not possible.
+        addHistory(platform, name);
 
         const heading = document.createElement('div');
         heading.className = 'fcm-um-section';
@@ -773,6 +880,7 @@
       ));
       menu.style.left = `${Math.round(x)}px`;
       menu.style.top = `${Math.round(y)}px`;
+      keepMenuInPanel();
     }
 
     // One delegated listener for every username in the feed, rather than a

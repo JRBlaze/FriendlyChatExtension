@@ -61,6 +61,53 @@
     return { tags, prefix, command, params };
   };
 
+  /**
+   * Unwraps the CTCP wrapper `/me` arrives in.
+   *
+   * Twitch sends an action as a PRIVMSG whose body is \u0001ACTION waves\u0001,
+   * so a client that does not know about the wrapper prints the control
+   * characters and the word ACTION as if the viewer had typed them.
+   *
+   * The emote positions in the `emotes` tag are counted from the text *inside*
+   * the wrapper, which is why this has to run before anything looks at the
+   * message: unwrapping later would leave every position eight characters out.
+   *
+   * @returns {{action: boolean, text: string}}
+   */
+  FCM.parseIrcAction = function (body) {
+    const value = String(body === null || body === undefined ? '' : body);
+    // The closing \u0001 is optional: every client sends it, and a line
+    // truncated without it is still an action rather than a message about one.
+    const match = /^\u0001ACTION(?: ([\s\S]*?))?\u0001?$/.exec(value);
+    if (!match) return { action: false, text: value };
+    return { action: true, text: match[1] || '' };
+  };
+
+  /**
+   * The message a Twitch reply is answering, from the tags Twitch attaches to
+   * every threaded reply.
+   *
+   * The parent body is carried verbatim in a tag, so the row can show what is
+   * being replied to without the original still being in the feed — which it
+   * usually is not, because a reply to something said an hour ago is exactly
+   * when the context is worth having.
+   *
+   * @returns {{name: string, login: string, text: string, messageId: string}|null}
+   */
+  FCM.twitchReplyContext = function (tags = {}) {
+    const name = tags['reply-parent-display-name'] || tags['reply-parent-user-login'] || '';
+    if (!name) return null;
+    // The parent can itself be a `/me`, and its wrapper is no more readable
+    // quoted than it was first time around.
+    const body = FCM.parseIrcAction(tags['reply-parent-msg-body'] || '');
+    return {
+      name: String(name),
+      login: String(tags['reply-parent-user-login'] || ''),
+      text: body.text,
+      messageId: String(tags['reply-parent-msg-id'] || ''),
+    };
+  };
+
   FCM.ircNick = function (prefix = '') {
     const bang = prefix.indexOf('!');
     return bang === -1 ? prefix : prefix.slice(0, bang);

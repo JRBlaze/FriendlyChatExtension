@@ -24,6 +24,29 @@
     return null;
   };
 
+  /**
+   * The message a Kick reply is answering.
+   *
+   * Kick marks a reply by hanging the original off the message's metadata
+   * rather than by a type alone, so the metadata is what is read: a message
+   * carrying an original sender is a reply whatever it calls itself.
+   *
+   * @returns {{name: string, text: string, messageId: string}|null}
+   */
+  FCM.kickReplyContext = function (rawPayload) {
+    const payload = (rawPayload && typeof rawPayload === 'object') ? rawPayload : {};
+    const meta = (payload.metadata && typeof payload.metadata === 'object') ? payload.metadata : {};
+    const original = (meta.original_message && typeof meta.original_message === 'object')
+      ? meta.original_message : {};
+    const name = FCM.usernameFrom(meta.original_sender);
+    if (!name) return null;
+    return {
+      name: String(name),
+      text: String(original.content || ''),
+      messageId: String(original.id || ''),
+    };
+  };
+
   FCM.formatKickEventSummary = function (eventName, rawPayload) {
     // A default parameter only covers `undefined`, and Pusher can deliver a
     // data field of literal "null", which parses to null and would otherwise
@@ -49,6 +72,14 @@
       payload.gifted_quantity, payload.gift_count, payload.quantity,
       payload.total, payload.count, payload.amount
     );
+    // What was redeemed, when the event says so. Kick spells the field
+    // differently depending on which of its two redemption events fired, and a
+    // row that can only say "channel points" is barely worth showing.
+    const rewardTitle = FCM.firstPresent(
+      payload.reward_title,
+      payload.reward && payload.reward.title,
+      payload.title
+    );
     const recipient = FCM.firstPresent(
       FCM.usernameFrom(payload.receiver),
       FCM.usernameFrom(payload.recipient),
@@ -71,7 +102,8 @@
       'App\\Events\\HypeTrainProgressEvent': `Hype Train progress${count ? `: ${count}` : ''}.`,
       'App\\Events\\HypeTrainEndedEvent': 'Hype Train ended.',
       'App\\Events\\BitsEvent': `${sender} cheered${count ? ` ${count} bits` : ''}.`,
-      'App\\Events\\ChannelPointsRedeemedEvent': `${sender} redeemed channel points.`,
+      'App\\Events\\ChannelPointsRedeemedEvent': `${sender} redeemed ${rewardTitle || 'channel points'}.`,
+      'App\\Events\\RewardRedeemedEvent': `${sender} redeemed ${rewardTitle || 'a reward'}.`,
       'App\\Events\\PollUpdateEvent': 'Poll updated.',
     };
     if (map[eventName]) return map[eventName];
