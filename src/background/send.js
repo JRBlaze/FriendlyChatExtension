@@ -6,7 +6,7 @@
 (function (FCM) {
   'use strict';
 
-  async function sendTwitch(text, conn, settings) {
+  async function sendTwitch(text, conn, settings, opts) {
     const record = await FCM.auth.usable('twitch', settings);
     if (!record) return { ok: false, reason: 'not-connected' };
     if (!conn.roomId) return { ok: false, reason: 'no-channel' };
@@ -16,6 +16,7 @@
       'Client-Id': record.clientId,
       'Content-Type': 'application/json',
     };
+    const replyToId = (opts && opts.replyToId) || '';
 
     let res;
     try {
@@ -28,6 +29,10 @@
           broadcaster_id: conn.roomId,
           sender_id: record.userId,
           message: text,
+          // Only when there is one to thread onto. Twitch rejects the whole
+          // request for a parent id it does not recognise, so an empty string
+          // must not be sent in place of "no reply".
+          ...(replyToId ? { reply_parent_message_id: replyToId } : {}),
         }),
       });
     } catch (e) {
@@ -91,8 +96,13 @@
     return { ok: true };
   }
 
-  FCM.sendMessage = async function (platform, text, conn, settings) {
-    if (platform === 'twitch') return sendTwitch(text, conn, settings);
+  /**
+   * @param {object} [opts] { replyToId } — the message this is a reply to, on
+   *   the platform being sent to. Kick's public chat endpoint has no field for
+   *   it, so a reply there stays an ordinary @mention.
+   */
+  FCM.sendMessage = async function (platform, text, conn, settings, opts) {
+    if (platform === 'twitch') return sendTwitch(text, conn, settings, opts);
     if (platform === 'kick') return sendKick(text, conn, settings);
     return { ok: false, reason: 'unsupported' };
   };

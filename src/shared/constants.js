@@ -107,6 +107,9 @@
     // Last visit's emote lists. By far the largest thing kept here, which is
     // why the options page can show its size and empty it.
     emoteCache: 'fcm_emote_cache_v1',
+    // What the last look at the releases page found. storage.local, because it
+    // describes this installation rather than this person's preferences.
+    update:   'fcm_update_v1',
   };
 
   FCM.DEFAULT_SETTINGS = {

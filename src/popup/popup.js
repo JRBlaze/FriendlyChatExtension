@@ -71,6 +71,62 @@
     mode.addEventListener('change', () => FCM.saveSettings({ crossPromptMode: mode.value }));
   }
 
+  // ── Releases ────────────────────────────────────────────────────────────────
+  //
+  // The extension cannot install its own update — nothing can, outside the Web
+  // Store — so what this does is remove every step it can from the ones that
+  // are left: the file, the page to drop it on, and the reason to bother.
+
+  function ask(cmd, extra) {
+    return new Promise((resolve) => {
+      chrome.runtime.sendMessage({ cmd, ...(extra || {}) }, (response) => {
+        if (chrome.runtime.lastError) resolve(null);
+        else resolve(response);
+      });
+    });
+  }
+
+  function openTab(url) {
+    if (!url) return;
+    // chrome://extensions is a page Chrome is entitled to refuse, and a refusal
+    // here throws. Nothing else in the popup should go down with it.
+    try { chrome.tabs.create({ url }); } catch (e) { return; }
+    // Chrome keeps the popup open over the new tab otherwise, which reads as
+    // nothing having happened.
+    window.close();
+  }
+
+  function renderUpdate(status) {
+    const card = $('update');
+    if (!status || !status.available) { card.classList.add('hidden'); return; }
+    card.classList.remove('hidden');
+    $('update-title').textContent = `Version ${status.version} is available`;
+    $('update-note').textContent = status.notes
+      ? `${status.notes} — you are on ${status.installed}.`
+      : `You are on ${status.installed}.`;
+    // The asset itself when the release has one, and the release page when it
+    // does not: a page with the file on it still beats no link at all.
+    $('update-get').textContent = status.downloadUrl ? 'Download the zip' : 'Open the release';
+    $('update-get').onclick = () => openTab(status.downloadUrl || status.url);
+    $('update-dismiss').onclick = async () => {
+      await ask('updateDismiss', { version: status.version });
+      card.classList.add('hidden');
+    };
+  }
+
+  $('update-install').addEventListener('click', () => openTab('chrome://extensions'));
+
+  $('check-updates').addEventListener('click', async (e) => {
+    e.preventDefault();
+    const link = $('check-updates');
+    link.textContent = 'Checking…';
+    const status = await ask('updateCheck');
+    renderUpdate(status);
+    link.textContent = status && status.available
+      ? 'Update ready'
+      : (status ? 'Up to date' : 'Could not check');
+  });
+
   $('open-options').addEventListener('click', (e) => {
     e.preventDefault();
     chrome.runtime.openOptionsPage();
@@ -80,4 +136,7 @@
 
   bindSettings();
   renderStatus();
+  // From what the last background check stored, so the banner is there the
+  // moment the popup opens rather than a beat later.
+  ask('updateStatus').then(renderUpdate);
 })(self.FCM);

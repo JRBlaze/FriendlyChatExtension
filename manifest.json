@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Friendly Chat Extension",
-  "version": "1.10.4",
+  "version": "1.11.0",
   "description": "Overlays a merged Twitch + Kick chat on the channel you are watching, and offers to connect the other platform when the streamer is live on both.",
   "minimum_chrome_version": "116",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0vdefhQX2a3wYoBWqcRPP5DrXABtsBjLzSDmZrqnG3T4vpBLOsgUGShsxCHkMB9DRJFujPYi/aizVVVIcvtFEcpVDmtnavLpIw8iBAoOhiAesi8Kt1OAvXps0CvmVJN3KCNWDf27uWqHxqChDZHPaZXKaqmy/fyZSAb79W+2OPXCs51IBzE8uUUEiv7t1Qg8RMdeXSIWBFBCqHagebuKXf4HlkzdsGXJ0jmMewK3TktyCRu8Js85oU66nsdkxUkdh43e/98s1QZAJpzlQ/CHkEGZFZAFTBbGDSdqvx/O/SEnseyMsR40dO9is6SK5OY3MpFKUBemnnvt4g1Xa1F0sQIDAQAB",
@@ -22,7 +22,8 @@
     "https://7tv.io/*",
     "https://api.betterttv.net/*",
     "https://api.frankerfacez.com/*",
-    "https://recent-messages.robotty.de/*"
+    "https://recent-messages.robotty.de/*",
+    "https://api.github.com/*"
   ],
   "background": {
     "service_worker": "src/background/service-worker.js"
@@ -45,6 +46,7 @@
         "src/content/emote-input.js",
         "src/content/compose.js",
         "src/content/native.js",
+        "src/content/native-events.js",
         "src/content/overlay.js",
         "src/content/sites.js",
         "src/content/boot.js"

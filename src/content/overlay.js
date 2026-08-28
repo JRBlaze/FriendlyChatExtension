@@ -53,6 +53,10 @@
     // Who the current message is addressed to, as platform -> display name.
     // A reply has to land in the chat the person actually spoke in, so while
     // this is non-empty it overrides the chosen send targets entirely.
+    // platform -> { name, messageId }. The id is what turns a reply into a
+    // real threaded reply on the platform rather than an @mention that happens
+    // to name somebody; it is empty when the reply was started from the
+    // autocomplete, where there is no particular message being answered.
     const replyTo = new Map();
     let accounts = { twitch: { connected: false }, kick: { connected: false } };
     // Whether this viewer holds a moderator (or broadcaster) badge in each
@@ -86,6 +90,13 @@
     // Reads and drives the site's own chat: the cards above the message list,
     // and the bits and channel-points controls below it.
     const native = FCM.createNativeBridge(site);
+    // The events the site draws in its own chat but never sends down a socket —
+    // channel point redemptions that carry no message. Started and stopped by
+    // syncNativeEvents once a channel is actually joined.
+    const nativeEvents = FCM.createNativeEventWatcher(site, (text) => {
+      if (!settings.showEvents) return;
+      feed.addEvent(hostPlatform, text, filter);
+    });
     // Set while one of the site's own menus is open where the panel would cover
     // it — the rewards panel, the cheer menu. The panel steps aside until it
     // closes rather than painting over a menu the user just opened.
@@ -576,6 +587,24 @@
       syncPageChatVisibility();
       syncPeek();
       renderNativeBar();
+      // Both sites replace their message list outright often enough that this
+      // cannot be attached once and forgotten. start() re-attaches only when
+      // the list it is watching is no longer the one on the page.
+      syncNativeEvents();
+    }
+
+    /**
+     * Turns the native-chat event watcher on and off.
+     *
+     * On only while the overlay is showing the very channel this page is: the
+     * page's own chat is the only place a no-message channel point redemption
+     * exists, and it belongs to that channel alone. Reading it into a feed
+     * joined to somebody else would be worse than the row being missing.
+     */
+    function syncNativeEvents() {
+      const joined = status[hostPlatform] && status[hostPlatform].channel;
+      if (joined && joined === FCM.normalizeChannel(channel)) nativeEvents.start();
+      else nativeEvents.stop();
     }
 
     function watchPlacement() {
@@ -1440,7 +1469,7 @@
       const names = live.map((p) => FCM.PLATFORM_META[p].name);
 
       if (replying) {
-        const who = [...replyTo.values()].join(', ');
+        const who = [...replyTo.values()].map((r) => r.name).join(', ');
         inputEl.placeholder = names.length
           ? `Reply to ${who} on ${names.join(' + ')}…`
           : `Cannot reply on ${[...replyTo.keys()].map((p) => FCM.PLATFORM_META[p].name).join(' + ')}`;
@@ -1483,9 +1512,9 @@
     function renderReplyBar() {
       if (!replyTo.size) { replyEl.classList.add('fcm-hidden'); replyEl.innerHTML = ''; return; }
 
-      const parts = [...replyTo.entries()].map(([platform, name]) =>
+      const parts = [...replyTo.entries()].map(([platform, info]) =>
         `<span class="fcm-reply-who"><span class="fcm-dot fcm-dot-${platform}"></span>`
-        + `${FCM.escapeHtml(name)}<em>on ${FCM.escapeHtml(FCM.PLATFORM_META[platform].name)}</em></span>`);
+        + `${FCM.escapeHtml(info.name)}<em>on ${FCM.escapeHtml(FCM.PLATFORM_META[platform].name)}</em></span>`);
 
       replyEl.innerHTML = `<span class="fcm-reply-label">Replying to</span>${parts.join('')}`
         + '<button class="fcm-reply-clear" title="Cancel the reply and send to the chosen chats">&times;</button>';
@@ -1504,9 +1533,9 @@
       refreshSendNote();
     }
 
-    function setReplyTo(platform, name) {
+    function setReplyTo(platform, name, messageId) {
       if (!FCM.SEND_PLATFORMS.includes(platform)) return;
-      replyTo.set(platform, name);
+      replyTo.set(platform, { name, messageId: messageId || '' });
       renderReplyBar();
       renderTargets();
       refreshSendNote();
@@ -1654,7 +1683,7 @@
     }
 
     // Resolved by the background worker's sendResult message.
-    function sendViaApi(platforms, text) {
+    function sendViaApi(platforms, text, replies) {
       const id = `s${++sendSeq}`;
       return new Promise((resolve) => {
         const timer = setTimeout(() => {
@@ -1664,7 +1693,7 @@
           resolve(timedOut);
         }, 12000);
         pendingSends.set(id, (results) => { clearTimeout(timer); resolve(results); });
-        onCommand({ cmd: 'send', id, text, targets: platforms });
+        onCommand({ cmd: 'send', id, text, targets: platforms, replies: replies || {} });
       });
     }
 
@@ -1728,7 +1757,15 @@
       try {
         const work = [];
         if (apiTargets.length) {
-          work.push(sendViaApi(apiTargets, text).then((results) => {
+          // Only where the reply names a specific message. Replying from the
+          // autocomplete has no parent to thread onto, and that is still a
+          // reply — it just goes out as an ordinary @mention.
+          const replies = {};
+          apiTargets.forEach((p) => {
+            const info = replyTo.get(p);
+            if (info && info.messageId) replies[p] = info.messageId;
+          });
+          work.push(sendViaApi(apiTargets, text, replies).then((results) => {
             apiTargets.forEach((p) => {
               const r = results[p] || { ok: false, reason: 'timeout' };
               if (r.ok) delivered++;
@@ -1906,6 +1943,7 @@
         pendingProfiles.forEach((resolve) => resolve({ reason: 'closed' }));
         pendingProfiles.clear();
         clearInterval(placementTimer);
+        nativeEvents.stop();
         clearPeekTimers();
         clearFocusTimers();
         hideEmotePeek();
@@ -1925,9 +1963,9 @@
 
       sys(text) { feed.addSys(text); },
 
-      event(platform, text) {
+      event(platform, text, meta) {
         if (!settings.showEvents) return;
-        feed.addEvent(platform, text, filter);
+        feed.addEvent(platform, text, filter, meta);
       },
 
       chat(msg) { feed.addMessage(msg, filter); },
@@ -1936,6 +1974,7 @@
 
       setStatus(platform, state, chan) {
         status[platform] = { state, channel: chan || null };
+        syncNativeEvents();
         if (state === 'idle') feed.dropPlatform(platform);
         if (chan) filter.add(platform);
         renderChips();

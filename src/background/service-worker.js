@@ -19,7 +19,8 @@ importScripts(
   '/src/background/send.js',
   '/src/background/moderation.js',
   '/src/background/profile.js',
-  '/src/background/emote-cache.js'
+  '/src/background/emote-cache.js',
+  '/src/background/updates.js'
 );
 
 const FCM = self.FCM;
@@ -74,7 +75,10 @@ function makeSink(session, platform) {
   const conn = session.conns[platform];
   return {
     sys: (text) => send(session, { type: 'sys', text }),
-    event: (text) => send(session, { type: 'event', platform, text }),
+    // `meta` carries the half of an event the viewer actually typed — the
+    // message under a resub, the text of an announcement — kept apart from
+    // our summary so only that half is drawn with emotes.
+    event: (text, meta) => send(session, { type: 'event', platform, text, meta: meta || null }),
     chat: (msg) => send(session, { type: 'chat', msg }),
     batch: (rows) => send(session, { type: 'batch', rows }),
     emotes: (kind, store) => send(session, { type: 'emotes', platform, kind, store }),
@@ -673,12 +677,18 @@ chrome.runtime.onConnect.addListener((port) => {
         const settings = await FCM.loadSettings();
         const text = String(msg.text || '').trim();
         const wanted = Array.isArray(msg.targets) ? msg.targets : [];
+        // Which message, if any, each target is replying to. Sent per platform
+        // because the two feeds are different rooms: a reply on Twitch has
+        // nothing to thread onto in a Kick chatroom.
+        const replies = (msg.replies && typeof msg.replies === 'object') ? msg.replies : {};
         const results = {};
         // Run the platforms in parallel so a slow one does not delay the other.
         await Promise.all(wanted.map(async (platform) => {
           const conn = session.conns[platform];
           if (!conn || !conn.channel) { results[platform] = { ok: false, reason: 'no-channel' }; return; }
-          results[platform] = await FCM.sendMessage(platform, text, conn, settings);
+          results[platform] = await FCM.sendMessage(platform, text, conn, settings, {
+            replyToId: replies[platform] || '',
+          });
         }));
         send(session, { type: 'sendResult', id: msg.id, results });
         break;
@@ -739,7 +749,24 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
 // Popup and options page ask for a snapshot rather than holding a port.
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (!msg || msg.cmd !== 'status') return undefined;
+  if (!msg) return undefined;
+
+  // The popup's release questions. Answered from what the last check stored,
+  // except for 'updateCheck', which is the user asking to look now.
+  if (msg.cmd === 'updateStatus') {
+    FCM.updateStatus().then(sendResponse).catch(() => sendResponse(null));
+    return true;
+  }
+  if (msg.cmd === 'updateCheck') {
+    FCM.checkForUpdate(true).then(sendResponse).catch(() => sendResponse(null));
+    return true;
+  }
+  if (msg.cmd === 'updateDismiss') {
+    FCM.dismissUpdate(msg.version).then(() => sendResponse({ ok: true })).catch(() => sendResponse(null));
+    return true;
+  }
+
+  if (msg.cmd !== 'status') return undefined;
   const tabId = msg.tabId;
   const session = sessions.get(tabId);
   sendResponse(session ? {
@@ -761,6 +788,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 // A periodic alarm gives the worker a heartbeat even if a channel goes silent.
 chrome.alarms.create('fcm-heartbeat', { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener((alarm) => {
+  if (FCM.isUpdateAlarm(alarm.name)) { FCM.checkForUpdate().catch(() => {}); return; }
   if (alarm.name !== 'fcm-heartbeat') return;
   sessions.forEach((session) => {
     FCM.PLATFORMS.forEach((p) => {
@@ -771,3 +799,8 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     });
   });
 });
+
+// Whether there is a newer release than the one running. Nothing here installs
+// it — an extension cannot replace itself — but the badge and the popup turn
+// "go and look" into two clicks.
+FCM.watchForUpdates();
