@@ -161,7 +161,6 @@
       <div class="fcm-panel">
         <div class="fcm-header">
           <span class="fcm-brand"><span class="fcm-brand-mark"></span>Merged</span>
-          <div class="fcm-chips"></div>
           <div class="fcm-actions">
             <button class="fcm-icon-btn fcm-hidden" data-act="reset-placement" title="Reset size and position — back over the site's own chat">${ICONS.fit}</button>
             <button class="fcm-icon-btn" data-act="recheck" title="Re-check the other platform">${ICONS.refresh}</button>
@@ -171,6 +170,8 @@
             <button class="fcm-icon-btn" data-act="close" title="Hide overlay">${ICONS.close}</button>
           </div>
         </div>
+
+        <div class="fcm-chips"></div>
 
         <div class="fcm-prompt fcm-hidden"></div>
 
@@ -608,6 +609,7 @@
       if (poppedOut()) {
         syncPageChatVisibility();
         renderNativeBar();
+        claimBonusIfWaiting();
         syncNativeEvents();
         return;
       }
@@ -616,6 +618,7 @@
       syncPageChatVisibility();
       syncPeek();
       renderNativeBar();
+      claimBonusIfWaiting();
       // Both sites replace their message list outright often enough that this
       // cannot be attached once and forgotten. start() re-attaches only when
       // the list it is watching is no longer the one on the page.
@@ -822,6 +825,41 @@
         claim.addEventListener('click', () => openNative('claim'));
         nativeEl.appendChild(claim);
       }
+    }
+
+    /**
+     * Presses the site's own "claim bonus" control as soon as one appears.
+     *
+     * The chest is the one part of channel points that is lost purely by not
+     * being at the keyboard: it is there for a couple of minutes and then gone,
+     * and the panel already knew about it — it drew a button and waited to be
+     * noticed. This presses it instead.
+     *
+     * Deliberately not part of the bar's own render, which stops the moment the
+     * panel is hidden or collapsed. The bonus is on the page either way, and
+     * someone who has collapsed the panel to watch has not stopped wanting
+     * their points.
+     *
+     * Only a control the site *named*. Twitch's adapter will fall back to
+     * "whichever other button the points summary has grown", which is a fair
+     * thing to offer someone and not a fair thing to press unattended — a
+     * wrong guess pressed once is a mystery, and pressed every half-second is
+     * a fault. Pressed once per chest, too: `claimed` is held until the control
+     * goes away, which is what stops a button that did not respond being
+     * hammered.
+     */
+    let claimed = false;
+
+    function claimBonusIfWaiting() {
+      if (destroyed || settings.autoClaimBonus === false) return;
+      const stats = native.stats();
+      if (!stats.canClaim) { claimed = false; return; }
+      if (claimed || !stats.claimNamed) return;
+      claimed = true;
+      if (!native.activate('claim')) return;
+      // The bar is showing a "Claim bonus" button that is no longer true.
+      statsSignature = '';
+      toast(`Claimed the ${FCM.PLATFORM_META[hostPlatform].name} bonus`);
     }
 
     /**
@@ -1444,6 +1482,14 @@
               <small>Read from this page, and clicking one opens ${FCM.escapeHtml(FCM.PLATFORM_META[hostPlatform].name)}'s own menu</small>
             </label>
             <input type="checkbox" data-set="showNativeStats">
+          </div>
+          <div class="fcm-field">
+            <label>Claim channel point bonuses
+              <small>Presses ${FCM.escapeHtml(FCM.PLATFORM_META[hostPlatform].name)}'s own claim
+                button as soon as a bonus appears. Off, and there is a button here to press
+                yourself.</small>
+            </label>
+            <input type="checkbox" data-set="autoClaimBonus">
           </div>
           <div class="fcm-field">
             <label>Theme<small>Follows the site's own dark or light mode</small></label>

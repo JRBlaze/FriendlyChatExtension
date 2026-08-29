@@ -20,9 +20,15 @@ feed. Open a Kick channel and it works the other way round.
   the real card stays visible and stays clickable. Nothing about it is redrawn or reimplemented.
   Kick has two of these slots and gets both: the gifter leaderboard, which pushes the chat down,
   and the pinned message, which floats over the top of it.
-- **Your bits, Kicks and channel points**, read off the page and shown above the composer, with
-  a *Claim bonus* button when one is waiting. Clicking a balance opens the site's own rewards or
-  cheer menu, and the panel steps out of the way for as long as it is open.
+- **Your bits, Kicks and channel points**, read off the page and shown above the composer.
+  Clicking a balance opens the site's own rewards or cheer menu, and the panel steps out of the
+  way for as long as it is open.
+- **Channel point bonuses are claimed for you.** The bonus chest is on screen for a couple of
+  minutes and is the one part of channel points that is lost purely by not being at the keyboard.
+  The overlay presses the site's own claim button the moment it appears — while the panel is
+  collapsed, hidden or popped out, because the bonus is on the page either way. Turn it off and
+  the *Claim bonus* button is still there to press yourself. See
+  [Claiming the bonus](#claiming-the-bonus).
 - **Drag and resize it, and put it back.** Move or resize the panel and it stays where you put
   it, on that platform, across reloads. A reset button appears in the title bar the moment you
   do, and snaps it back over the site's own chat at the size it first opened at.
@@ -119,7 +125,7 @@ feed. Open a Kick channel and it works the other way round.
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.12.0.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.13.0.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and a folder named `FriendlyChatExtension-main`. The
@@ -626,6 +632,35 @@ Hiding the site's own chat and revealing its cards would contradict each other, 
 exempted rather than un-hidden: `visibility` is inherited, and setting it back to `visible` on a
 card inside a hidden subtree shows that card and nothing else around it.
 
+### Claiming the bonus
+
+The overlay never grants anything itself. It holds no token that could, and the rules — which
+reward costs what, which are paused, which need text typing in — belong to the platform. So the
+whole action is a press on the site's own claim control, the same one a person would press.
+
+Two things matter when something presses a control on somebody's behalf.
+
+**The right control.** Twitch's adapter resolves the chest by accessible name first, and then, if
+Twitch has renamed it again, as *whichever other button the points summary has grown*. That
+fallback is a reasonable thing to offer a person — they can see what they are clicking — and not a
+reasonable thing to press unattended, so it is not. Only a control the site actually named is ever
+pressed automatically; a guessed one still gets a *Claim bonus* button and waits to be pressed.
+Kick has no such fallback at all: its footer holds the emote picker and Send, and a wrong guess
+there would press one of those, so a claim control on Kick either says what it is or is not
+offered.
+
+**Once.** The press is held down by a flag that only clears when the control goes away, so a chest
+that does not respond is pressed once rather than twice a second, and the next chest is still
+claimed.
+
+It runs on the same 500 ms tick as everything else, and deliberately not as part of the balance
+bar's own render — that stops the moment the panel is hidden or collapsed, and somebody who has
+collapsed the panel to watch has not stopped wanting their points.
+
+Kick's half is written the same way and has not been seen working, because it is not clear Kick
+draws a periodic bonus at all. The adapter looks for one by accessible name; if Kick does not
+draw one, nothing is found, nothing is pressed, and nothing appears in the panel.
+
 ### Popping the panel out
 
 The pop-out button in the title bar moves the panel into a
@@ -652,6 +687,26 @@ and the redemptions it draws still reach the feed.
 
 Closing the window puts the panel back. So does hiding the overlay, and so does moving to another
 channel — otherwise a channel switch would leave an empty window behind with nothing in it.
+
+### The channel chips
+
+The chips naming the two connected channels have a row of their own, under the title bar.
+
+They used to sit *in* the title bar, between the MERGED mark and the buttons — a strip about 130px
+wide once those two have taken their share, for two chips that want rather more than that. There
+is no arrangement of that strip that works: painting over the buttons and truncating the names are
+the only two outcomes available, and both are worse than the row being one line taller.
+
+So the constraint is removed rather than managed. Across the full width of the panel two ordinary
+names sit side by side; two long ones wrap onto a second line. Nothing is ellipsised and nothing
+is clipped at any width, which is the point — a channel name that has been cut off is not a
+channel name, it is a guess.
+
+One CSS detail earned a mention. Letting the name wrap *inside* a chip, for a panel dragged
+narrower than a single name, has to use `overflow-wrap: break-word` and not `anywhere`. The two
+break text identically and differ only in what they claim the element's smallest possible width
+is — `anywhere` says one character, which let the chip collapse to a narrow column and stack its
+name down the panel, 300px tall for a name that fits comfortably on one line.
 
 ### Which chats a message goes to
 
@@ -881,6 +936,14 @@ the send path.
   The existing floors do the rest of the work unchanged. Twitch positions its *tooltips* with the
   same attribute, and hiding the whole overlay for a tooltip would be worse than letting the
   tooltip be covered — so the 80x80 minimum and the 40px overlap test are what keep this to menus.
+
+- **Fixing that truncated them instead.** Making the chips give way was the right half of the
+  answer and the wrong place to apply it: the title bar has about 130px going spare, and two
+  channel names do not fit in 130px however politely they shrink. So the names came out ellipsised
+  and unreadable, which is not better than the previous version, only differently wrong. The chips
+  have their own full-width row now and wrap onto a second line rather than losing characters. The
+  measurement that settles it: two thirty-character names come out 302px and 275px wide inside a
+  322px panel, on two lines, with nothing clipped and nothing outside the panel.
 
 - **A long channel name painted over the title bar's buttons.** The chips carrying the channel's
   name sit between the *MERGED* mark and the row of buttons on the right. They set their own width
