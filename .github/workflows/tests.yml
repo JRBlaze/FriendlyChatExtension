@@ -38,9 +38,12 @@ jobs:
         node: ['20', '22', '24']
     name: node ${{ matrix.node }}
     steps:
-      - uses: actions/checkout@v4
+      # v5 of both, because v4 runs on a Node the runners have deprecated and
+      # already force onto a newer one — a warning on every run today and a
+      # failure whenever they stop forcing it.
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node }}
 
