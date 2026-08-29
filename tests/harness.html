@@ -73,6 +73,9 @@
   .fakemenu h3 { margin: 0 0 8px; font-size: 13px; }
   .fakemenu p { margin: 0 0 12px; color: #adadb8; }
   .chatcol .box { border-top: 1px solid #2a2a2d; padding: 10px; }
+  .chatcol .chat-input { display: flex; align-items: center; margin-bottom: 6px; }
+  .chatcol .chat-input button { background: #26262e; border: 1px solid #3a3a3d; border-radius: 4px;
+    width: 24px; height: 24px; cursor: pointer; }
   .chatcol .box div[contenteditable] { min-height: 34px; background: #0e0e10; border: 1px solid #3a3a3d; border-radius: 4px; padding: 8px; font-size: 12px; }
   .chatcol .box button { margin-top: 8px; background: #9146ff; color: #fff; border: 0; border-radius: 4px; padding: 6px 12px; font-size: 12px; cursor: pointer; }
   .chatcol .box button:disabled { opacity: .4; cursor: not-allowed; }
@@ -118,6 +121,18 @@
         <!-- Stands in for the card Twitch opens when one of those is clicked. -->
         <div class="viewer-card" id="native-viewer-card" hidden></div>
         <div class="box">
+          <!-- Twitch's composer row. The badge carousel is in here and *not* in
+               the buttons container below with Cheer, the emote picker, the
+               balances, the settings gear and Send — which is what made the
+               identity chip never appear: it was only ever looked for there.
+               Attributes copied from a signed-in channel page: the control has
+               no accessible name mentioning identity at all. -->
+          <div class="chat-input">
+            <div class="chat-input__badge-carousel" data-a-target="chat-badge-carousel">
+              <button id="native-identity" data-a-target="chat-badge-carousel-badge-icon"
+                aria-label="ChatBadgeCarousel"></button>
+            </div>
+          </div>
           <div id="native-composer" contenteditable="true" role="textbox" data-a-target="chat-input"></div>
           <button id="native-send" data-a-target="chat-send-button" disabled>Chat</button>
           <div class="sentlog">last sent: <span id="sent-log">(none)</span></div>
@@ -129,12 +144,6 @@
             </button>
             <button id="native-claim" aria-label="Claim Bonus" hidden>+50</button>
             <button id="native-cheer" data-a-target="bits-button" aria-label="Cheer">Cheer</button>
-            <!-- Twitch's own chat identity control, which sits in the row around
-                 the message box rather than behind the settings gear. Pressing
-                 it opens Twitch's own dialog for the colour a name is drawn in
-                 and which badges show. -->
-            <button id="native-identity" data-a-target="chat-identity"
-              aria-label="Chat Identity">Identity</button>
           </div>
         </div>
       </section>
@@ -172,8 +181,11 @@
                      was being preferred over the button above, which sent people
                      to buy Kicks instead of opening the gift shop. -->
                 <button id="kick-get" data-testid="get-kicks">Get KICKs</button>
-                <button id="kick-identity" data-testid="chat-identity"
-                  aria-label="Chat Identity"><svg data-ds-icon="Identity" width="12" height="12"></svg></button>
+                <!-- Kick marks the badge rather than the button, labels nothing,
+                     and gives every badge in chat an identity-badge-* test id —
+                     so only the exact one, and the exact icon, name this control. -->
+                <button id="kick-identity"><span data-testid="identity-badge-chat_identity"><svg
+                  data-ds-icon="IdentityBadge" width="12" height="12"></svg></span></button>
                 <button id="send-message-button">Chat</button>
               </div>
             </div>

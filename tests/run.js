@@ -7764,6 +7764,169 @@ suites.emoterouting = function () {
     'routing: and one that was on both is now only the platform still here');
 };
 
+
+// The control that opens each platform's own chat identity settings.
+//
+// This shipped not working, and the reason is worth keeping a test around for:
+// neither platform calls it "identity" anywhere a search would find, and on
+// Twitch it is not in the container every other control in that footer lives
+// in. The markup below is copied off a signed-in channel page on each site.
+suites.chatidentity = function () {
+  // A DOM stub with just enough selector support for these lookups: attribute
+  // and class selectors, descendant combinators, and closest().
+  function build(html) {
+    const nodes = [];
+    function el(tag, attrs, kids) {
+      const node = {
+        tagName: tag.toUpperCase(),
+        _attrs: attrs || {},
+        children: [],
+        parentElement: null,
+        textContent: (attrs && attrs._text) || '',
+        id: (attrs && attrs.id) || '',
+        get className() { return this._attrs.class || ''; },
+        getAttribute(k) { return k in this._attrs ? this._attrs[k] : null; },
+        getClientRects() { return this._attrs._hidden ? [] : [{ width: 24, height: 24 }]; },
+        getBoundingClientRect() {
+          const on = !this._attrs._hidden;
+          return { width: on ? 24 : 0, height: on ? 24 : 0, top: 0, left: 0, right: 24, bottom: 24 };
+        },
+        closest(sel) {
+          for (let n = this; n; n = n.parentElement) if (matchesList(n, sel)) return n;
+          return null;
+        },
+        querySelectorAll(sel) { return descendants(this).filter((n) => matchesList(n, sel)); },
+        querySelector(sel) { return this.querySelectorAll(sel)[0] || null; },
+        contains(other) { for (let n = other; n; n = n.parentElement) if (n === this) return true; return false; },
+      };
+      (kids || []).forEach((k) => { k.parentElement = node; node.children.push(k); });
+      nodes.push(node);
+      return node;
+    }
+    function descendants(root) {
+      const out = [];
+      (function down(n) { n.children.forEach((c) => { out.push(c); down(c); }); })(root);
+      return out;
+    }
+    // One selector: tag, .class, [attr], [attr="v"], [attr*="v" i], and
+    // "a b" descendant pairs.
+    function matches(node, sel) {
+      sel = String(sel).trim();
+      if (sel.includes(' ')) {
+        const parts = sel.split(/\s+/);
+        const last = parts.pop();
+        if (!matches(node, last)) return false;
+        let n = node.parentElement;
+        const want = parts.pop();
+        while (n) { if (matches(n, want)) return true; n = n.parentElement; }
+        return false;
+      }
+      let m = /^([a-zA-Z]+)?\[([a-zA-Z-]+)(\*)?=?"?([^"\]]*)"?( i)?\]$/.exec(sel);
+      if (m) {
+        if (m[1] && node.tagName !== m[1].toUpperCase()) return false;
+        const v = node.getAttribute(m[2]);
+        if (v == null) return false;
+        if (!m[4]) return true;
+        return m[3] ? v.toLowerCase().includes(m[4].toLowerCase()) : v === m[4];
+      }
+      m = /^([a-zA-Z]+)?\.([\w-]+)$/.exec(sel);
+      if (m) {
+        if (m[1] && node.tagName !== m[1].toUpperCase()) return false;
+        return String(node.className).split(/\s+/).includes(m[2]);
+      }
+      m = /^([a-zA-Z]+)?#([\w-]+)$/.exec(sel);
+      if (m) {
+        if (m[1] && node.tagName !== m[1].toUpperCase()) return false;
+        return node.id === m[2];
+      }
+      if (/^[a-zA-Z]+$/.test(sel)) return node.tagName === sel.toUpperCase();
+      return false;
+    }
+    function matchesList(node, sel) {
+      return String(sel).split(',').some((one) => matches(node, one));
+    }
+    const body = html(el);
+    const doc = {
+      querySelectorAll: (sel) => [body, ...descendants(body)].filter((n) => matchesList(n, sel)),
+      querySelector(sel) { return this.querySelectorAll(sel)[0] || null; },
+      body,
+      documentElement: body,
+    };
+    return makeSandbox({ document: doc, window: {} });
+  }
+
+  // ── Twitch ──
+  //
+  // Copied off a signed-in channel page. The control's accessible name is
+  // "ChatBadgeCarousel" — the word identity is nowhere on it — and it sits in
+  // the .chat-input row, *not* in .chat-input__buttons-container where Cheer,
+  // the emote picker, the balances, the settings gear and Send all live. Both
+  // of those are why the chip never appeared.
+  {
+    const sandbox = build((el) => el('div', {}, [
+      el('div', { class: 'chat-input' }, [
+        el('div', { class: 'chat-input__badge-carousel', 'data-a-target': 'chat-badge-carousel' }, [
+          el('button', { 'data-a-target': 'chat-badge-carousel-badge-icon', 'aria-label': 'ChatBadgeCarousel' }),
+        ]),
+        el('div', { class: 'chat-input__buttons-container', 'data-test-selector': 'chat-input-buttons-container' }, [
+          el('button', { 'data-a-target': 'bits-button', 'aria-label': 'Cheer' }),
+          el('button', { 'data-a-target': 'emote-picker-button', 'aria-label': 'Emote picker' }),
+          el('button', { 'data-a-target': 'chat-settings', 'aria-label': 'Chat settings' }),
+          el('button', { 'data-a-target': 'chat-send-button', 'aria-label': 'Send Chat', _text: 'Chat' }),
+        ]),
+      ]),
+    ]));
+    const FCM = load(sandbox, ...SHARED, 'src/content/native.js', 'src/content/sites.js');
+    const found = FCM.SITES.twitch.nativeControls().chatIdentity;
+    ok(found, 'identity: twitch\u2019s badge carousel is found');
+    eq(found && found.getAttribute('data-a-target'), 'chat-badge-carousel-badge-icon',
+      'identity: and it is the carousel button, by the name Twitch actually gives it');
+    ok(found && found.getAttribute('data-a-target') !== 'chat-send-button',
+      'identity: never the button that sends');
+  }
+  // A page not showing it offers nothing, rather than guessing at a neighbour.
+  {
+    const sandbox = build((el) => el('div', {}, [
+      el('div', { class: 'chat-input' }, [
+        el('div', { class: 'chat-input__buttons-container', 'data-test-selector': 'chat-input-buttons-container' }, [
+          el('button', { 'data-a-target': 'chat-settings', 'aria-label': 'Chat settings' }),
+          el('button', { 'data-a-target': 'chat-send-button', 'aria-label': 'Send Chat', _text: 'Chat' }),
+        ]),
+      ]),
+    ]));
+    const FCM = load(sandbox, ...SHARED, 'src/content/native.js', 'src/content/sites.js');
+    eq(FCM.SITES.twitch.nativeControls().chatIdentity, null,
+      'identity: a Twitch page without one offers nothing');
+  }
+
+  // ── Kick ──
+  //
+  // Kick labels nothing here, marks the badge rather than the button, and gives
+  // every badge in chat an identity-badge-* test id — so a loose match on
+  // "identity", or on an icon named "badge", picks a subscriber or moderator
+  // badge just as happily.
+  {
+    const sandbox = build((el) => el('div', {}, [
+      el('div', { id: 'chatroom-footer' }, [
+        el('button', {}, [el('span', { 'data-testid': 'identity-badge-subscriber' })]),
+        el('button', {}, [el('svg', { 'data-ds-icon': 'VerifiedBadge' })]),
+        el('button', { id: 'kick-identity' }, [
+          el('span', { 'data-testid': 'identity-badge-chat_identity' }, [
+            el('svg', { 'data-ds-icon': 'IdentityBadge' }),
+          ]),
+        ]),
+        el('button', { id: 'send-message-button', _text: 'Chat' }),
+      ]),
+    ]));
+    const FCM = load(sandbox, ...SHARED, 'src/content/native.js', 'src/content/sites.js');
+    const found = FCM.SITES.kick.nativeControls().chatIdentity;
+    ok(found, 'identity: kick\u2019s chat identity badge is found');
+    eq(found && found.id, 'kick-identity',
+      'identity: and it is that one, not the subscriber or verified badge beside it');
+    ok(found && found.id !== 'send-message-button', 'identity: never the button that sends');
+  }
+};
+
 // ── Runner ────────────────────────────────────────────────────────────────────
 
 (async function main() {
