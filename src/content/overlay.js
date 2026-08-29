@@ -2043,7 +2043,7 @@
         if (route === 'native') {
           const tag = document.createElement('span');
           tag.className = 'fcm-target-tag';
-          tag.textContent = 'via page';
+          tag.textContent = 'as page login';
           btn.appendChild(tag);
           btn.title = `Messages go through this page's own ${meta.name} chat box, `
             + `as whoever is signed in here. Connect a ${meta.name} account in settings `
@@ -2051,9 +2051,13 @@
         } else if (route === 'api') {
           const tag = document.createElement('span');
           tag.className = 'fcm-target-tag';
-          tag.textContent = accounts[platform].login || 'connected';
+          // "as <name>" rather than the bare login: a name on its own reads as
+          // who the message is addressed to, not who it is sent by.
+          tag.textContent = accounts[platform].login
+            ? `as ${accounts[platform].login}` : 'as your account';
           btn.appendChild(tag);
-          btn.title = `Sending to ${meta.name} as ${accounts[platform].login || 'your connected account'}.`;
+          btn.title = `Messages go to ${meta.name} chat, sent as `
+            + `${accounts[platform].login || 'your connected account'}.`;
         } else if (route === 'no-channel') {
           btn.title = `${meta.name} chat is not connected in this overlay.`;
         } else {

@@ -862,7 +862,7 @@
 .fcm-target-tag {
   font-size: max(9px, calc(var(--fcm-size) - 4px)); letter-spacing: 0.04em;
   text-transform: uppercase;
-  max-width: 90px; overflow: hidden; text-overflow: ellipsis;
+  max-width: 110px; overflow: hidden; text-overflow: ellipsis;
 }
 
 .fcm-emote-btn {
