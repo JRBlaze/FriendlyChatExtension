@@ -5879,6 +5879,543 @@ suites.background = function () {
   })();
 };
 
+suites.watchnow = function () {
+  // Kick draws a channel two ways, and the streamer gets the wrong one. What
+  // follows is the page as Kick actually builds it, measured off a live
+  // channel: a tab strip, a card floating above the player carrying a labelled
+  // "Watch now", the player's own transport control carrying the same icon and
+  // no words, and a whole second copy of everything inside a streaming
+  // placeholder that measures nothing at all.
+
+  // width/height only: everything here turns on whether a thing has a box.
+  function node({ w = 0, h = 0, text = '', icon = null, tag = 'BUTTON' } = {}) {
+    const n = {
+      tagName: tag,
+      textContent: text,
+      parentElement: null,
+      clicks: 0,
+      getAttribute: () => null,
+      getBoundingClientRect: () => ({ width: w, height: h, top: 0, left: 0, right: w, bottom: h }),
+      closest(sel) {
+        for (let p = n; p; p = p.parentElement) if (p.tagName === sel.toUpperCase()) return p;
+        return null;
+      },
+      click() { n.clicks++; },
+    };
+    if (icon) icon.parentElement = n;
+    n.icon = icon;
+    return n;
+  }
+
+  // A play icon, and the button it is drawn inside. The icon is what the page
+  // is searched for; the button is what climbing from it has to find.
+  function playButton({ w, h, text }) {
+    const icon = {
+      tagName: 'SVG',
+      parentElement: null,
+      getAttribute: () => 'Play',
+      closest(sel) {
+        for (let p = icon; p; p = p.parentElement) if (p.tagName === sel.toUpperCase()) return p;
+        return null;
+      },
+    };
+    const btn = node({ w, h, text, icon });
+    icon.parentElement = btn;
+    return { icon, btn };
+  }
+
+  // The tab strip as sites.js asks for it, verbatim.
+  const TABS = '[data-testid="channel-home-tab"],[data-testid="channel-about-tab"],'
+    + '[data-testid="channel-videos-tab"],[data-testid="channel-clips-tab"],'
+    + '[data-testid="channel-schedule-tab"]';
+
+  function pageWith({ tabs = [], plays = [], pathname = '/jrblaze' } = {}) {
+    return makeSandbox({
+      location: { hostname: 'kick.com', pathname },
+      window: {},
+      document: {
+        querySelectorAll: (sel) => {
+          if (sel === TABS) return tabs;
+          if (sel === '[data-ds-icon="Play"]') return plays.map((p) => p.icon);
+          return [];
+        },
+        querySelector: () => null,
+      },
+    });
+  }
+
+  const laidOutTab = () => node({ w: 62, h: 48, tag: 'A' });
+  const deadTab = () => node({ w: 0, h: 0, tag: 'A' });
+
+  // ── The reported bug: live, on their own channel, looking at the profile ──
+  {
+    const watch = playButton({ w: 330, h: 40, text: 'Watch now' });
+    const transport = playButton({ w: 44, h: 44, text: '' });
+    const sandbox = pageWith({ tabs: [laidOutTab()], plays: [watch, transport] });
+    const S = load(sandbox, ...SHARED, 'src/content/sites.js');
+    ok(S.SITES.kick.watchNow() === watch.btn,
+      'watchnow: the labelled button in the live card is the one offered');
+  }
+
+  // ── And the button it must never press ──
+  //
+  // The video's own play control carries the identical icon. Pressing that
+  // would pause the stream the moment the overlay arrived, which is worse than
+  // doing nothing at all.
+  {
+    const transport = playButton({ w: 44, h: 44, text: '' });
+    const sandbox = pageWith({ tabs: [laidOutTab()], plays: [transport] });
+    const S = load(sandbox, ...SHARED, 'src/content/sites.js');
+    eq(S.SITES.kick.watchNow(), null,
+      'watchnow: the player transport control is never mistaken for Watch now');
+  }
+
+  // ── Offline: Kick draws no card, so there is nothing to press ──
+  //
+  // This is the whole liveness test. Kick only puts the button there while the
+  // channel is live, so nothing has to ask an API.
+  {
+    const sandbox = pageWith({ tabs: [laidOutTab()], plays: [] });
+    const S = load(sandbox, ...SHARED, 'src/content/sites.js');
+    eq(S.SITES.kick.watchNow(), null,
+      'watchnow: an offline profile is left exactly as it is');
+  }
+
+  // ── The swap has already happened ──
+  //
+  // The button stays in the page afterwards, sized and all, so it cannot report
+  // its own success. The tabs going is what says it worked.
+  {
+    const watch = playButton({ w: 330, h: 40, text: 'Watch now' });
+    const sandbox = pageWith({ tabs: [deadTab()], plays: [watch] });
+    const S = load(sandbox, ...SHARED, 'src/content/sites.js');
+    eq(S.SITES.kick.watchNow(), null,
+      'watchnow: with the tabs gone the swap is done and nothing is pressed again');
+  }
+
+  // ── A page someone asked for by name ──
+  {
+    const watch = playButton({ w: 330, h: 40, text: 'Watch now' });
+    ['/jrblaze/about', '/jrblaze/videos', '/jrblaze/clips', '/popout/jrblaze'].forEach((pathname) => {
+      const sandbox = pageWith({ tabs: [laidOutTab()], plays: [watch], pathname });
+      const S = load(sandbox, ...SHARED, 'src/content/sites.js');
+      eq(S.SITES.kick.watchNow(), null,
+        `watchnow: ${pathname} is where someone meant to be, and is left alone`);
+    });
+  }
+
+  // ── Kick's second, sizeless copy of the whole page ──
+  {
+    const ghost = playButton({ w: 0, h: 0, text: 'Watch now' });
+    const real = playButton({ w: 330, h: 40, text: 'Watch now' });
+    const sandbox = pageWith({ tabs: [deadTab(), laidOutTab()], plays: [ghost, real] });
+    const S = load(sandbox, ...SHARED, 'src/content/sites.js');
+    ok(S.SITES.kick.watchNow() === real.btn,
+      'watchnow: the copy in the streaming placeholder is not the one pressed');
+  }
+
+  // ── Kick in someone else's language ──
+  //
+  // The words are preferred where they are English and the icon carries it
+  // where they are not, which is the point of matching on the icon at all.
+  {
+    const translated = playButton({ w: 330, h: 40, text: 'Ver ahora' });
+    const sandbox = pageWith({ tabs: [laidOutTab()], plays: [translated] });
+    const S = load(sandbox, ...SHARED, 'src/content/sites.js');
+    ok(S.SITES.kick.watchNow() === translated.btn,
+      'watchnow: a translated label is still found, by its icon and its words');
+  }
+
+  // ── A channel name that merely starts with the word ──
+  {
+    const decoy = playButton({ w: 200, h: 40, text: 'watchdogs' });
+    const real = playButton({ w: 330, h: 40, text: 'Watch now' });
+    const sandbox = pageWith({ tabs: [laidOutTab()], plays: [decoy, real] });
+    const S = load(sandbox, ...SHARED, 'src/content/sites.js');
+    ok(S.SITES.kick.watchNow() === real.btn,
+      'watchnow: "watchdogs" is a name, not the control');
+  }
+
+  // ── Twitch has no profile to be stranded on ──
+  {
+    const sandbox = makeSandbox({
+      location: { hostname: 'www.twitch.tv', pathname: '/somechannel' },
+      window: {},
+      document: { querySelectorAll: () => [], querySelector: () => null },
+    });
+    const S = load(sandbox, ...SHARED, 'src/content/sites.js');
+    eq(S.SITES.twitch.watchNow(), null,
+      'watchnow: Twitch answers the same question with nothing to press');
+  }
+};
+
+suites.watchpress = function () {
+  // What boot does with the button once the adapter has found one. The adapter
+  // decides *whether* there is anything to press; this decides how many times.
+
+  function boot({ button = null, settings = {}, startPath = '/jrblaze' } = {}) {
+    const timers = { intervals: [], timeouts: [] };
+    const location = {
+      hostname: 'kick.com',
+      pathname: startPath,
+      get href() { return 'https://kick.com' + this.pathname; },
+    };
+    const sandbox = makeSandbox({
+      location,
+      window: { addEventListener() {}, matchMedia: () => ({ matches: false, addEventListener() {} }) },
+      document: {
+        documentElement: { appendChild() {}, className: '', dataset: {}, getAttribute: () => null },
+        body: { className: '' },
+        querySelector: () => null,
+        querySelectorAll: () => [],
+        createElement: () => ({ dataset: {}, style: {}, classList: { add() {}, remove() {}, contains: () => false, toggle() {} }, appendChild() {}, addEventListener() {} }),
+      },
+      chrome: {
+        runtime: {
+          connect() {
+            const p = {
+              sent: [], disconnected: false,
+              postMessage(m) { if (!this.disconnected) this.sent.push(m); },
+              disconnect() { this.disconnected = true; },
+              onMessage: { addListener() {} },
+              onDisconnect: { addListener() {} },
+            };
+            return p;
+          },
+        },
+        storage: {
+          sync: { get: async (key) => ({ [key]: settings }), set: async () => {} },
+          local: { get: async () => ({}), set: async () => {} },
+          onChanged: { addListener() {} },
+        },
+      },
+    });
+    sandbox.setInterval = (fn, ms) => { timers.intervals.push({ fn, ms }); return timers.intervals.length; };
+    sandbox.clearInterval = () => {};
+    sandbox.setTimeout = (fn, ms) => { timers.timeouts.push({ fn, ms, cancelled: false }); return timers.timeouts.length; };
+    sandbox.clearTimeout = (id) => { if (timers.timeouts[id - 1]) timers.timeouts[id - 1].cancelled = true; };
+
+    const FCM = load(sandbox, ...SHARED, 'src/content/render.js', 'src/content/sites.js');
+
+    // The adapter's own answer is covered by the watchnow suite; what this one
+    // needs is control over when there is a button and when there is not.
+    const asked = { count: 0 };
+    FCM.currentSite = () => ({
+      id: 'kick',
+      channelFromUrl() {
+        const parts = location.pathname.split('/').filter(Boolean);
+        return parts.length && parts[0] !== 'browse' ? parts[0] : null;
+      },
+      hints: () => [],
+      watchNow() { asked.count++; return button; },
+    });
+
+    const sysLines = [];
+    FCM.createOverlay = () => ({
+      mount: () => Promise.resolve(),
+      destroy() {}, sys(t) { sysLines.push(t); }, event() {}, chat() {}, batch() {},
+      setEmotes() {}, setBadges() {}, setCheermotes() {}, profileResult() {},
+      deleteMessage() {}, deleteUser() {}, setCounterpart() {}, setAccounts() {},
+      setModerator() {}, modResult() {}, authError() {}, sendResult() {},
+      applyStoredSettings() {}, toast() {}, setStatus() {},
+    });
+
+    vm.runInContext(fs.readFileSync(path.join(ROOT, 'src/content/boot.js'), 'utf8'),
+      sandbox, { filename: 'boot.js' });
+
+    const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
+    return {
+      timers, sysLines, asked, flush, location,
+      // Every scan boot armed, in the order it armed them.
+      scans: () => timers.timeouts.filter((t) => WATCH_DELAYS.includes(t.ms)),
+      // A real timer queue checks each timer as it comes round, not once at
+      // the start: the first scan cancels the four behind it, and those four
+      // then never fire. Deciding up front which to run would fire them all
+      // and hide exactly the thing this suite is here to check.
+      // The flush is the settings read the press waits on: the button is
+      // found synchronously, the permission to press it is not.
+      async runScans() {
+        this.scans().forEach((t) => { if (!t.cancelled) t.fn(); });
+        await flush();
+      },
+      async navigateTo(pathname) {
+        location.pathname = pathname;
+        timers.intervals.filter((t) => t.ms === 600).forEach((t) => t.fn());
+        await flush();
+      },
+    };
+  }
+
+  // The delays boot.js schedules its scans at.
+  const WATCH_DELAYS = [700, 1600, 3200, 6000, 10000];
+
+  return (async () => {
+    // ── Live, on the profile: pressed once, however many scans run ──
+    {
+      const button = { clicks: 0, click() { this.clicks++; } };
+      const t = boot({ button });
+      await t.flush();
+      eq(t.scans().length, WATCH_DELAYS.length, 'watchpress: a scan is armed at each delay');
+      eq(button.clicks, 0, 'watchpress: nothing is pressed before the page has had time to draw');
+
+      await t.runScans();
+      eq(button.clicks, 1,
+        'watchpress: the button is pressed once even though five scans were armed');
+      eq(t.sysLines.length, 1, 'watchpress: and the feed says why the page changed');
+      contains(t.sysLines[0], 'switched to the stream',
+        'watchpress: in words that explain it rather than only announcing it');
+
+      // Running them again stands for the timers that were already in flight
+      // when the first one fired.
+      await t.runScans();
+      eq(button.clicks, 1, 'watchpress: a scan that had already been armed does not press it again');
+    }
+
+    // ── Offline, or a layout with no button: nothing happens, quietly ──
+    {
+      const t = boot({ button: null });
+      await t.flush();
+      await t.runScans();
+      eq(t.sysLines.length, 0, 'watchpress: a page with nothing to press says nothing');
+      ok(t.asked.count >= WATCH_DELAYS.length,
+        'watchpress: and every scan really did look');
+    }
+
+    // ── Switched off ──
+    {
+      const button = { clicks: 0, click() { this.clicks++; } };
+      const t = boot({ button, settings: { watchWhenLive: false } });
+      await t.flush();
+      await t.runScans();
+      eq(button.clicks, 0,
+        'watchpress: with the setting off the button is found and deliberately not pressed');
+      eq(t.sysLines.length, 0, 'watchpress: and the page is left the way Kick drew it');
+    }
+
+    // ── Left the channel before the scan came round ──
+    //
+    // The timers outlive the navigation, and a press landing after it would be
+    // pressing a button on a page nobody is on any more.
+    {
+      const button = { clicks: 0, click() { this.clicks++; } };
+      const t = boot({ button });
+      await t.flush();
+      await t.navigateTo('/browse');
+      t.timers.timeouts.filter((x) => WATCH_DELAYS.includes(x.ms)).forEach((x) => {
+        if (!x.cancelled) x.fn();
+      });
+      eq(button.clicks, 0,
+        'watchpress: a scan armed for a channel that has been left presses nothing');
+    }
+  })();
+};
+
+suites.twitchmenus = function () {
+  // Twitch's account menu, as it is actually built. Measured off the page:
+  //
+  //   body
+  //    +- div.tw-dialog-layer          1440x0, position: relative, below the fold
+  //       +- div.ReactModal__Overlay      1x1, position: fixed
+  //          +- div[role=dialog]           1x0, position: static
+  //             +- div[data-popper-...]  207x193  <- the only thing anyone sees
+  //
+  // Every test in native.js asks what an element measures, and all three
+  // wrappers answer "nothing" — so the panel that had a box was the one element
+  // nothing was looking at, and the overlay painted straight over the menu the
+  // viewer had just opened. The notifications popover and the chat settings
+  // menu are the same three wrappers around a different panel.
+
+  function el({ w = 0, h = 0, x = 0, y = 0, attrs = {}, position = 'static', kids = [] } = {}) {
+    const node = {
+      nodeType: 1,
+      isConnected: true,
+      style: {},
+      children: [],
+      parentElement: null,
+      position,
+      textContent: '',
+      getAttribute: (k) => (k in attrs ? attrs[k] : null),
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      contains(other) {
+        for (let n = other; n; n = n.parentElement) if (n === node) return true;
+        return false;
+      },
+      getBoundingClientRect: () => ({
+        width: w, height: h, left: x, top: y, right: x + w, bottom: y + h,
+      }),
+    };
+    kids.forEach((k) => { k.parentElement = node; node.children.push(k); });
+    return node;
+  }
+
+  // The overlay's own box: Twitch's chat column, down the right-hand side.
+  const CHAT_BOX = { left: 1100, top: 60, right: 1440, bottom: 900, width: 340, height: 840 };
+
+  // The four nested elements Twitch draws a menu through. `panel` is the only
+  // one with a box; everything above it measures nothing.
+  function menuLayer(panel) {
+    const dialog = el({ w: 1, h: 0, attrs: { role: 'dialog' }, kids: [panel] });
+    const modalOverlay = el({ w: 1, h: 1, position: 'fixed', kids: [dialog] });
+    const layer = el({ w: 1440, h: 0, y: 900, position: 'relative', kids: [modalOverlay] });
+    return { panel, dialog, modalOverlay, layer };
+  }
+
+  const accountMenu = () => menuLayer(el({
+    w: 207, h: 193, x: 1180, y: 100,
+    attrs: { 'data-popper-placement': 'bottom-end' },
+    position: 'absolute',
+  }));
+
+  /**
+   * A page with no menu on it, and a way to open one afterwards.
+   *
+   * Opening it afterwards is the point. The bridge treats whatever is already
+   * on screen when it is built as the page's own furniture, so a menu that was
+   * there from the start could never be seen opening — and a test that built
+   * both at once would be checking the furniture rule instead of this.
+   */
+  function page() {
+    const body = el({ w: 1440, h: 900 });
+    const html = el({ w: 1440, h: 900, kids: [body] });
+    // Walked fresh on every query, so a menu added after the bridge exists is
+    // found the way a real one would be.
+    const walk = () => {
+      const out = [];
+      (function down(n) { out.push(n); n.children.forEach(down); })(body);
+      return out;
+    };
+    const sandbox = makeSandbox({
+      document: {
+        body,
+        documentElement: html,
+        querySelectorAll: (sel) => walk().filter((n) => {
+          if (sel.includes('data-popper-placement') && n.getAttribute('data-popper-placement')) return true;
+          if (sel.includes('role="dialog"') && n.getAttribute('role') === 'dialog') return true;
+          if (sel === '[data-state="open"]') return n.getAttribute('data-state') === 'open';
+          return false;
+        }),
+        elementFromPoint: () => null,
+      },
+      window: {},
+      getComputedStyle: (n) => ({ position: n.position || 'static', display: 'block', visibility: 'visible' }),
+    });
+    const FCM = load(sandbox, ...SHARED, 'src/content/native.js');
+    // The adapter is only asked for its message list here, and a menu is never
+    // inside one.
+    const bridge = FCM.createNativeBridge({ id: 'twitch', messageList: () => null });
+    return {
+      bridge,
+      open(parts) {
+        parts.layer.parentElement = body;
+        body.children.push(parts.layer);
+        return parts;
+      },
+    };
+  }
+
+  // ── The reported bug ──
+  {
+    const p = page();
+    const parts = p.open(accountMenu());
+    ok(p.bridge.dialogOver(CHAT_BOX) === parts.panel,
+      'twitchmenus: the account menu is found by the panel that has a box, not the wrappers that do not');
+  }
+
+  // ── And it is the panel, never one of the wrappers ──
+  //
+  // Each wrapper measures nothing, or nothing where the overlay is. Standing
+  // aside for one would hide the panel for something nobody can see, and it
+  // would never be noticed closing either.
+  {
+    const p = page();
+    const parts = p.open(accountMenu());
+    const found = p.bridge.dialogOver(CHAT_BOX);
+    ok(found !== parts.dialog, 'twitchmenus: not the sizeless role=dialog wrapper');
+    ok(found !== parts.layer, 'twitchmenus: not the body child parked below the fold');
+    ok(found !== parts.modalOverlay, 'twitchmenus: not the 1x1 fixed overlay');
+  }
+
+  // ── A menu somewhere else is not in the way ──
+  //
+  // Twitch's player settings menu is the same machinery over the video. The
+  // overlay is not on top of that, so hiding for it would be hiding for nothing.
+  {
+    const p = page();
+    p.open(menuLayer(el({
+      w: 207, h: 193, x: 200, y: 400,
+      attrs: { 'data-popper-placement': 'top-start' },
+      position: 'absolute',
+    })));
+    eq(p.bridge.dialogOver(CHAT_BOX), null,
+      'twitchmenus: a menu that does not overlap the panel is left alone');
+  }
+
+  // ── A tooltip is not a menu ──
+  //
+  // Twitch positions tooltips with the same attribute. Hiding the whole overlay
+  // for one would be worse than letting the tooltip be covered.
+  {
+    const p = page();
+    p.open(menuLayer(el({
+      w: 60, h: 24, x: 1200, y: 120,
+      attrs: { 'data-popper-placement': 'top' },
+      position: 'absolute',
+    })));
+    eq(p.bridge.dialogOver(CHAT_BOX), null,
+      'twitchmenus: a tooltip is too small to hide the panel for');
+  }
+
+  // ── Closing it brings the panel back ──
+  //
+  // Twitch unmounts the layer outright, which is what isConnected answers.
+  {
+    const p = page();
+    const parts = p.open(accountMenu());
+    ok(p.bridge.dialogOver(CHAT_BOX) === parts.panel, 'twitchmenus: found while it is open');
+    ok(p.bridge.dialogStillOpen(), 'twitchmenus: and still open while it is');
+    parts.panel.isConnected = false;
+    ok(!p.bridge.dialogStillOpen(),
+      'twitchmenus: once Twitch unmounts it the panel stops standing aside');
+  }
+
+  // ── A menu that was already up before the overlay arrived ──
+  //
+  // That is the page's own furniture. Treating it as a menu would leave the
+  // overlay invisible with nothing able to bring it back.
+  {
+    const body = el({ w: 1440, h: 900 });
+    const html = el({ w: 1440, h: 900, kids: [body] });
+    const parts = accountMenu();
+    parts.layer.parentElement = body;
+    body.children.push(parts.layer);
+    const walk = () => {
+      const out = [];
+      (function down(n) { out.push(n); n.children.forEach(down); })(body);
+      return out;
+    };
+    const sandbox = makeSandbox({
+      document: {
+        body,
+        documentElement: html,
+        querySelectorAll: (sel) => walk().filter((n) => {
+          if (sel.includes('data-popper-placement') && n.getAttribute('data-popper-placement')) return true;
+          if (sel.includes('role="dialog"') && n.getAttribute('role') === 'dialog') return true;
+          if (sel === '[data-state="open"]') return n.getAttribute('data-state') === 'open';
+          return false;
+        }),
+        elementFromPoint: () => null,
+      },
+      window: {},
+      getComputedStyle: (n) => ({ position: n.position || 'static', display: 'block', visibility: 'visible' }),
+    });
+    const FCM = load(sandbox, ...SHARED, 'src/content/native.js');
+    const bridge = FCM.createNativeBridge({ id: 'twitch', messageList: () => null });
+    eq(bridge.dialogOver(CHAT_BOX), null,
+      'twitchmenus: a panel already on screen when the overlay mounted is furniture, not a menu');
+  }
+};
+
 // ── Runner ────────────────────────────────────────────────────────────────────
 
 (async function main() {

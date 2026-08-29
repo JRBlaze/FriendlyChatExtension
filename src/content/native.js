@@ -27,7 +27,28 @@
   // A popup smaller than this is a tooltip, and hiding the whole overlay for a
   // tooltip would be worse than letting the tooltip be covered.
   const MIN_DIALOG = 80;
-  const DIALOG_SELECTOR = '[role="dialog"],[role="menu"],[role="listbox"],.tw-balloon';
+  // Every shape the two sites give a menu.
+  //
+  // The roles are what a site puts on the panel when it names it at all.
+  // `data-popper-placement` is Twitch's, and it is the one that matters most:
+  // Twitch draws its account menu, its notifications and its chat settings as
+  // a React modal whose `role="dialog"` wrapper measures 1x0, inside a fixed
+  // overlay measuring 1x1, inside a body child measuring 1440x0 parked below
+  // the fold — and the panel anyone can actually see is three levels under all
+  // of that, carrying no role, no id and no test hook. Every test here is a
+  // test of what something measures, so all three wrappers answered "nothing",
+  // and the one element with a box was the one nothing was looking at.
+  //
+  // Popper stamps the placement onto that panel as it positions it, which
+  // makes the attribute a mark on the thing actually being painted. That is
+  // the same kind of hook `data-state="open"` is for Kick's Radix menus, and
+  // it is why both are asked for by name rather than looked for by shape.
+  const DIALOG_SELECTOR =
+    '[role="dialog"],[role="menu"],[role="listbox"],.tw-balloon,[data-popper-placement]';
+  // How far under a named-but-sizeless panel to look for the box it is drawing.
+  // Twitch stacks three wrappers over its menus today; this leaves room for one
+  // more without turning into a search of the page.
+  const MENU_DESCENT = 4;
   // A menu nobody has closed in this long is almost certainly not a menu.
   // Whatever it is, it stops being a reason to keep the overlay invisible.
   const PEEK_MAX_MS = 2 * 60 * 1000;
@@ -268,6 +289,37 @@
     }
 
     /**
+     * What a named panel is actually drawing, when the named element itself
+     * measures nothing.
+     *
+     * The same shape of problem as the cards above chat, and the same answer:
+     * a site's wrapper collapsing to no size does not mean nothing is on
+     * screen, it means the box is further in. Twitch's account menu is exactly
+     * this — a `role="dialog"` measuring 1x0 with a 207x193 panel under it.
+     *
+     * Bounded, and it stops at the first level that has a box, so this is a
+     * handful of rects on the one or two named panels a page has rather than a
+     * walk of the document.
+     */
+    function drawnMenu(el) {
+      let level = [el];
+      for (let depth = 0; depth < MENU_DESCENT && level.length; depth++) {
+        const sized = level.find((n) => {
+          const r = n.getBoundingClientRect();
+          return r.width >= MIN_DIALOG && r.height >= MIN_DIALOG;
+        });
+        if (sized) return sized;
+        const next = [];
+        // Breadth-first and capped: a menu is drawn through wrappers with one
+        // child each, and anything fanning out more widely is the page itself.
+        level.forEach((n) => { for (const kid of n.children) next.push(kid); });
+        if (next.length > 8) return el;
+        level = next;
+      }
+      return el;
+    }
+
+    /**
      * Everything that could be one of the site's menus.
      *
      * Twitch names its rewards panel `role="dialog"` and draws it inside the
@@ -279,7 +331,7 @@
     function menuCandidates() {
       const list = [];
       const add = (el) => { if (list.indexOf(el) === -1) list.push(el); };
-      document.querySelectorAll(DIALOG_SELECTOR).forEach(add);
+      document.querySelectorAll(DIALOG_SELECTOR).forEach((el) => add(drawnMenu(el)));
       // Anything that has said it is open, wherever it happens to be drawn.
       // Kick's rewards panel is anchored to its own button rather than
       // portalled, so looking only at the end of <body> never found it.

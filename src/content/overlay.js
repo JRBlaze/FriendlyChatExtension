@@ -4,6 +4,19 @@
   'use strict';
 
   const GEOMETRY_KEY = 'fcm_geometry_v1';
+  // Which chats a typed message goes to, remembered per channel rather than
+  // once for everything.
+  //
+  // In storage.local and under its own key, deliberately, and both halves of
+  // that matter. The settings blob is broadcast to every open tab the moment
+  // any part of it changes, so keeping the targets there is what made picking
+  // "Kick only" on one stream re-pick it on every other stream already open.
+  // And a choice made on one channel is about that channel, not something to
+  // carry to another device.
+  const SEND_TARGETS_KEY = 'fcm_send_targets_v1';
+  // Channels remembered before the oldest is dropped. High enough that nobody
+  // reaches it by watching, low enough that the entry stays a small one.
+  const SEND_TARGETS_LIMIT = 200;
 
   // Ticks between full looks for one of the site's own menus while nothing has
   // been clicked. Ten ticks is five seconds, which only has to catch a menu the
@@ -36,6 +49,8 @@
     close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>',
     refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>',
     fit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>',
+    popout: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 4H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/><path d="M21 3h-7M21 3v7M21 3l-9 9"/></svg>',
+    popin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 4H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/><path d="M14 10h7M21 10V3M21 10l-9-9"/></svg>',
   };
 
   FCM.createOverlay = function (options) {
@@ -150,6 +165,7 @@
           <div class="fcm-actions">
             <button class="fcm-icon-btn fcm-hidden" data-act="reset-placement" title="Reset size and position — back over the site's own chat">${ICONS.fit}</button>
             <button class="fcm-icon-btn" data-act="recheck" title="Re-check the other platform">${ICONS.refresh}</button>
+            <button class="fcm-icon-btn" data-act="popout" title="Pop out into its own window">${ICONS.popout}</button>
             <button class="fcm-icon-btn" data-act="settings" title="Overlay settings">${ICONS.gear}</button>
             <button class="fcm-icon-btn" data-act="collapse" title="Collapse">${ICONS.minus}</button>
             <button class="fcm-icon-btn" data-act="close" title="Hide overlay">${ICONS.close}</button>
@@ -492,6 +508,9 @@
 
     function syncPlacement() {
       if (destroyed) return;
+      // In its own window the panel fills the window, and the page's chat
+      // column has nothing to say about where it goes.
+      if (poppedOut()) return;
       if (manualPlacement) { syncManualPlacement(); return; }
       const target = site.chatContainer();
       if (!target) { dockRight(); return; }
@@ -582,6 +601,16 @@
     }
 
     function tick() {
+      // Popped out, most of this is about a panel that is over the page, and
+      // it is not. What still matters is the page itself: its balances are
+      // still this channel's, its chat is still the one being hidden, and its
+      // redemptions still belong in the feed.
+      if (poppedOut()) {
+        syncPageChatVisibility();
+        renderNativeBar();
+        syncNativeEvents();
+        return;
+      }
       refreshCards();
       syncPlacement();
       syncPageChatVisibility();
@@ -658,6 +687,8 @@
      */
     function syncPeek() {
       if (destroyed) return;
+      // A menu on the page cannot be covered by a panel that is not on it.
+      if (poppedOut()) { if (peeking) setPeek(false); return; }
       const box = visible && !panel.classList.contains('fcm-hidden')
         ? panel.getBoundingClientRect()
         : null;
@@ -831,6 +862,151 @@
       schedulePeekCheck();
     }
 
+    // ── Popped out into a window of its own ───────────────────────────────────
+
+    /**
+     * Moves the panel into a picture-in-picture document, and back again.
+     *
+     * The panel is *moved*, not copied. Everything driving it — the port to the
+     * background worker, the feed, the composer, the bridge that reads this
+     * page's balances and types into this page's chat box — keeps running in
+     * the tab, because that is where this script lives and it never went
+     * anywhere. What crosses into the other window is one element and the
+     * shadow root hanging off it, stylesheet included. So a popped-out panel is
+     * not a second copy that has to be kept in step with the first: it is the
+     * same panel, drawn somewhere else.
+     *
+     * That is also why this is a picture-in-picture document rather than a
+     * `window.open`. A real second window would be a second page, with no
+     * access to this one's chat box, and sending a Cheer or typing into the
+     * site's own composer would have had to stop working.
+     */
+    let pipWindow = null;
+    const poppedOut = () => !!pipWindow;
+
+    function refreshPopButton() {
+      const btn = $('.fcm-actions [data-act="popout"]');
+      if (!btn) return;
+      const out = poppedOut();
+      btn.innerHTML = out ? ICONS.popin : ICONS.popout;
+      btn.title = out ? 'Put it back on the page' : 'Pop out into its own window';
+      btn.setAttribute('aria-label', btn.title);
+    }
+
+    /**
+     * Puts the panel back on the page.
+     *
+     * Called both from the button and from the window being closed by whatever
+     * else can close it — the viewer, the tab navigating, Chrome itself — so it
+     * has to be safe to run when the window has already gone.
+     */
+    function popIn() {
+      const win = pipWindow;
+      pipWindow = null;
+      root.dataset.popped = 'false';
+      if (host.parentNode !== document.documentElement) {
+        document.documentElement.appendChild(host);
+      }
+      refreshPopButton();
+      // The panel has been sitting with the page's geometry overridden, so it
+      // is put back where the placement code thinks it should be rather than
+      // left at whatever size the window happened to be.
+      syncPlacement();
+      if (win && !win.closed) {
+        try { win.close(); } catch (e) { /* already going */ }
+      }
+    }
+
+    async function popOut() {
+      if (poppedOut()) { popIn(); return; }
+      if (!window.documentPictureInPicture) {
+        toast('This version of Chrome cannot open a pop-out window');
+        return;
+      }
+      const rect = panel.getBoundingClientRect();
+      let win;
+      try {
+        win = await window.documentPictureInPicture.requestWindow({
+          width: Math.round(rect.width) || 400,
+          height: Math.round(rect.height) || 640,
+        });
+      } catch (e) {
+        // Chrome refuses without a gesture it recognises, and refuses a second
+        // one while the first is open. Neither is worth more than a line.
+        toast('Chrome would not open a pop-out window');
+        return;
+      }
+      if (destroyed) { try { win.close(); } catch (e) { /* nothing to undo */ } return; }
+
+      pipWindow = win;
+      win.document.title = `${FCM.PLATFORM_META[hostPlatform].name}/${channel} — merged chat`;
+      // The panel supplies its own colours; this is only so the window does not
+      // flash white behind it before the shadow root paints.
+      win.document.body.style.cssText = 'margin:0;padding:0;overflow:hidden;background:#0d0d0f;';
+      root.dataset.popped = 'true';
+      // Collapsed is a shape for a panel on a page. A window collapsed to its
+      // title bar is just an empty window.
+      if (collapsed) setCollapsed(false);
+      // Nothing of ours is over the page any more, so anything it was standing
+      // aside for stops applying.
+      setPeek(false);
+      win.document.body.appendChild(host);
+      // Covers every way the window can go: the viewer closing it, this tab
+      // navigating, Chrome taking it back.
+      win.addEventListener('pagehide', popIn, { once: true });
+      refreshPopButton();
+      toast('Popped out — close the window to put it back');
+    }
+
+    // ── Where a typed message goes, per channel ───────────────────────────────
+
+    // Whether this channel has a choice of its own. Until it does, the panel
+    // follows the default; once it has one, a settings broadcast started by
+    // another tab must not be allowed to talk it back out of it.
+    let sendTargetsPinned = false;
+
+    const sendTargetsKey = () => `${hostPlatform}:${channel}`;
+
+    function readTargets(list) {
+      if (!Array.isArray(list)) return null;
+      const clean = list.filter((p) => FCM.SEND_PLATFORMS.includes(p));
+      return clean.length ? new Set(clean) : null;
+    }
+
+    /**
+     * This channel's own choice of where messages go, if it has made one.
+     *
+     * Read once on mount and never again, because the only thing that changes
+     * it afterwards is this panel — and the whole point of keeping it out of
+     * the settings blob is that another tab's change is not this tab's news.
+     */
+    async function loadSendTargets() {
+      try {
+        const stored = await chrome.storage.local.get(SEND_TARGETS_KEY);
+        const all = stored[SEND_TARGETS_KEY] || {};
+        const mine = readTargets(all[sendTargetsKey()]);
+        if (!mine) return;
+        sendTargets = mine;
+        sendTargetsPinned = true;
+      } catch (e) { /* the default is a perfectly good answer */ }
+    }
+
+    async function saveSendTargets() {
+      try {
+        const stored = await chrome.storage.local.get(SEND_TARGETS_KEY);
+        const all = stored[SEND_TARGETS_KEY] || {};
+        const key = sendTargetsKey();
+        // Re-inserted rather than updated in place, so the freshest channel is
+        // last and the trim below takes the ones nobody has watched in longest.
+        delete all[key];
+        all[key] = [...sendTargets];
+        const keys = Object.keys(all);
+        keys.slice(0, Math.max(0, keys.length - SEND_TARGETS_LIMIT))
+          .forEach((k) => delete all[k]);
+        await chrome.storage.local.set({ [SEND_TARGETS_KEY]: all });
+      } catch (e) { /* remembering it is a convenience, sending still works */ }
+    }
+
     async function loadGeometry() {
       try {
         const stored = await chrome.storage.local.get(GEOMETRY_KEY);
@@ -964,18 +1140,31 @@
         window.addEventListener('mouseup', up);
       }
 
+      // Dragging and resizing are about a panel floating over a page. In a
+      // window of its own the panel fills the window and the window frame does
+      // both — and letting a drag through would be worse than useless: it would
+      // record a box the viewer never chose as the one they did, and that box
+      // would still be there when the panel came home.
+      const overThePage = (e) => {
+        if (poppedOut()) return false;
+        return !e.target.closest('button');
+      };
+
       header.addEventListener('mousedown', (e) => {
-        if (e.target.closest('button')) return;
+        if (!overThePage(e)) return;
         drag(e, 'move');
       });
       // Double-clicking the header is the same reset as the header button, kept
       // because it is the quicker one once you know it is there.
       header.addEventListener('dblclick', (e) => {
-        if (e.target.closest('button')) return;
+        if (!overThePage(e)) return;
         resetPlacement();
       });
-      grip.addEventListener('mousedown', (e) => drag(e, 'height'));
-      corner.addEventListener('mousedown', (e) => { e.stopPropagation(); drag(e, 'width'); });
+      grip.addEventListener('mousedown', (e) => { if (!poppedOut()) drag(e, 'height'); });
+      corner.addEventListener('mousedown', (e) => {
+        e.stopPropagation();
+        if (!poppedOut()) drag(e, 'width');
+      });
     }
 
     // ── Header chips ──────────────────────────────────────────────────────────
@@ -1236,6 +1425,14 @@
             <label>Hide the site's own chat<small>The overlay covers it either way</small></label>
             <input type="checkbox" data-set="hideNativeChat">
           </div>
+          ${hostPlatform === 'kick' ? `
+          <div class="fcm-field">
+            <label>Open the stream when Kick shows the profile
+              <small>Kick gives a streamer their own Home/About/Videos page even while they are
+                live. This presses its own Watch now for you, once, on arrival.</small>
+            </label>
+            <input type="checkbox" data-set="watchWhenLive">
+          </div>` : ''}
           <div class="fcm-field">
             <label>Leave room for ${FCM.escapeHtml(FCM.PLATFORM_META[hostPlatform].name)}'s cards
               <small>Hype trains, polls, predictions and pinned messages stay visible above the panel</small>
@@ -1374,9 +1571,13 @@
     function applySettings(next) {
       settings = { ...FCM.DEFAULT_SETTINGS, ...(next || {}) };
       FCM.setViewSettings(settings);
-      const stored = Array.isArray(settings.sendTargets) ? settings.sendTargets : FCM.SEND_PLATFORMS;
-      sendTargets = new Set(stored.filter((p) => FCM.SEND_PLATFORMS.includes(p)));
-      if (!sendTargets.size) sendTargets = new Set(FCM.SEND_PLATFORMS);
+      // Only the starting point. A channel that has been given targets of its
+      // own keeps them: this runs again every time any setting changes in any
+      // tab, and following it then is exactly how one stream's choice used to
+      // land on every other stream open at the time.
+      if (!sendTargetsPinned) {
+        sendTargets = readTargets(settings.sendTargets) || new Set(FCM.SEND_PLATFORMS);
+      }
       applyTheme();
       root.dataset.animate = String(!!settings.animations);
       root.dataset.timestamps = String(settings.timestamps !== false);
@@ -1440,6 +1641,10 @@
     }
 
     function setVisible(next) {
+      // Hiding the panel while it is in a window of its own would leave an
+      // empty window on screen and the launcher on a page nobody is looking
+      // at. Coming home first is what the viewer meant by hiding it.
+      if (!next && poppedOut()) popIn();
       visible = next;
       panel.classList.toggle('fcm-hidden', !next);
       launcher.classList.toggle('fcm-hidden', next);
@@ -1616,7 +1821,9 @@
           } else {
             sendTargets.add(platform);
           }
-          FCM.saveSettings({ sendTargets: [...sendTargets] });
+          // This channel's choice, and only this channel's.
+          sendTargetsPinned = true;
+          saveSendTargets();
           renderTargets();
           refreshSendNote();
         });
@@ -1820,6 +2027,7 @@
         else if (act === 'settings') openSheet();
         else if (act === 'reset-placement') resetPlacement();
         else if (act === 'recheck') { onCommand({ cmd: 'recheck' }); toast('Re-checking the other platform…'); }
+        else if (act === 'popout') popOut();
       });
     });
 
@@ -1858,7 +2066,7 @@
         if (destroyed) return api;
         FCM.setViewSettings(settings);
         document.documentElement.appendChild(host);
-        await loadGeometry();
+        await Promise.all([loadGeometry(), loadSendTargets()]);
         if (destroyed) { host.remove(); return api; }
         applySettings(settings);
         renderChips();
@@ -1954,6 +2162,10 @@
         if (resizeObserver) resizeObserver.disconnect();
         if (themeWatcher) { themeWatcher.stop(); themeWatcher = null; }
         if (endDrag) endDrag();
+        // Brings the host back to this document before it is removed, and
+        // closes the window it was living in. Without this a channel switch
+        // would leave an empty pop-out window on screen.
+        if (pipWindow) popIn();
         // Every card forced back into view and the site's own chat itself go
         // back the way they were found, so hopping channels does not leave the
         // page with inline styles the overlay put there.

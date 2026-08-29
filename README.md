@@ -26,6 +26,20 @@ feed. Open a Kick channel and it works the other way round.
 - **Drag and resize it, and put it back.** Move or resize the panel and it stays where you put
   it, on that platform, across reloads. A reset button appears in the title bar the moment you
   do, and snaps it back over the site's own chat at the size it first opened at.
+- **Pop it out into a window of its own.** The panel moves into a picture-in-picture window that
+  floats above everything, including full-screen video and other applications, and comes back to
+  the page when you close it. It is *moved*, not copied: the same panel, the same connections,
+  the same composer still typing into the page's own chat box when that is how a message has to
+  go. Which means Cheers and anything else that needs the site's own controls keep working while
+  it is out there. See [Popping the panel out](#popping-the-panel-out).
+- **Where a message goes is remembered per channel.** Pick *Kick only* on one stream and it stays
+  Kick only on that stream, next time too — without changing anything on the other streams you
+  have open in other tabs. See [Which chats a message goes to](#which-chats-a-message-goes-to).
+- **Opens the stream when Kick shows the profile.** Kick gives a streamer their own channel page —
+  Home, About, Videos, Clips, Schedule — even while they are live, so the one person whose address
+  does not open their own stream is the person sending it. The overlay presses Kick's own
+  *Watch now* for them, once, on arrival. See
+  [The profile the streamer never asked for](#the-profile-the-streamer-never-asked-for).
 - **Tells you when they are live on the other platform.** While you watch Twitch it works out
   which Kick channel belongs to the same streamer, checks whether it is live, and offers to
   connect it. The same logic runs in reverse on Kick.
@@ -105,7 +119,7 @@ feed. Open a Kick channel and it works the other way round.
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.11.0.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.12.0.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and a folder named `FriendlyChatExtension-main`. The
@@ -135,6 +149,8 @@ so its button is always visible for quick settings.
 | "Manifest file is missing or unreadable" | You picked the wrong folder. Go back and pick the one containing `manifest.json`. |
 | The card loaded but no overlay on a channel | Reload the Twitch or Kick tab. The extension only attaches to pages opened after it was installed. |
 | No overlay, and you are on a directory or settings page | The overlay only appears on an actual channel page, not on browse, search or settings pages. |
+| Your own Kick channel opens on Home/About/Videos instead of your stream | That is Kick's own layout for a channel's owner. The overlay presses its *Watch now* for you on arrival; if you would rather it did not, turn off *Open the stream when Kick shows the channel's profile* in settings. |
+| The pop-out button does nothing | Picture-in-picture windows need Chrome 116 or newer, and Chrome refuses a second one while the first is open. Close the existing pop-out and try again. |
 | Nothing at all after a Chrome restart | Developer-mode extensions stay installed, but Chrome may prompt you to keep them. Re-enable it on `chrome://extensions`. |
 
 ### Updating or removing it
@@ -610,6 +626,80 @@ Hiding the site's own chat and revealing its cards would contradict each other, 
 exempted rather than un-hidden: `visibility` is inherited, and setting it back to `visible` on a
 card inside a hidden subtree shows that card and nothing else around it.
 
+### Popping the panel out
+
+The pop-out button in the title bar moves the panel into a
+[document picture-in-picture](https://developer.chrome.com/docs/web-platform/document-picture-in-picture)
+window, and moves it back when that window closes.
+
+*Moves*, not copies, and everything else follows from that. The content script never leaves the
+tab, so the port to the background worker, the feed, the emote picker and the bridge that reads
+this page's balances and types into this page's chat box all carry on exactly as they were. What
+crosses into the other window is one element — the overlay's host — with its shadow root and its
+stylesheet hanging off it. There is no second copy to keep in step, no second connection, and no
+message that has to be forwarded anywhere.
+
+That is also why it is a picture-in-picture document rather than a `window.open`. A real second
+window would be a second page with no access to this one's chat box, and sending a Cheer — which
+has to go through the site's own composer, because Twitch's API takes the text and none of the
+Bits — would have had to stop working the moment the panel left the tab.
+
+While it is out there the panel is no longer over a page, so the parts that exist only because it
+was stop: placement no longer tracks the chat column, and it no longer stands aside for the site's
+menus. What does keep running is everything about the page itself, because the page is still where
+the channel is: its balances are still read, its own chat is still hidden if that is the setting,
+and the redemptions it draws still reach the feed.
+
+Closing the window puts the panel back. So does hiding the overlay, and so does moving to another
+channel — otherwise a channel switch would leave an empty window behind with nothing in it.
+
+### Which chats a message goes to
+
+The *Send to* chips are remembered per channel, in `storage.local`, under their own key.
+
+Both halves of that are deliberate. Settings live in one blob that is broadcast to every open tab
+the moment any part of it changes, and every overlay re-reads the whole thing when it arrives —
+which is exactly how picking *Kick only* on one stream re-picked it on every other stream already
+open. And a choice about one channel is a choice about that channel, not a preference to
+replicate to a person's other devices.
+
+So an overlay reads its channel's entry once, on mount, and after that only its own chips change
+it. A channel that has never been given one starts from the default, and a broadcast started by
+another tab is allowed to change anything except this. The map is capped at 200 channels, oldest
+dropped first.
+
+### The profile the streamer never asked for
+
+Kick draws a channel two ways. A visitor arriving at a live one gets the player and the chat; the
+profile — Home, About, Videos, Clips, Schedule — is what an offline channel gets. The streamer is
+the exception: Kick hands them their own profile whether or not they are live, so the one person
+who cannot watch the stream by typing its address is the person sending it.
+
+Kick's own way across is a *Watch now* button in the card floating over the collapsed player, and
+pressing it swaps the profile for the player without touching the address. So there is nothing to
+navigate and nothing to reload — the overlay finds Kick's button and presses it, once, on arrival.
+
+Three things have to hold, and each one is a reason not to press:
+
+- **The address is the channel itself.** `/name/about`, `/name/videos` and `/name/clips` are pages
+  someone asked for by name, and taking them to the player instead would be taking away what they
+  chose.
+- **The profile is what is on screen.** The button stays in the page after the swap, sized and
+  all, so it cannot report its own success. The tab strip going is what says it worked.
+- **The button is there at all.** Kick only draws it while the channel is live, which makes its
+  presence the liveness test as well as the control. Nothing has to ask an API whether to bother,
+  and an offline profile is left exactly as it is.
+
+Finding it is a matter of telling it from the video's own play control, which carries the same
+`data-ds-icon="Play"`. What separates them is a label: the button in the card says what it does,
+and the one in the player is an icon and nothing else. Matching on the icon rather than on the
+words is what keeps this working in a language other than English; the words are still preferred
+where they are there.
+
+It is pressed once per arrival and then not again. Someone who goes back to their profile of their
+own accord is left there, and a press that changes nothing — because Kick rewired the button —
+stops too, because a page that fights whoever is using it is worse than one that gave up.
+
 ### Getting out of the way of the site's own menus
 
 Twitch draws its rewards panel inside the chat column at `z-index: 2000`. The overlay sits at
@@ -755,6 +845,63 @@ per-platform result, which is how the partial-failure and expired-token paths ge
 the send path.
 
 ## Bugs this testing found
+
+- **The account menu and the notifications popover were painted straight over.** Every test for
+  "is one of the site's menus open" asks what an element *measures*, which is what makes it
+  survive both sites renaming their markup. Twitch's top-right menus defeated all of them at once
+  by having nothing to measure. The menu is drawn through four nested elements:
+
+  ```
+  body
+   +- div.tw-dialog-layer          1440x0, position: relative, parked below the fold
+      +- div.ReactModal__Overlay      1x1, position: fixed
+         +- div[role="dialog"]        1x0, position: static
+            +- div[data-popper-...] 207x193   <- the only part anyone can see
+  ```
+
+  The one element carrying a role measures 1x0. The one that is a child of `<body>` measures
+  1440x0 and sits at y=900. The panel with a box is three levels down, carries no role, no id and
+  no test hook, and is a child of nothing that was being looked at. So the search found the
+  wrappers, measured nothing, and concluded no menu was open — while the menu sat there under the
+  overlay.
+
+  Twitch positions those panels with Popper, which stamps `data-popper-placement` onto the
+  floating element as it places it. That is a mark on the thing actually being painted, which
+  makes it the same kind of hook `data-state="open"` already is for Kick's Radix menus, and it is
+  why both are now asked for by name. The account menu, the notifications popover and the chat
+  settings menu are the same wrappers around a different panel, so one hook covers all three.
+
+  A hook can be renamed, though, so it is backed by shape as well: a named panel that measures
+  nothing is descended into, breadth-first and four levels at most, for the box it is drawing —
+  stopping if the tree fans out, because a menu is drawn through wrappers with one child each and
+  anything wider is the page. That is the same answer the cards above chat already needed, for the
+  same reason: a wrapper collapsing to no size does not mean nothing is on screen, it means the box
+  is further in.
+
+  The existing floors do the rest of the work unchanged. Twitch positions its *tooltips* with the
+  same attribute, and hiding the whole overlay for a tooltip would be worse than letting the
+  tooltip be covered — so the 80x80 minimum and the 40px overlap test are what keep this to menus.
+
+- **A long channel name painted over the title bar's buttons.** The chips carrying the channel's
+  name sit between the *MERGED* mark and the row of buttons on the right. They set their own width
+  from their own text and were told never to wrap it, and nothing told them they could give way —
+  so a thirty-character name, which is as long as either platform allows, drew a chip 267px wide
+  into a strip with 131px for it and straight over full screen, refresh, settings, minimize and
+  close. Measured against the real panel, the chip's right edge landed 128px past where the first
+  button starts.
+
+  A flex item will not shrink below its own content unless it is told it may, which is the whole
+  fix: the chips may shrink, the name inside them ellipsises, the row no longer wraps to a second
+  line, and anything that still does not fit is clipped rather than painted outside. The status
+  dot and the disconnect cross are held at their own size, so a squeezed chip still says what it
+  is doing and can still be clicked to leave.
+
+- **Picking where messages go on one stream changed it on all the others.** The *Send to* chips
+  wrote to the settings blob. Every setting is broadcast to every open tab the moment any part of
+  it changes, and every overlay re-applies the whole thing when it lands — so choosing *Kick only*
+  on one stream reached every other stream open at the time, and there was nowhere for a choice
+  about one channel to live anyway. It is now kept per channel, in `storage.local`, under its own
+  key, and read once on mount. See [Which chats a message goes to](#which-chats-a-message-goes-to).
 
 - **The panel came straight back over the menu it had just opened.** Clicking a balance hides the
   panel and then asks the site to open its rewards menu, and the panel is meant to stay out of the

@@ -134,6 +134,10 @@
     // the same emote can arrive from a different provider tomorrow.
     favouriteEmotes: [],
     hideNativeChat: false,      // collapse the site's own chat while merged
+    // Press Kick's own "Watch now" when it opens a channel's profile over a
+    // stream that is running. Kick does that to the streamer on their own
+    // channel, which is the one place the layout is never what was wanted.
+    watchWhenLive: true,
     // The site's own chat furniture, which the overlay would otherwise cover.
     revealHighlights: true,     // shrink so hype trains, polls, predictions and
                                 // pinned messages stay visible above the panel

@@ -25,6 +25,7 @@
   let keepaliveTimer = null;
   let reconnectTimer = null;
   let hintTimers = [];
+  let watchTimers = [];
   // Bumped on every channel change. Anything still in flight from before the
   // change carries an older epoch and is ignored, which is what stops a
   // previous channel's messages being applied to the new overlay.
@@ -212,6 +213,58 @@
     }, delay));
   }
 
+  // ── The profile the streamer never asked for ────────────────────────────────
+
+  // How long after arriving the page is worth re-asking. The button is drawn
+  // once Kick's own data lands, which on a cold load is well after the address
+  // changed, and the last of these is late enough to cover a slow one.
+  const WATCH_SCAN_DELAYS = [700, 1600, 3200, 6000, 10000];
+
+  function cancelWatchScans() {
+    watchTimers.forEach((t) => clearTimeout(t));
+    watchTimers = [];
+  }
+
+  /**
+   * Presses Kick's "Watch now" when it has opened a channel's profile over a
+   * stream that is running — which is what Kick does to the streamer on their
+   * own channel, live or not.
+   *
+   * Pressed once and then never again for this arrival, which is the whole of
+   * the restraint here. The site adapter will not offer the button unless the
+   * address is the channel itself and the profile is the thing on screen, so
+   * this cannot fire on a page someone chose; and stopping at the first press
+   * means someone who goes back to the profile of their own accord is left
+   * there rather than dragged forward again.
+   *
+   * A press that changes nothing — because Kick rewired the button — also
+   * stops, for the same reason. Trying once and leaving it is better than a
+   * page that fights whoever is using it.
+   */
+  function scheduleWatchScans(epoch) {
+    cancelWatchScans();
+    watchTimers = WATCH_SCAN_DELAYS.map((delay) => setTimeout(async () => {
+      if (epoch !== navEpoch || !currentChannel) return;
+      const button = site.watchNow();
+      // Asked before the settings are, because it is the cheap half and it is
+      // almost always no: on Twitch there is never a button, and on Kick there
+      // is one only for the streamer's own live channel. Reading the settings
+      // first would have meant a storage round-trip on every arrival anywhere
+      // to answer a question that had already been settled by the page.
+      if (!button) return;
+      // Nothing else may fire now, whatever the setting turns out to be: this
+      // is the one press this arrival gets.
+      cancelWatchScans();
+      const settings = await FCM.loadSettings();
+      // A navigation can land inside that read.
+      if (epoch !== navEpoch || settings.watchWhenLive === false) return;
+      try {
+        button.click();
+      } catch (e) { /* the page moved on; the profile is still usable */ }
+      if (overlay) overlay.sys('Kick opened this channel’s profile — switched to the stream');
+    }, delay));
+  }
+
   /**
    * Fetches Kick's emote list from the page itself.
    *
@@ -289,6 +342,7 @@
     // left can arrive while the new one is being set up — that was what made
     // the overlay flip back to the previous channel.
     cancelHintScans();
+    cancelWatchScans();
     if (!channel) {
       // Left the channel page (directory, settings, a clip). Tell the worker to
       // drop its sockets before closing the port.
@@ -315,6 +369,7 @@
     connectPort();
     sendHello();
     scheduleHintScans(epoch);
+    scheduleWatchScans(epoch);
   }
 
   // Twitch and Kick are both single-page apps, and neither fires an event the
