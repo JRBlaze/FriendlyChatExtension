@@ -23,6 +23,11 @@ feed. Open a Kick channel and it works the other way round.
 - **Your bits, Kicks and channel points**, read off the page and shown above the composer.
   Clicking a balance opens the site's own rewards or cheer menu, and the panel steps out of the
   way for as long as it is open.
+- **Your chat identity, on the same row.** The colour your name is drawn in and which of your
+  badges show belong to the platform, and the overlay only draws them — so *Chat identity* opens
+  the platform's own control for it, on Twitch and on Kick alike, and steps aside while it is
+  open. It appears only when the site is actually showing that button, rather than guessing at
+  one and sending a click somewhere unintended.
 - **Channel point bonuses are claimed for you.** The bonus chest is on screen for a couple of
   minutes and is the one part of channel points that is lost purely by not being at the keyboard.
   The overlay presses the site's own claim button the moment it appears — while the panel is
@@ -93,6 +98,12 @@ feed. Open a Kick channel and it works the other way round.
 - **Favourite emotes.** Star one in the picker and it gets a row of its own at the top, and sorts
   first in `:` autocomplete.
 - **Send to both platforms at once**, or either one — the same target chips the desktop app has.
+- **An emote on its own goes where that emote is.** Sent to the other chat it would arrive as a
+  bare word — `PogU`, alone, to people with no idea what it was meant to be — so a message that
+  is nothing but emotes is only sent where they exist, and the row above the box says so as you
+  type. Put words beside it and it goes to both, because then the sentence is the message and
+  both chats can read it. An emote both chats have loaded goes to both either way, and picking a
+  single chat yourself is still the last word.
 - **System and event rows** render exactly as they do in the desktop app: a `SYSTEM`/`EVENT` tag,
   a chip naming the source, then the body, in a muted style that never reads like a viewer's
   message.
@@ -125,7 +136,7 @@ feed. Open a Kick channel and it works the other way round.
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.13.0.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.14.0.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and a folder named `FriendlyChatExtension-main`. The

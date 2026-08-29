@@ -68,6 +68,15 @@
   FCM.RECONNECT_BASE_DELAY_MS = 2000;
   FCM.RECONNECT_MAX_DELAY_MS  = 30000;
   FCM.MAX_RECONNECT_ATTEMPTS  = 10;
+  // How long a connection has to hold before the attempt count is forgiven.
+  //
+  // The counter used to be cleared the moment a socket said hello, which meant
+  // a connection that came up and fell straight over again reset it every time:
+  // the attempt cap was never reached and the retries never lengthened, so a
+  // room that would not stay up was reconnected every couple of seconds for as
+  // long as the tab was open. Sitting up for this long is the difference
+  // between a connection that worked and one that only opened.
+  FCM.STABLE_CONNECTION_MS = 30 * 1000;
 
   FCM.TWITCH_HISTORY_LIMIT = 60;
   FCM.KICK_HISTORY_LIMIT   = 60;
@@ -250,7 +259,13 @@
     let tokens = 0;
     String(text || '').split(/\s+/).forEach((word) => {
       // Anchored, so "notacheer100x" and a bare "100" are both left alone.
-      const m = /^([A-Za-z][A-Za-z0-9_]*?)([0-9]+)$/.exec(word);
+      // The first character may be a digit: Twitch's own global list contains
+    // 4Head, and requiring a letter meant "4Head100" was never recognised as a
+    // Cheer at all — so it went out over the API as ordinary text, spent
+    // nothing, and the streamer received nothing. The known-prefix test below
+    // is what keeps this honest: "100" now matches with a prefix of "1", and
+    // "1" is not a Cheermote, so a bare number is still just a number.
+    const m = /^([A-Za-z0-9][A-Za-z0-9_]*?)([0-9]+)$/.exec(word);
       if (!m) return;
       if (!known.has(m[1].toLowerCase())) return;
       const amount = Number(m[2]);

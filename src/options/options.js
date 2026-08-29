@@ -16,6 +16,9 @@
     { id: 'maxMessages', suffix: '' },
   ];
 
+  // How long a slider has to stop moving before the change is written down.
+  const SETTLE_MS = 300;
+
   async function bind() {
     const settings = await FCM.loadSettings();
 
@@ -31,23 +34,57 @@
       el.addEventListener('change', () => FCM.saveSettings({ [key]: el.value }));
     });
 
+    // A slider fires an input event per pixel of the drag. Writing each one
+    // through is a chrome.storage write per pixel — enough of them in a minute
+    // that the browser starts refusing, which loses the setting the viewer just
+    // chose — so the number beside the slider follows the hand and the write
+    // waits for it to stop.
     RANGES.forEach(({ id, suffix }) => {
       const el = $(id);
       const out = $(`${id}-out`);
       el.value = settings[id];
       out.textContent = `${el.value}${suffix}`;
+      let timer = null;
       el.addEventListener('input', () => {
         out.textContent = `${el.value}${suffix}`;
+        clearTimeout(timer);
+        timer = setTimeout(() => FCM.saveSettings({ [id]: Number(el.value) }), SETTLE_MS);
+      });
+      // Letting go is the end of the adjustment, so it need not wait out the
+      // timer as well.
+      el.addEventListener('change', () => {
+        clearTimeout(timer);
         FCM.saveSettings({ [id]: Number(el.value) });
       });
     });
 
-    const names = $('highlightNames');
-    names.value = settings.highlightNames || '';
-    let namesTimer = null;
-    names.addEventListener('input', () => {
-      clearTimeout(namesTimer);
-      namesTimer = setTimeout(() => FCM.saveSettings({ highlightNames: names.value }), 400);
+    // The free-text fields, all debounced the same way: a save per keystroke is
+    // a storage write per keystroke, and chrome starts refusing them.
+    //
+    // The last two are here because three separate messages — two from the
+    // sign-in code, one from the overlay's own settings sheet — tell people to
+    // set them "in the extension options", and until now there was nowhere in
+    // this page to do it. A blank value means "use the default", which is what
+    // every reader of these keys already falls back to, so the default is shown
+    // as the placeholder rather than filled in.
+    const TEXTS = [
+      { id: 'highlightNames' },
+      { id: 'twitchClientId', fallback: FCM.DEFAULT_TWITCH_CLIENT_ID },
+      { id: 'kickProxyUrl', fallback: FCM.DEFAULT_KICK_PROXY_URL },
+    ];
+    TEXTS.forEach(({ id, fallback }) => {
+      const el = $(id);
+      if (!el) return;
+      if (fallback) el.placeholder = fallback;
+      // Shown empty when it is only the default, so clearing the box and
+      // leaving it clear reads the same as never having touched it.
+      const stored = settings[id] || '';
+      el.value = (fallback && stored === fallback) ? '' : stored;
+      let timer = null;
+      el.addEventListener('input', () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => FCM.saveSettings({ [id]: el.value.trim() }), 400);
+      });
     });
   }
 
@@ -72,7 +109,11 @@
       const row = document.createElement('div');
       row.className = 'link-row';
 
-      const match = record.none ? 'none' : (record.match || 'cache');
+      // A pairing set by hand says so, including one that says there is no
+      // counterpart: the section promises hand-set links are kept, and tagging
+      // one 'none' made it look like a guess the extension would re-derive.
+      const match = record.manual ? 'manual'
+        : (record.none ? 'none' : (record.match || 'cache'));
       row.innerHTML = `
         <span class="from">${FCM.escapeHtml(FCM.PLATFORM_META[platform].name)}/${FCM.escapeHtml(channel)}</span>
         <span class="arrow">→</span>
@@ -86,8 +127,15 @@
       remove.className = 'btn btn-ghost';
       remove.textContent = 'Remove';
       remove.addEventListener('click', async () => {
-        delete links[key];
-        await chrome.storage.local.set({ [FCM.STORAGE_KEYS.links]: links });
+        // Re-read rather than writing back the map this page was drawn from.
+        // The worker writes to it every time a channel is opened in any tab,
+        // and a page left open for an evening holds a snapshot from before all
+        // of them — so removing one row put every link discovered since back to
+        // how it was, including pairings the viewer had set by hand.
+        const current = await chrome.storage.local.get(FCM.STORAGE_KEYS.links);
+        const live = current[FCM.STORAGE_KEYS.links] || {};
+        delete live[key];
+        await chrome.storage.local.set({ [FCM.STORAGE_KEYS.links]: live });
         renderLinks();
       });
       row.appendChild(remove);
@@ -139,7 +187,12 @@
     renderEmoteCacheNote();
   });
 
-  $('version').textContent = `v${chrome.runtime.getManifest().version}`;
+  // Guarded the way the overlay guards the same call: this runs before
+  // anything is bound, so letting it throw would leave the whole page inert
+  // rather than merely missing a version number.
+  try {
+    $('version').textContent = `v${chrome.runtime.getManifest().version}`;
+  } catch (e) { /* not running as an extension page */ }
 
   bind();
   renderLinks();

@@ -232,7 +232,6 @@
      * thousand and letting it through intact defeats the whole arrangement.
      */
     function fillSections(body, sections) {
-      cancelPickerFill();
       let si = 0;      // which section
       let ci = 0;      // how far into that section's entries
       let grid = null; // the grid being filled, held across batches
@@ -280,6 +279,12 @@
 
       const body = popup.querySelector('.fcm-ac-results');
       if (!body) return;
+      // A fill still in flight holds this same element, and would go on writing
+      // its remaining sections in underneath whatever replaces them — so
+      // typing a query that matches nothing showed "No emotes match" with a
+      // wall of emotes below it, none of which could be clicked, because the
+      // list they were drawn from had already been replaced.
+      cancelPickerFill();
 
       if (!matches.length) {
         body.innerHTML = `<div class="fcm-ac-more">No emotes match "${esc(query)}"</div>`;
@@ -486,14 +491,29 @@
         const pos = inputEl.selectionStart;
         const before = inputEl.value.slice(0, pos);
         const after = inputEl.value.slice(pos);
-        const insert = `${item.name} `;
+        // A name is only an emote when something separates it from the word in
+        // front of it. Picking Kappa after typing "gg" produced "ggKappa",
+        // which is not an emote and is not what anyone meant — it went out as
+        // that literal text.
+        const sep = !before || /\s$/.test(before) ? '' : ' ';
+        const insert = `${sep}${item.name} `;
         inputEl.value = before + insert + after;
         const next = (before + insert).length;
         inputEl.setSelectionRange(next, next);
       } else {
         // Typed: replace the trigger and the query with the chosen item.
-        const before = inputEl.value.slice(0, AC.triggerPos);
-        const after = inputEl.value.slice(inputEl.selectionStart);
+        //
+        // Both ends are measured from the trigger, never from the live caret.
+        // The caret can have moved since the list opened — one press of the
+        // left arrow, or Home — and a `before` and an `after` that no longer
+        // meet duplicate whatever lies between them: "hey :Pog" completed after
+        // Home gave "hey PogU hey :Pog".
+        const val = inputEl.value;
+        if (val[AC.triggerPos] !== AC.trigger) { closePopup(); return; }
+        let end = AC.triggerPos + 1;
+        while (end < val.length && !/\s/.test(val[end])) end++;
+        const before = val.slice(0, AC.triggerPos);
+        const after = val.slice(end);
         const insert = item.type === 'emote' ? `${item.name} ` : `@${item.name} `;
         inputEl.value = before + insert + after;
         const next = (before + insert).length;
@@ -541,6 +561,11 @@
         if (AC.items.length) { e.preventDefault(); applyAutocomplete(AC.index >= 0 ? AC.index : 0); return true; }
       }
       if (e.key === 'Escape') { e.preventDefault(); closePopup(); return true; }
+      // Moving the caret without editing leaves the list describing a query the
+      // caret is no longer in, so it goes away. The key itself is not consumed:
+      // the caret still has to move.
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight'
+        || e.key === 'Home' || e.key === 'End') { closePopup(); return false; }
       return false;
     }
 
@@ -605,6 +630,8 @@
     const PROFILE_REASONS = {
       'not-connected': 'Connect an account in settings to see profile details',
       'not-found': 'No account found by that name',
+      // Nobody answered, which is not the same as nobody being there.
+      refused: 'Could not reach the platform — try again in a moment',
       timeout: 'Could not reach the platform',
       failed: 'Could not load their profile',
       closed: '',

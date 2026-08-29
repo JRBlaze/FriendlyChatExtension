@@ -287,6 +287,34 @@ suites.kick = function () {
   // Non-numeric ids do not resolve on the CDN and must be skipped.
   const skipped = FCM.parseKickEmotePayload([{ id: 1, emotes: [{ id: 'abc', name: 'bogus' }] }]);
   eq(Object.keys(skipped).length, 0, 'kick: non-numeric emote ids are skipped');
+  // Events about the stream rather than the chat.
+  //
+  // These arrive on the channel rather than the chatroom and match none of the
+  // sub/gift shapes, so they fell through to the catch-all and put an internal
+  // event name in the feed attributed to nobody: "Someone triggered
+  // StreamerIsLive." Restarting a stream was enough to produce one.
+  const kickEvent = (name) => 'App' + String.fromCharCode(92) + 'Events'
+    + String.fromCharCode(92) + name;
+  eq(FCM.formatKickEventSummary(kickEvent('StreamerIsLive'), { livestream: { id: 1 } }), '',
+    'kick: the stream going live is not a chat event');
+  eq(FCM.formatKickEventSummary(kickEvent('StopStreamBroadcast'), {}), '',
+    'kick: nor is it ending');
+  eq(FCM.formatKickEventSummary(kickEvent('PollDeleteEvent'), {}), '',
+    'kick: nor a poll being taken down');
+
+  // A single gift, said as one gift.
+  eq(FCM.formatKickEventSummary(kickEvent('GiftedSubscriptionsEvent'),
+    { gifter_username: 'Ann', gifted_usernames: ['Bob'] }),
+  'Ann gifted 1 sub to Bob.', 'kick: one gifted sub is singular and names who got it');
+  // Kick sends the count as a string often enough that a strict === lost both
+  // the singular and the recipient.
+  eq(FCM.formatKickEventSummary(kickEvent('GiftedSubscriptionsEvent'),
+    { gifter_username: 'Ann', gifted_quantity: '1', receiver: 'Bob' }),
+  'Ann gifted 1 sub to Bob.', 'kick: a quantity sent as text reads the same way');
+  eq(FCM.formatKickEventSummary(kickEvent('GiftedSubscriptionsEvent'),
+    { gifter_username: 'Ann', gifted_usernames: ['Bob', 'Cid'] }),
+  'Ann gifted 2 subs.', 'kick: and more than one is still plural');
+
 };
 
 // Enough of a DOM for the row builders, which only set properties on the node
@@ -1039,8 +1067,17 @@ suites.compose = function () {
   eq(cheer('uni500 Cheer50').total, 550, 'cheer: several in one message add up');
   eq(cheer('uni500 Cheer50').tokens, 2, 'cheer: and are counted');
 
+  // Twitch's own global list has one prefix that starts with a digit, and
+  // requiring a letter meant it was never recognised: "4Head100" went out over
+  // the API as ordinary text, spent no Bits and gave the streamer nothing,
+  // while "Cheer100" typed a second later worked.
+  eq(cheer('4Head100').amount, 100, 'cheer: a prefix that starts with a digit is still a Cheer');
+  eq(cheer('4Head100').prefix, '4Head', 'cheer: and it is named correctly');
+
   ok(!cheer('hello123'), 'cheer: a word ending in digits is not a Cheer');
   ok(!cheer('100'), 'cheer: a bare number is not a Cheer');
+  ok(!cheer('2020'), 'cheer: nor is a year');
+  ok(!cheer('4Head'), 'cheer: nor a Cheermote prefix with no amount after it');
   ok(!cheer('Cheer0'), 'cheer: zero Bits is not a Cheer');
   ok(!cheer('Cheer100x'), 'cheer: the digits have to end the word');
   ok(!cheer('xCheer100'), 'cheer: and the prefix has to start it');
@@ -1363,6 +1400,61 @@ suites.reply = function () {
   replies.length = 0;
   compose.insertMention('SomeoneTypedByHand');
   eq(replies.length, 0, 'reply: an unattributed mention does not scope the send');
+
+  // 5. Completing after the caret has moved.
+  //
+  // The list stays open while the caret moves, and the completion used to take
+  // its start from the trigger and its end from wherever the caret now was.
+  // When those two no longer met, whatever lay between them was duplicated:
+  // one press of the left arrow left a stray letter behind, and Home repeated
+  // the whole message.
+  {
+    inputEl.value = 'hey :Pog';
+    inputEl.selectionStart = 8;
+    compose.updateAutocomplete();
+    ok(compose.isPopupOpen(), 'reply: the emote list opens mid-message');
+    // The caret moves on its own, without editing.
+    compose.handleKey({ key: 'ArrowLeft', preventDefault() {} });
+    inputEl.selectionStart = 7;
+    ok(!compose.isPopupOpen(),
+      'reply: moving the caret closes a list describing a query it has left');
+    compose.handleKey(tab);
+    eq(inputEl.value, 'hey :Pog',
+      'reply: so Tab cannot splice a completion around the wrong pair of offsets');
+  }
+  {
+    inputEl.value = 'hey :Pog';
+    inputEl.selectionStart = 8;
+    compose.updateAutocomplete();
+    compose.handleKey({ key: 'Home', preventDefault() {} });
+    inputEl.selectionStart = 0;
+    compose.handleKey(tab);
+    eq(inputEl.value, 'hey :Pog', 'reply: and Home cannot make it repeat the message');
+  }
+  // The ordinary completion still works, from the middle of a sentence as well
+  // as the end.
+  {
+    inputEl.value = 'hey :Pog';
+    inputEl.selectionStart = 8;
+    compose.updateAutocomplete();
+    compose.handleKey(tab);
+    eq(inputEl.value, 'hey PogU ', 'reply: an ordinary completion is unaffected');
+  }
+  {
+    inputEl.value = 'a :Pog b';
+    inputEl.selectionStart = 6;
+    compose.updateAutocomplete();
+    compose.handleKey(tab);
+    contains(inputEl.value, 'a PogU',
+      'reply: completing mid-sentence replaces only the word being typed');
+    contains(inputEl.value, 'b', 'reply: and leaves what came after it alone');
+  }
+
+  // Picking from the picker inserts at the caret rather than over a query, and
+  // needs a separator in front of it or the name is not an emote at all: after
+  // typing "gg", picking one produced "ggPogU", which went out as that literal
+  // text. That path draws a real grid and cannot be reached through this stub,
+  // so it is exercised against a browser in tests/harness.html instead.
 };
 
 // The OAuth flow redirects through the platforms' own login pages, which the
@@ -1425,16 +1517,25 @@ suites.authpages = function () {
 // Twitch page, where collapsing leaves the whole right column at 0x0.
 suites.chatcollapse = function () {
   // A page with just enough of a chat column to answer the question.
-  const page = ({ present = true, width = 340, height = 660 } = {}) => {
-    const el = {
-      getBoundingClientRect: () => ({ width, height, top: 0, left: 0,
-        right: width, bottom: height }),
-    };
-    return makeSandbox({
-      document: { querySelector: (sel) => (present && /right-column|chat-room|chatroom|chat-container/.test(sel) ? el : null) },
-      window: {},
-    });
-  };
+  //
+  // `copies` is a list of boxes rather than one, because Kick ships its whole
+  // chat twice — the real one and a dead copy inside a `display: none`
+  // placeholder, both carrying the same ids — and which of the two comes first
+  // in the document is not something to depend on.
+  const box = (width, height) => ({
+    getBoundingClientRect: () => ({ width, height, top: 0, left: 0,
+      right: width, bottom: height }),
+  });
+  const CHAT_SELECTOR = /right-column|chat-room|chatroom|chat-container/;
+  const pageWith = (els) => makeSandbox({
+    document: {
+      querySelector: (sel) => (CHAT_SELECTOR.test(sel) ? (els[0] || null) : null),
+      querySelectorAll: (sel) => (CHAT_SELECTOR.test(sel) ? els : []),
+    },
+    window: {},
+  });
+  const page = ({ present = true, width = 340, height = 660 } = {}) =>
+    pageWith(present ? [box(width, height)] : []);
 
   ['twitch', 'kick'].forEach((id) => {
     // Laid out normally: not collapsed.
@@ -1462,6 +1563,27 @@ suites.chatcollapse = function () {
       const site = FCM.SITES[id];
       eq(site.chatCollapsed(), false,
         `collapse: ${id} chat that is not there is not reported as collapsed`);
+    }
+    // The chat shipped twice, the dead copy first. Kick really does this, and
+    // reading only the first match hid the panel *and* its launcher on a page
+    // whose chat was fully open — leaving nothing on screen to press to get it
+    // back. Order must not matter, and neither must which copy is asked.
+    {
+      const FCM = load(pageWith([box(0, 0), box(340, 660)]), ...SHARED, 'src/content/sites.js');
+      eq(FCM.SITES[id].chatCollapsed(), false,
+        `collapse: ${id} open chat with a dead 0x0 duplicate first is not collapsed`);
+    }
+    {
+      const FCM = load(pageWith([box(340, 660), box(0, 0)]), ...SHARED, 'src/content/sites.js');
+      eq(FCM.SITES[id].chatCollapsed(), false,
+        `collapse: ${id} open chat with a dead 0x0 duplicate last is not collapsed`);
+    }
+    // And with the duplicate still there, a chat the viewer really has put away
+    // is still reported as put away.
+    {
+      const FCM = load(pageWith([box(0, 0), box(0, 660)]), ...SHARED, 'src/content/sites.js');
+      eq(FCM.SITES[id].chatCollapsed(), true,
+        `collapse: ${id} collapsed chat alongside its dead duplicate is collapsed`);
     }
   });
 };
@@ -1511,6 +1633,20 @@ suites.stalepanel = function () {
     return FCM.SITES[id].hints();
   };
 
+  // The same page with nothing that answers to a chat selector at all: the
+  // shape of a site that has renamed its markup.
+  const pageWithNoChat = (anchors) => makeSandbox({
+    document: {
+      querySelectorAll: (sel) => (sel === 'a[href]' ? anchors : []),
+      querySelector: () => null,
+    },
+    window: {},
+  });
+  const hintsWithNoChat = (id, anchors) => {
+    const FCM = load(pageWithNoChat(anchors), ...SHARED, 'src/content/sites.js');
+    return FCM.SITES[id].hints();
+  };
+
   // 1. The streamer's own link, on their own page, is exactly what this is for.
   eq(hintsOn('kick', [anchor('https://www.twitch.tv/cashmeow')]),
     ['https://www.twitch.tv/cashmeow'],
@@ -1535,6 +1671,19 @@ suites.stalepanel = function () {
   eq(hintsOn('kick', [anchor('https://www.twitch.tv/someoneelse', { inChat: true })]),
     [],
     'stalepanel: a link pasted in chat does not pair the channel');
+
+  // 4b. And when the chat cannot be found at all, nothing is read.
+  //
+  // The exclusion used to be skipped whenever the chat was not found, rather
+  // than the scan being abandoned — so on a page whose chat markup had been
+  // renamed, every link on it counted, chat included. That hands any viewer who
+  // can paste a link the choice of which account this channel is paired with,
+  // and with cross-connect set to always the overlay opens that chat and
+  // presents it as the streamer's own.
+  eq(hintsWithNoChat('kick', [anchor('https://www.twitch.tv/someoneelse')]), [],
+    'stalepanel: a page whose chat cannot be found yields no pairing at all');
+  eq(hintsWithNoChat('twitch', [anchor('https://kick.com/someoneelse')]), [],
+    'stalepanel: on either site');
 
   // 5. Nothing here is Kick-specific, and Twitch gets the same treatment.
   eq(hintsOn('twitch', [anchor('https://kick.com/realone')]),
@@ -1690,7 +1839,7 @@ suites.sites = function () {
 
 suites.discovery = function () {
   // Stubs standing in for the two platform APIs and chrome.storage.local.
-  function build({ kickChannels = {}, twitchUsers = {}, storage = {} } = {}) {
+  function build({ kickChannels = {}, twitchUsers = {}, storage = {}, offline = false } = {}) {
     const store = { ...storage };
     const calls = [];
 
@@ -1705,6 +1854,9 @@ suites.discovery = function () {
       },
       fetch: async (url, init) => {
         calls.push(String(url));
+        // Nothing gets through at all — the shape of a dropped connection,
+        // which is a different answer from "there is nobody by that name".
+        if (offline) throw new TypeError('Failed to fetch');
         if (String(url).includes('gql.twitch.tv')) {
           const body = JSON.parse(init.body);
           const login = Array.isArray(body)
@@ -1757,6 +1909,31 @@ suites.discovery = function () {
   const KICK_XQC = kickChannel('xqc', 'xQc', true);
 
   return (async () => {
+    // 0. A lookup that never got through is not an answer.
+    //
+    // The miss is written down so every page view does not re-probe the same
+    // name, and it lasts six hours. Writing it on a failure meant a few seconds
+    // of bad network stopped the merge being offered for the rest of the
+    // evening, on a channel where it would have worked perfectly well.
+    {
+      const { FCM, store } = build({ offline: true });
+      const found = await FCM.resolveCounterpart({ platform: 'twitch', channel: 'somebody', hints: [] });
+      eq(found, null, 'discovery: a lookup that could not be made finds nothing');
+      const links = store[FCM.STORAGE_KEYS.links] || {};
+      eq(Object.keys(links).length, 0,
+        'discovery: and nothing is written down, so the next look asks again');
+    }
+    // The same shape when the platform really does answer: that is worth
+    // remembering, or the same dead name is probed on every page view.
+    {
+      const { FCM, store } = build({ kickChannels: {} });
+      const found = await FCM.resolveCounterpart({ platform: 'twitch', channel: 'nobody', hints: [] });
+      eq(found, null, 'discovery: a name neither platform knows finds nothing');
+      const links = store[FCM.STORAGE_KEYS.links] || {};
+      eq(links['twitch:nobody'] && links['twitch:nobody'].none, true,
+        'discovery: and that miss is remembered, because it was an answer');
+    }
+
     // 1. Same name on both platforms, live on the other side.
     {
       const { FCM } = build({ kickChannels: { xqc: KICK_XQC } });
@@ -2152,6 +2329,42 @@ suites.emotes = function () {
         'emotes: 7TV twitch lookup uses the numeric user id');
     }
 
+    // —— A name the channel and a provider's global set both use ——
+    //
+    // Plenty of them: catJAM, monkaS, PepeLaugh. The two requests race, the
+    // global one is a single cached CDN response and usually wins, and whoever
+    // arrived first used to keep the picture — so a channel that had added its
+    // own version of a well-known emote had the global artwork drawn instead,
+    // depending on which fetch came back first. The channel's own set is the
+    // channel saying "ours, not that one".
+    {
+      const shared = (name) => makeSandbox({
+        fetch: async (url) => {
+          const u = String(url);
+          if (u === 'https://7tv.io/v3/emote-sets/global') {
+            return { ok: true, json: async () => ({
+              emotes: [{ name, data: { host: { url: '//cdn.7tv.app/emote/global', files: [{ name: '2x.webp' }] } } }],
+            }) };
+          }
+          if (/7tv\.io\/v3\/users\//.test(u)) {
+            return { ok: true, json: async () => ({
+              emote_set: { emotes: [{ name, data: { host: { url: '//cdn.7tv.app/emote/theirs', files: [{ name: '2x.webp' }] } } }] },
+            }) };
+          }
+          return { ok: false, status: 404, json: async () => ({}) };
+        },
+      });
+
+      const FCM2 = load(shared('catJAM'), ...SHARED, 'src/background/emotes.js');
+      const store = await FCM2.emoteLoader.thirdParty('twitch', 'somechannel', '71092938');
+      eq(store.catJAM.url, 'https://cdn.7tv.app/emote/theirs/2x.webp',
+        "emotes: a name in both sets is drawn with the channel's own picture");
+      eq(store.catJAM.source, '7TV',
+        'emotes: and labelled as the channel\u2019s rather than as a global');
+      eq(store.catJAM.channel, true, 'emotes: still marked as the channel\u2019s');
+      eq(store.catJAM.owner, 'somechannel', 'emotes: and still attributed to it');
+    }
+
     {
       // 7TV's Kick integration 404s on a slug, so it must get the numeric id.
       const { FCM, calls } = build();
@@ -2533,27 +2746,31 @@ suites.native = function () {
 
   // ── Driving the site's own controls ─────────────────────────────────────────
 
-  function controlPage({ claim = true } = {}) {
+  function controlPage({ claim = true, identity = false } = {}) {
     const points = el({ rect: [620, 32], text: '4,201' });
     const bits = el({ rect: [620, 32], text: '350' });
     const open = el({ rect: [620, 32], attrs: { 'aria-label': 'Bits and Points Balances' } });
     const cheer = el({ rect: [580, 32], attrs: { 'aria-label': 'Cheer' } });
     const chest = el({ rect: claim ? [620, 32] : [0, 0] });
+    const ident = identity
+      ? el({ rect: [620, 32], attrs: { 'aria-label': 'Chat Identity' } })
+      : null;
     const body = el({ rect: [262, 401] });
     const site = {
       messageList: () => container,
       nativeChatBody: () => body,
       nativeControls: () => ({
         pointsValue: points, bitsValue: bits, openBalances: open, cheer, claim: chest,
+        chatIdentity: ident,
       }),
     };
-    return { site, points, bits, open, cheer, chest, body };
+    return { site, points, bits, open, cheer, chest, body, ident };
   }
 
   const withClaim = controlPage();
   const cb = bridgeFor(page(content), withClaim.site).bridge;
   eq(cb.stats(), { points: '4,201', bits: '350', hasPoints: true, hasBits: true,
-    canClaim: true, claimNamed: true, hasMenu: true },
+    canClaim: true, claimNamed: true, hasIdentity: false, hasMenu: true },
     'native: both balances and a waiting bonus are reported');
 
   ok(cb.activate('points'), 'native: the rewards control is there to click');
@@ -2565,6 +2782,31 @@ suites.native = function () {
   ok(cb.activate('bits'), 'native: the cheer control is there to click');
   eq(withClaim.cheer.clicks, 1, 'native: and that click goes to the cheer button');
   ok(cb.activate('claim'), 'native: the bonus is there to claim');
+
+  // ── Chat identity ──
+  //
+  // The colour a viewer's name is drawn in and which of their badges show
+  // belong to the platform, and the overlay only renders them. So it opens the
+  // platform's own control for it rather than offering a copy — and only when
+  // the platform is actually showing one, the same rule the balances follow.
+  {
+    const withIdentity = controlPage({ identity: true });
+    const ib = bridgeFor(page(content), withIdentity.site).bridge;
+    eq(ib.stats().hasIdentity, true, 'native: an identity control the site shows is reported');
+    ok(ib.activate('identity'), 'native: and it is there to press');
+    eq(withIdentity.ident.clicks, 1, 'native: the press goes to the site\u2019s own button');
+    // Kick's is Radix like the rest of its footer, so a bare click is not enough.
+    eq(withIdentity.ident.events, ['pointerdown', 'mousedown', 'pointerup', 'mouseup'],
+      'native: pressed the way a mouse presses it, not just clicked');
+  }
+  {
+    const none = controlPage({ identity: false });
+    const nb = bridgeFor(page(content), none.site).bridge;
+    eq(nb.stats().hasIdentity, false,
+      'native: a site not showing the control reports none');
+    eq(nb.activate('identity'), false,
+      'native: and nothing is pressed, rather than something else being guessed at');
+  }
   eq(withClaim.chest.clicks, 1, 'native: and that click goes to the chest');
 
   const noClaim = controlPage({ claim: false });
@@ -2857,7 +3099,10 @@ suites.auth = function () {
           // A refresh that cannot leave the machine at all, which is a
           // different thing from one Kick turned down.
           if (tokenResponse === 'offline') throw new TypeError('Failed to fetch');
-          const body = tokenResponse || { access_token: 'KA', refresh_token: 'KR', expires_in: 3600 };
+          // A function, so a test can answer the second request differently
+          // from the first — which is how Kick treats a rotated refresh token.
+          const answer = typeof tokenResponse === 'function' ? tokenResponse() : tokenResponse;
+          const body = answer || { access_token: 'KA', refresh_token: 'KR', expires_in: 3600 };
           // Carries a status the way a real response does, so "the token is
           // spent" can be told from "the proxy is having a bad day".
           const status = body.error ? (body.__status || 400) : 200;
@@ -3144,12 +3389,103 @@ suites.auth = function () {
       eq(await FCM.auth.get('kick'), null,
         'auth: invalid_grant means the token is spent whatever status carried it');
     }
+    // A proxy that reports Kick's trouble as its own must not cost the account.
+    //
+    // The worker used to answer every upstream failure that was not a 401 with
+    // an HTTP 400, and 400 is how Kick says a refresh token is spent — so a
+    // rate limit, a Kick incident or a Cloudflare challenge in front of
+    // id.kick.com deleted a sign-in that lasts months and was still perfectly
+    // good. The worker now passes only 400 and 401 through, and this is the
+    // other half: where the body says what Kick actually answered, that is what
+    // is believed, because a worker is deployed separately from the extension
+    // and the one in front of a given user may still be the old one.
+    {
+      const { FCM } = build({ tokenResponse: { error: 'Kick returned HTTP 503.', status: 503, __status: 400 } });
+      await FCM.auth.set('kick', { accessToken: 'old', refreshToken: 'KR', expiresAt: Date.now() - 1000 });
+      eq(await FCM.auth.usable('kick', {}), null,
+        'auth: a Kick outage reported as a proxy 400 leaves the token unusable for now');
+      ok(await FCM.auth.get('kick'),
+        'auth: but the account survives it, refresh token and all');
+    }
+    {
+      const { FCM } = build({ tokenResponse: { error: 'Too many requests', status: 429, __status: 400 } });
+      await FCM.auth.set('kick', { accessToken: 'old', refreshToken: 'KR', expiresAt: Date.now() - 1000 });
+      await FCM.auth.usable('kick', {});
+      ok(await FCM.auth.get('kick'), 'auth: nor does a shared rate limit end the sign-in');
+    }
+    // And the account is still forgotten when Kick really has finished with it.
+    {
+      const { FCM } = build({ tokenResponse: { error: 'invalid_grant', status: 400, __status: 400 } });
+      await FCM.auth.set('kick', { accessToken: 'old', refreshToken: 'KR', expiresAt: Date.now() - 1000 });
+      await FCM.auth.usable('kick', {});
+      eq(await FCM.auth.get('kick'), null,
+        'auth: a refresh token Kick itself rejects is still thrown away');
+    }
     // A refresh token that was never stored cannot be refreshed at all.
     {
       const { FCM } = build({});
       await FCM.auth.set('kick', { accessToken: 'old', expiresAt: Date.now() - 1000 });
       eq(await FCM.auth.usable('kick', {}), null, 'auth: nothing to refresh with is unusable');
       eq(await FCM.auth.get('kick'), null, 'auth: and that account is cleared');
+    }
+
+    // —— Two things wanting a token at the same moment ——
+    //
+    // Kick rotates the refresh token, so the second request to carry the same
+    // one is told invalid_grant — which is true, and is read as "this account is
+    // finished". Two tabs opening together, or a join crossing a send, was
+    // enough to delete a Kick sign-in seconds after refreshing it perfectly
+    // well. One request is made and everybody waits on it.
+    {
+      let posts = 0;
+      const { FCM } = build({
+        tokenResponse: () => {
+          posts++;
+          // Kick's answer to a refresh token that has already been spent.
+          if (posts > 1) return { error: 'invalid_grant' };
+          return { access_token: 'KA2', refresh_token: 'KR2', expires_in: 3600 };
+        },
+      });
+      await FCM.auth.set('kick', { accessToken: 'old', refreshToken: 'KR', expiresAt: Date.now() - 1000 });
+      const [a, b, c] = await Promise.all([
+        FCM.auth.usable('kick', {}),
+        FCM.auth.usable('kick', {}),
+        FCM.auth.usable('kick', {}),
+      ]);
+      eq(posts, 1, 'auth: three callers wanting a token at once make one refresh');
+      ok(a && b && c, 'auth: and every one of them is given a usable token');
+      eq([a, b, c].map((r) => r && r.accessToken), ['KA2', 'KA2', 'KA2'],
+        'auth: the same freshly refreshed token');
+      ok(await FCM.auth.get('kick'), 'auth: and the account is still signed in afterwards');
+    }
+
+    // —— Two writes to the one record they share ——
+    //
+    // Both platforms live under a single storage key, so every write is
+    // read-modify-write over the other platform's record too. Overlapping them
+    // used to lose whichever finished first: signing into Twitch while a Kick
+    // token refreshed put back a copy with no Twitch in it.
+    {
+      const { FCM } = build({});
+      await Promise.all([
+        FCM.auth.set('twitch', { accessToken: 'T', login: 'me' }),
+        FCM.auth.set('kick', { accessToken: 'K', login: 'me2' }),
+      ]);
+      ok(await FCM.auth.get('twitch'), 'auth: a Twitch sign-in survives a Kick write landing with it');
+      ok(await FCM.auth.get('kick'), 'auth: and the Kick one survives too');
+    }
+    {
+      const { FCM } = build({});
+      await FCM.auth.set('twitch', { accessToken: 'T', login: 'me' });
+      await FCM.auth.set('kick', { accessToken: 'K', login: 'me2' });
+      // Signing out of one platform while the other is being written.
+      await Promise.all([
+        FCM.auth.clear('kick'),
+        FCM.auth.set('twitch', { accessToken: 'T2', login: 'me' }),
+      ]);
+      eq(await FCM.auth.get('kick'), null, 'auth: signing out of Kick sticks');
+      eq((await FCM.auth.get('twitch')).accessToken, 'T2',
+        'auth: and does not undo the Twitch write it overlapped');
     }
 
     // ── A token with no expiry at all is treated as live ──
@@ -3175,6 +3511,39 @@ suites.auth = function () {
       const kick = FCM.explainAuthFailure('kick', 'invalid redirect uri');
       eq(kick.needsRedirectSetup, true, 'auth: Kick naming the redirect is read the same way');
       contains(kick.message, 'Kick', 'auth: and names the platform');
+
+      // —— Which redirect the message tells you to register ——
+      //
+      // Kick's default flow reuses the desktop app's registered address and
+      // never sends the extension's own, so naming that one sent people off to
+      // register a URL this sign-in has no use for.
+      const shared = FCM.explainAuthFailure('kick', 'invalid redirect uri', '', {
+        redirect: FCM.KICK_SHARED_REDIRECT,
+      });
+      eq(shared.redirectUri, FCM.KICK_SHARED_REDIRECT,
+        'auth: the message names the redirect the sign-in actually used');
+      // And with nothing said about it, the extension's own is still the answer.
+      contains(FCM.explainAuthFailure('kick', 'invalid redirect uri').redirectUri,
+        '.chromiumapp.org/', 'auth: falling back to the extension’s own redirect');
+
+      // —— A 400 that is not about the redirect at all ——
+      //
+      // The proxy attaches the same "usually the redirect_uri does not match"
+      // hint to every 400 it passes on, including the ordinary one from
+      // pressing Connect twice and spending the code. Classifying on that hint
+      // sent people to re-register a URL that was already right.
+      const spent = FCM.explainAuthFailure(
+        'kick',
+        'Kick rejected the request (400) without saying why. — Usually the redirect_uri does not exactly match.',
+        '',
+        { detail: 'Kick rejected the request (400) without saying why.' }
+      );
+      eq(spent.needsRedirectSetup, false,
+        'auth: a failure Kick did not blame the redirect for is not a redirect problem');
+      // What Kick really does say about one still is.
+      eq(FCM.explainAuthFailure('kick', 'anything', '', { detail: 'invalid redirect uri' })
+        .needsRedirectSetup, true,
+      'auth: and one it does blame the redirect for still is');
 
       const cancelled = FCM.explainAuthFailure('twitch', 'The sign-in window was closed before it finished.');
       eq(cancelled.needsRedirectSetup, false, 'auth: a cancelled sign-in is not a setup problem');
@@ -3897,6 +4266,49 @@ suites.feed = function () {
     eq(seen[seen.length - 1].missed, 0, 'feed: with nothing missed');
   }
 
+  // —— A feed with no box at all ——
+  //
+  // Collapsing or hiding the panel takes the feed's box away, and every
+  // measurement off it then reads zero — which came out as "following the live
+  // end" however far behind it was. So messages arriving while the panel was
+  // away were counted as seen, the jump button stayed hidden, and opening it
+  // again left the viewer in the middle of an hour ago with nothing offering
+  // to take them back.
+  {
+    const t = build();
+    const el = t.feedEl;
+    const seen = [];
+    t.feed.onPinChange((pinned, missed) => seen.push({ pinned, missed }));
+
+    // Scrolled up, and then the panel is collapsed.
+    el.scrollHeight = 1000; el.clientHeight = 400; el.scrollTop = 100;
+    el.__fire('scroll');
+    eq(t.feed.isPinned(), false, 'feed: away from the live end before it is put away');
+
+    // A collapsed element reports nothing for any of the three, not just the
+    // height — which is why every measurement off it came out as "at the
+    // bottom".
+    el.clientHeight = 0; el.scrollHeight = 0; el.scrollTop = 0;
+    eq(t.feed.isPinned(), false,
+      'feed: a feed with no box does not start claiming it is at the live end');
+
+    // Messages arriving while it is away are still counted as missed.
+    const missedBefore = (seen[seen.length - 1] || {}).missed || 0;
+    t.feed.addMessage({ platform: 'twitch', author: 'x', text: '1', messageId: 'q1' }, filter);
+    t.feed.addMessage({ platform: 'twitch', author: 'y', text: '2', messageId: 'q2' }, filter);
+    t.flush();
+    eq(seen[seen.length - 1].missed, missedBefore + 2,
+      'feed: and messages arriving while it has no box are still counted');
+
+    // The other way round: put away while it *was* following stays following,
+    // so opening it again is not reported as being behind.
+    const u = build();
+    u.feedEl.scrollHeight = 1000; u.feedEl.clientHeight = 400; u.feedEl.scrollTop = 900;
+    ok(u.feed.isPinned(), 'feed: following the live end before it is put away');
+    u.feedEl.clientHeight = 0; u.feedEl.scrollHeight = 0; u.feedEl.scrollTop = 0;
+    ok(u.feed.isPinned(), 'feed: and still following once it has no box');
+  }
+
   // ── Duplicates are dropped, and only real duplicates ──
   {
     const t = build();
@@ -4199,6 +4611,9 @@ suites.feed = function () {
 suites.navigation = function () {
   function boot(startPath, options = {}) {
     const ports = [];
+    // What chrome.storage would hand back, and whoever is listening to it.
+    const stored = { sync: {}, local: {} };
+    const changeListeners = [];
     const timers = { intervals: [], timeouts: [] };
     const location = {
       hostname: 'www.twitch.tv',
@@ -4243,9 +4658,9 @@ suites.navigation = function () {
           },
         },
         storage: {
-          sync: { get: async () => ({}), set: async () => {} },
-          local: { get: async () => ({}), set: async () => {} },
-          onChanged: { addListener() {} },
+          sync: { get: async () => ({ ...stored.sync }), set: async () => {} },
+          local: { get: async () => ({ ...stored.local }), set: async () => {} },
+          onChanged: { addListener(fn) { changeListeners.push(fn); } },
         },
       },
     });
@@ -4256,6 +4671,7 @@ suites.navigation = function () {
 
     // render.js as well as sites.js, because the manifest loads it before
     // boot.js and boot.js calls into it when a channel is left.
+    // (stored/changeListeners are declared above the sandbox; see below.)
     const FCM = load(sandbox, ...SHARED, 'src/content/render.js', 'src/content/sites.js');
 
     // A stand-in overlay: boot only needs it to mount, take messages and go away.
@@ -4276,7 +4692,11 @@ suites.navigation = function () {
         destroy() { o.destroyed = true; },
         sys() {}, event() {}, chat() {}, batch() {}, setEmotes() {}, setBadges() {},
         deleteMessage() {}, deleteUser() {}, setCounterpart() {}, setAccounts() {},
-        setModerator() {}, modResult() {}, sendResult() {}, applyStoredSettings() {}, toast() {},
+        setModerator() {}, modResult() {}, sendResult() {},
+        applied: [],
+        toasts: [],
+        applyStoredSettings(s) { o.applied.push(s); },
+        toast(t) { o.toasts.push(t); },
         setStatus(platform, state, channel) { o.statuses.push({ platform, state, channel }); },
       };
       overlays.push(o);
@@ -4303,6 +4723,13 @@ suites.navigation = function () {
         timers.intervals.filter((t) => t.ms === 600).forEach((t) => t.fn());
       },
       releaseMount(i) { if (gates[i]) gates[i](); },
+      // A settings save landing in one storage area, as chrome reports it.
+      async settingsSaved(area, value) {
+        stored[area][FCM.STORAGE_KEYS.settings] = value;
+        const change = { [FCM.STORAGE_KEYS.settings]: { newValue: value } };
+        changeListeners.forEach((fn) => fn(change, area));
+        await flush();
+      },
       live() { return ports.filter((p) => !p.disconnected); },
       joinsFor(port) { return port.sent.filter((m) => m.cmd === 'join').map((m) => m.channel); },
       allJoins() { return ports.flatMap((p) => p.sent.filter((m) => m.cmd === 'join').map((m) => m.channel)); },
@@ -4497,6 +4924,36 @@ suites.navigation = function () {
       await t.navigateTo('/alpha');
       eq(t.ports.length, before, 'nav: re-entering the same channel does not reconnect');
       eq(t.overlays.length, 1, 'nav: nor rebuild the overlay');
+    }
+
+    // ── A settings change reaches an overlay that is already open ──
+    //
+    // Every save is written to both storage areas and is allowed to succeed on
+    // only one of them, which is the whole reason both are written. A browser
+    // that is signed out, has extension sync switched off, or has spent its
+    // sync write quota stores the change locally — so an overlay that only
+    // listened to sync went on showing the old settings until the page was
+    // reloaded. Every tab in this browser reads the same local area.
+    {
+      const t = boot('/alpha');
+      await t.flush();
+      const o = t.overlays[0];
+
+      await t.settingsSaved('sync', { savedAt: 1000, fontSize: 18 });
+      eq(o.applied.length, 1, 'settings: a change synced from another device is applied');
+
+      await t.settingsSaved('local', { savedAt: 2000, fontSize: 20 });
+      eq(o.applied.length, 2, 'settings: a change that only reached local is applied too');
+
+      // Both areas take the same save, so it arrives twice and must be acted
+      // on once — not applied and toasted a second time.
+      await t.settingsSaved('sync', { savedAt: 2000, fontSize: 20 });
+      eq(o.applied.length, 2, 'settings: the same save landing in both areas is applied once');
+      eq(o.toasts.length, 2, 'settings: and says so once');
+
+      // A later save is a different one, whichever area reports it first.
+      await t.settingsSaved('local', { savedAt: 3000, fontSize: 22 });
+      eq(o.applied.length, 3, 'settings: the next save is applied');
     }
   })();
 };
@@ -6592,6 +7049,719 @@ suites.defaults = function () {
       'defaults: and a key it never had still arrives at the default');
     eq(upgraded.autoClaimBonus, true, 'defaults: for every new key, not just the first');
   })();
+};
+
+// Work in flight when the viewer moves to the next channel.
+//
+// Every one of these is the same shape: the worker asks the network something
+// about channel A, the viewer clicks through to channel B before the answer
+// comes back, and the answer is applied to B. That is not a cosmetic slip. The
+// panel is showing B's name, so history, emotes and badges from A arrive with
+// nothing to say they are not B's, and the counterpart is acted on by
+// autoConnectHost — which opened one streamer's chat on another streamer's
+// page and presented it as theirs.
+//
+// The worker already retires a superseded join by bumping `conn.joinSeq`; these
+// prove the rest of the work follows it.
+suites.staleafterswitch = function () {
+  const { bootWorker, wait } = require('./background.js');
+
+  // Holds every request whose url matches, until the test lets them all go.
+  function gate(match) {
+    let release;
+    const held = new Promise((r) => { release = r; });
+    return { hold: (url) => (match.test(url) ? held : null), release: () => release() };
+  }
+
+  return (async () => {
+    // ── history ──
+    {
+      const g = gate(/recent-messages\.robotty\.de/);
+      const w = bootWorker({
+        hold: g.hold,
+        twitchHistory: [
+          '@display-name=OldViewer;id=h1 :x!x@x.tmi.twitch.tv PRIVMSG #alpha :from the channel you left\r\n',
+        ],
+      });
+      try {
+        w.connect();
+        w.send({ cmd: 'hello', site: 'twitch', channel: 'alpha', hints: [] });
+        await wait(30);
+        w.send({ cmd: 'join', platform: 'twitch', channel: 'alpha' });
+        await wait(30);
+        // The join finishes, which is what asks for the history.
+        const irc = w.socketFor('irc-ws');
+        irc.push(':tmi.twitch.tv 001 justinfan1 :Welcome\r\n');
+        irc.push(':justinfan1.tmi.twitch.tv 366 justinfan1 #alpha :End of /NAMES list\r\n');
+        await wait(40);
+
+        // Away to the next channel while the history request is still open.
+        w.send({ cmd: 'hello', site: 'twitch', channel: 'bravo', hints: [] });
+        await wait(20);
+        w.clear();
+        g.release();
+        await wait(80);
+
+        eq(w.of('batch').length, 0,
+          'stale: history for the channel just left is not replayed into the next one');
+      } finally { w.teardown(); }
+    }
+
+    // ── the same request, answered while the channel is still the one that asked ──
+    // The guard has to drop what is stale without dropping what is not.
+    {
+      const g = gate(/recent-messages\.robotty\.de/);
+      const w = bootWorker({
+        hold: g.hold,
+        twitchHistory: [
+          '@display-name=Viewer;id=h2 :x!x@x.tmi.twitch.tv PRIVMSG #alpha :still the right channel\r\n',
+        ],
+      });
+      try {
+        w.connect();
+        w.send({ cmd: 'hello', site: 'twitch', channel: 'alpha', hints: [] });
+        await wait(30);
+        w.send({ cmd: 'join', platform: 'twitch', channel: 'alpha' });
+        await wait(30);
+        const irc = w.socketFor('irc-ws');
+        irc.push(':tmi.twitch.tv 001 justinfan1 :Welcome\r\n');
+        irc.push(':justinfan1.tmi.twitch.tv 366 justinfan1 #alpha :End of /NAMES list\r\n');
+        await wait(40);
+        g.release();
+        await wait(80);
+
+        eq(w.of('batch').length, 1,
+          'stale: history that arrives while the channel is still open is replayed');
+      } finally { w.teardown(); }
+    }
+
+    // ── counterpart ──
+    // The dangerous one: the overlay acts on this, so a counterpart resolved for
+    // the previous channel could open the wrong streamer's chat.
+    {
+      const g = gate(/kick\.com\/api/);
+      const w = bootWorker({ hold: g.hold });
+      try {
+        w.connect();
+        w.send({ cmd: 'hello', site: 'twitch', channel: 'alpha', hints: [] });
+        await wait(30);
+        w.send({ cmd: 'hints', hints: ['https://kick.com/alphaguy'] });
+        await wait(20);
+
+        w.send({ cmd: 'hello', site: 'twitch', channel: 'bravo', hints: [] });
+        await wait(20);
+        w.clear();
+        g.release();
+        await wait(120);
+
+        // Asserted on who was resolved, not on the label. The label was read
+        // back off the session *after* the await, so a stale answer used to
+        // arrive already stamped with the new channel's name — which is what
+        // made it look right and act wrong.
+        const offers = w.of('counterpart');
+        const named = offers
+          .map((m) => m.counterpart && m.counterpart.channel)
+          .filter(Boolean);
+        eq(named.filter((c) => c === 'alphaguy').length, 0,
+          'stale: the counterpart found for the channel just left is not offered on the next one');
+        ok(offers.every((m) => m.hostChannel !== 'alpha'),
+          'stale: and nothing is announced for the channel that was left');
+      } finally { w.teardown(); }
+    }
+  })();
+};
+
+// Giving up, and refusing to.
+//
+// Two opposite failures, both about the same counter. Everything before the
+// Kick socket exists used to give up permanently on its first failure while the
+// status chip still said it was trying; and a socket that came up and fell over
+// again cleared the attempt count every time, so the cap was never reached and
+// the retries never lengthened.
+suites.reconnects = function () {
+  const { bootWorker, wait } = require('./background.js');
+
+  async function kickTab(w) {
+    w.connect();
+    w.send({ cmd: 'hello', site: 'kick', channel: 'someone', hints: [] });
+    await wait(30);
+    w.send({ cmd: 'join', platform: 'kick', channel: 'someone' });
+    await wait(60);
+  }
+
+  return (async () => {
+    // ── a lookup Kick refused is tried again, not abandoned ──
+    {
+      const w = bootWorker({
+        fetchImpl: async (url) => {
+          // Kick's edge putting a challenge in front of the channel lookup.
+          if (String(url).includes('kick.com/api')) {
+            return { ok: false, status: 403, json: async () => ({}) };
+          }
+          return { ok: false, status: 404, json: async () => ({}) };
+        },
+      });
+      try {
+        await kickTab(w);
+        const states = w.of('status').filter((m) => m.platform === 'kick').map((m) => m.state);
+        eq(states.includes('error'), false,
+          'reconnects: a refused channel lookup is not reported as a dead end');
+        ok(states.includes('disconnected'),
+          'reconnects: it is reported as disconnected, which is what it is');
+        const said = w.of('sys').map((m) => m.text).join(' | ');
+        contains(said, 'trying again',
+          'reconnects: and the feed says it will try again, which it now does');
+      } finally { w.teardown(); }
+    }
+
+    // ── a connection that will not hold backs off instead of hammering ──
+    //
+    // A room that is refused just after the handshake comes up and falls
+    // straight over. Clearing the attempt count on the handshake meant every
+    // cycle started from the base delay, the cap was never reached, and Kick
+    // was reconnected for as long as the tab stayed open. Asserted through the
+    // cap, because reaching it at all is the thing that used to be impossible.
+    {
+      const w = bootWorker();
+      try {
+        // Real backoff on a real clock would take minutes; the shape is the
+        // same in milliseconds and the shape is what is being tested.
+        w.sandbox.FCM.RECONNECT_BASE_DELAY_MS = 5;
+        w.sandbox.FCM.RECONNECT_MAX_DELAY_MS = 20;
+        w.sandbox.FCM.MAX_RECONNECT_ATTEMPTS = 3;
+        await kickTab(w);
+
+        const flap = async () => {
+          const socks = w.socketsFor('pusher');
+          const sock = socks[socks.length - 1];
+          if (!sock || sock.closed) return;
+          sock.push(JSON.stringify({ event: 'pusher:connection_established', data: '{}' }));
+          await wait(4);
+          sock.drop();
+          await wait(40);
+        };
+        for (let i = 0; i < 6; i++) await flap();
+
+        const said = w.of('sys').map((m) => m.text).join(' | ');
+        contains(said, 'reconnect limit reached',
+          'reconnects: a connection that never holds eventually stops being retried');
+        ok(w.socketsFor('pusher').length <= 6,
+          'reconnects: and it is not reopened once past the limit');
+      } finally { w.teardown(); }
+    }
+
+    // ── and a connection that did hold starts afresh ──
+    //
+    // The counter must still be forgiven, or an evening of ordinary drops would
+    // add up to the cap and the chat would stop coming back.
+    {
+      const w = bootWorker();
+      try {
+        w.sandbox.FCM.RECONNECT_BASE_DELAY_MS = 5;
+        w.sandbox.FCM.RECONNECT_MAX_DELAY_MS = 20;
+        w.sandbox.FCM.MAX_RECONNECT_ATTEMPTS = 3;
+        // Anything that stayed up at all counts as having held, here.
+        w.sandbox.FCM.STABLE_CONNECTION_MS = 1;
+        await kickTab(w);
+
+        const cycle = async () => {
+          const socks = w.socketsFor('pusher');
+          const sock = socks[socks.length - 1];
+          if (!sock || sock.closed) return;
+          sock.push(JSON.stringify({ event: 'pusher:connection_established', data: '{}' }));
+          await wait(15);
+          sock.drop();
+          await wait(40);
+        };
+        for (let i = 0; i < 6; i++) await cycle();
+
+        const said = w.of('sys').map((m) => m.text).join(' | ');
+        missing(said, 'reconnect limit reached',
+          'reconnects: drops after connections that held never add up to the limit');
+        ok(w.of('sys').some((m) => /Connected to Kick/.test(m.text)),
+          'reconnects: and the chat keeps coming back');
+      } finally { w.teardown(); }
+    }
+  })();
+};
+
+// Coming back from the worker going away, and from an account arriving.
+suites.recovery = function () {
+  const { bootWorker, wait } = require('./background.js');
+
+  return (async () => {
+    // ── the tab re-announces itself on a port it had to open itself ──
+    //
+    // The worker keeps its session against the port, so a new port starts
+    // empty. Anything that sent a single message over a freshly opened port
+    // reached a worker that had never heard of the tab: the overlay went on
+    // saying "connected", no chat ever arrived again, and only a reload fixed
+    // it. Driven here through boot.js, since that is the half at fault.
+    {
+      const fs2 = require('fs');
+      const path2 = require('path');
+      const ports = [];
+      const timers = { intervals: [], timeouts: [] };
+      const location = { pathname: '/alpha', href: 'https://twitch.tv/alpha', hostname: 'twitch.tv', search: '' };
+      const sandbox = makeSandbox({
+        location,
+        document: stubDocument(),
+        window: { location, addEventListener() {}, removeEventListener() {} },
+        chrome: {
+          runtime: {
+            connect() {
+              const p = {
+                sent: [], disconnected: false,
+                postMessage(m) { if (this.disconnected) throw new Error('port closed'); this.sent.push(m); },
+                disconnect() { this.disconnected = true; },
+                onMessage: { addListener: (fn) => { p._recv = fn; } },
+                onDisconnect: { addListener: (fn) => { p._gone = fn; } },
+              };
+              ports.push(p);
+              return p;
+            },
+          },
+          storage: {
+            sync: { get: async () => ({}), set: async () => {} },
+            local: { get: async () => ({}), set: async () => {} },
+            onChanged: { addListener() {} },
+          },
+        },
+      });
+      sandbox.setInterval = (fn, ms) => { timers.intervals.push({ fn, ms }); return timers.intervals.length; };
+      sandbox.clearInterval = () => {};
+      sandbox.setTimeout = (fn, ms) => { timers.timeouts.push({ fn, ms, cancelled: false }); return timers.timeouts.length; };
+      sandbox.clearTimeout = (id) => { if (timers.timeouts[id - 1]) timers.timeouts[id - 1].cancelled = true; };
+
+      const F = load(sandbox, ...SHARED, 'src/content/render.js', 'src/content/sites.js');
+      const overlays = [];
+      F.createOverlay = (opts) => {
+        const o = {
+          channel: opts.channel, destroyed: false, onCommand: opts.onCommand,
+          mount: () => Promise.resolve(o), destroy() { o.destroyed = true; },
+          sys() {}, event() {}, chat() {}, batch() {}, setEmotes() {}, setBadges() {},
+          deleteMessage() {}, deleteUser() {}, setCounterpart() {}, setAccounts() {},
+          setModerator() {}, modResult() {}, sendResult() {}, profileResult() {},
+          applyStoredSettings() {}, toast() {}, setStatus() {},
+        };
+        overlays.push(o);
+        return o;
+      };
+      vm.runInContext(fs2.readFileSync(path2.join(ROOT, 'src/content/boot.js'), 'utf8'),
+        sandbox, { filename: 'boot.js' });
+      const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
+      await flush();
+
+      const first = ports[0];
+      ok(first, 'recovery: the tab opened a port');
+      first._recv({ type: 'ready', site: 'twitch', channel: 'alpha', connections: {} });
+      await flush();
+      ok(first.sent.some((m) => m.cmd === 'join'), 'recovery: and joined its channel');
+      // The worker confirming the join is what the tab remembers it by.
+      first._recv({ type: 'status', platform: 'twitch', state: 'connected', channel: 'alpha' });
+      await flush();
+
+      // The worker is evicted. The tab is told, and would normally rejoin after
+      // a moment — but the viewer presses something first.
+      first._gone();
+      await flush();
+      const overlay = overlays[overlays.length - 1];
+      overlay.onCommand({ cmd: 'leave', platform: 'kick' });
+      await flush();
+
+      const second = ports[ports.length - 1];
+      ok(second !== first, 'recovery: pressing something opened a new port');
+      ok(second.sent.some((m) => m.cmd === 'hello'),
+        'recovery: and the tab tells the new worker which channel it is on');
+      ok(second.sent.some((m) => m.cmd === 'join' && m.channel === 'alpha'),
+        'recovery: and rejoins the chat it was in, rather than going quiet');
+    }
+
+    // ── an account arriving or leaving re-opens the chat it applies to ──
+    //
+    // A socket reads its token when it opens, so a chat joined anonymously
+    // stays anonymous: no moderator standing, none of this viewer's own emote
+    // sets, no badges on their own messages, until the page was reloaded. And
+    // the other way round — a socket opened with a token that has since been
+    // taken away would go on claiming this viewer can moderate here.
+    //
+    // Driven through disconnect, which needs no OAuth to reach; both handlers
+    // call the same helper.
+    {
+      const w = bootWorker();
+      try {
+        w.connect();
+        w.send({ cmd: 'hello', site: 'twitch', channel: 'alpha', hints: [] });
+        await wait(30);
+        w.send({ cmd: 'join', platform: 'twitch', channel: 'alpha' });
+        await wait(60);
+        const before = w.socketsFor('irc-ws').length;
+        eq(before, 1, 'recovery: one socket to begin with');
+
+        w.send({ cmd: 'disconnectAccount', platform: 'twitch' });
+        await wait(120);
+        ok(w.socketsFor('irc-ws').length > before,
+          'recovery: changing the account opens the chat again with it');
+        const joined = w.socketsFor('irc-ws').pop();
+        ok(joined.sent.some((line) => String(line).includes('JOIN #alpha')),
+          'recovery: and it is the same channel, not a silent drop');
+      } finally { w.teardown(); }
+    }
+
+    // ── and an account change with no chat open does nothing ──
+    {
+      const w = bootWorker();
+      try {
+        w.connect();
+        w.send({ cmd: 'hello', site: 'twitch', channel: 'alpha', hints: [] });
+        await wait(30);
+        w.send({ cmd: 'disconnectAccount', platform: 'twitch' });
+        await wait(80);
+        eq(w.socketsFor('irc-ws').length, 0,
+          'recovery: nothing is opened for a chat that was never joined');
+      } finally { w.teardown(); }
+    }
+  })();
+};
+
+// What the worker leaves running when nobody is watching anything.
+//
+// The service worker is woken by its alarms, and every wake loads the whole
+// background bundle. An alarm that outlives the reason for it is not a tidiness
+// problem — it is the extension waking the machine, all day, to find there is
+// nothing to do.
+suites.alarms = function () {
+  const { bootWorker, wait } = require('./background.js');
+
+  return (async () => {
+    {
+      const w = bootWorker();
+      try {
+        ok(!w.alarms.has('fcm-heartbeat'),
+          'alarms: no heartbeat before any tab has asked for one');
+
+        const tab = w.makeTab(1).connect();
+        tab.send({ cmd: 'hello', site: 'twitch', channel: 'alpha', hints: [] });
+        await wait(40);
+        ok(w.alarms.has('fcm-heartbeat'), 'alarms: a tab being served gets one');
+
+        w.listeners.tabRemoved(1);
+        await wait(30);
+        ok(!w.alarms.has('fcm-heartbeat'),
+          'alarms: and closing the last tab stops it, rather than waking the worker all night');
+      } finally { w.teardown(); }
+    }
+
+    // Two tabs, one closed: the other is still being served.
+    {
+      const w = bootWorker();
+      try {
+        w.makeTab(1).connect().send({ cmd: 'hello', site: 'twitch', channel: 'alpha', hints: [] });
+        w.makeTab(2).connect().send({ cmd: 'hello', site: 'kick', channel: 'bravo', hints: [] });
+        await wait(40);
+        w.listeners.tabRemoved(1);
+        await wait(30);
+        ok(w.alarms.has('fcm-heartbeat'),
+          'alarms: the heartbeat stays while any tab is still open');
+      } finally { w.teardown(); }
+    }
+
+    // The update check must not be pushed into a future that keeps moving.
+    {
+      const w = bootWorker();
+      try {
+        await wait(30);
+        const first = w.alarms.get('fcm-update-check');
+        ok(first, 'alarms: the update check is scheduled on the first start');
+        // A worker restart re-runs the same setup. The alarm outlives the
+        // worker, so re-arming it would move the check one minute further away
+        // every time — and the worker restarts constantly.
+        w.sandbox.FCM.watchForUpdates();
+        await wait(30);
+        eq(w.alarms.get('fcm-update-check'), first,
+          'alarms: a later start leaves the one already scheduled alone');
+      } finally { w.teardown(); }
+    }
+  })();
+};
+
+// What the page fetched on the worker's behalf, and what a failed check says.
+suites.fallbacks = function () {
+  const { bootWorker, wait } = require('./background.js');
+
+  return (async () => {
+    // ── the page-fetched Kick emote list is remembered ──
+    //
+    // The worker only asks the tab for this list when Kick's edge refuses it,
+    // so the channels the path exists for were exactly the ones that were never
+    // cached: every visit started with an empty picker and emote names drawn as
+    // plain text until the page fetched them again.
+    {
+      const w = bootWorker();
+      try {
+        w.connect();
+        w.send({ cmd: 'hello', site: 'kick', channel: 'someone', hints: [] });
+        await wait(30);
+        w.send({ cmd: 'join', platform: 'kick', channel: 'someone' });
+        await wait(60);
+        const sock = w.socketFor('pusher');
+        ok(sock, 'fallbacks: the Kick socket was opened');
+        sock.push(JSON.stringify({ event: 'pusher:connection_established', data: '{}' }));
+        await wait(80);
+
+        w.send({
+          cmd: 'cacheKickEmotes',
+          channel: 'someone',
+          store: { theirEmote: { url: 'https://kick/e.png', source: 'Kick' } },
+        });
+        await wait(80);
+
+        const cached = w.storage.local[w.sandbox.FCM.STORAGE_KEYS.emoteCache] || {};
+        const entry = Object.values(cached)[0];
+        ok(entry && entry.kinds && entry.kinds.native && entry.kinds.native.theirEmote,
+          'fallbacks: what the page fetched is written to the cache');
+      } finally { w.teardown(); }
+    }
+
+    // And a list that arrives naming a channel this tab has left is dropped.
+    {
+      const w = bootWorker();
+      try {
+        w.connect();
+        w.send({ cmd: 'hello', site: 'kick', channel: 'someone', hints: [] });
+        await wait(30);
+        w.send({ cmd: 'join', platform: 'kick', channel: 'someone' });
+        await wait(60);
+        w.send({
+          cmd: 'cacheKickEmotes',
+          channel: 'a-different-streamer',
+          store: { wrongEmote: { url: 'https://kick/x.png', source: 'Kick' } },
+        });
+        await wait(80);
+        const cached = w.storage.local[w.sandbox.FCM.STORAGE_KEYS.emoteCache] || {};
+        const all = JSON.stringify(cached);
+        missing(all, 'wrongEmote',
+          "fallbacks: a list for a channel this tab is not on is not cached under the one it is");
+      } finally { w.teardown(); }
+    }
+
+    // ── the page correcting the same-name guess leaves the wrong chat ──
+    //
+    // The guess is made before the page has drawn the streamer's own links, so
+    // a streamer whose Kick account is not simply their Twitch name is paired
+    // with whoever does hold that name. With cross-connect on, that stranger's
+    // chat is joined a second before the page says who the streamer really is —
+    // and correcting the chip while leaving their chat merged into the feed is
+    // the worst of both.
+    {
+      const w = bootWorker({
+        fetchImpl: async (url, init) => {
+          const u = String(url);
+          if (u.includes('gql.twitch.tv')) {
+            return { ok: true, json: async () => ({ data: { user: null } }) };
+          }
+          const m = u.match(/kick\.com\/api\/v\d\/channels\/([^/?]+)/);
+          if (m) {
+            // Both names exist on Kick: the guess and the real one.
+            return { ok: true, json: async () => ({
+              id: 9, user_id: 77, slug: m[1], chatroom: { id: 55 },
+              livestream: { session_title: 'live', viewer_count: 1, categories: [] },
+              user: { username: m[1], profile_pic: '' },
+            }) };
+          }
+          return { ok: false, status: 404, json: async () => ({}) };
+        },
+      });
+      try {
+        w.connect();
+        w.send({ cmd: 'hello', site: 'twitch', channel: 'chefsteve', hints: [] });
+        await wait(120);
+        const guessed = w.last('counterpart');
+        eq(guessed && guessed.counterpart && guessed.counterpart.channel, 'chefsteve',
+          'fallbacks: with no links to go on, the name is the guess');
+
+        // The overlay acts on that and joins it, as crossPromptMode 'always' does.
+        w.send({ cmd: 'join', platform: 'kick', channel: 'chefsteve' });
+        await wait(80);
+        w.clear();
+
+        // Then the page renders and says who the streamer actually is.
+        w.send({ cmd: 'hints', hints: ['https://kick.com/steve-cooks'] });
+        await wait(150);
+
+        const idle = w.of('status').filter((m) => m.platform === 'kick' && m.state === 'idle');
+        ok(idle.length,
+          'fallbacks: the chat joined on the guess is left when the page corrects it');
+        const offered = w.last('counterpart');
+        eq(offered && offered.counterpart && offered.counterpart.channel, 'steve-cooks',
+          'fallbacks: and the corrected channel is what is offered');
+      } finally { w.teardown(); }
+    }
+
+    // A counterpart that has not changed must not drop the chat mid-stream.
+    {
+      const w = bootWorker();
+      try {
+        w.connect();
+        w.send({ cmd: 'hello', site: 'twitch', channel: 'somechannel', hints: [] });
+        await wait(120);
+        w.send({ cmd: 'join', platform: 'kick', channel: 'somechannel' });
+        await wait(80);
+        w.clear();
+        w.send({ cmd: 'hints', hints: ['https://kick.com/somechannel'] });
+        await wait(150);
+        const idle = w.of('status').filter((m) => m.platform === 'kick' && m.state === 'idle');
+        eq(idle.length, 0,
+          'fallbacks: a page link that agrees with the guess leaves the chat alone');
+      } finally { w.teardown(); }
+    }
+
+    // ── an account that goes on its own tells every open tab ──
+    //
+    // A refresh refused because the token was revoked elsewhere clears the
+    // account, and nothing asked for that, so nothing was waiting to redraw.
+    // The panel went on offering to send as an account that was already gone
+    // and only found out when the message came back refused.
+    {
+      const w = bootWorker({
+        fetchImpl: async (url) => {
+          const u = String(url);
+          if (u.includes('/kick-refresh')) {
+            // What Kick says about a refresh token that has been revoked.
+            return { ok: false, status: 400, json: async () => ({ error: 'invalid_grant' }) };
+          }
+          return { ok: false, status: 404, json: async () => ({}) };
+        },
+      });
+      try {
+        const F = w.sandbox.FCM;
+        await F.auth.set('kick', {
+          accessToken: 'K', refreshToken: 'KR', login: 'me', expiresAt: Date.now() - 1000,
+        });
+        const tab = w.makeTab(1).connect();
+        tab.send({ cmd: 'hello', site: 'kick', channel: 'someone', hints: [] });
+        await wait(40);
+        tab.clear();
+
+        eq(await F.auth.usable('kick', {}), null, 'fallbacks: a revoked token is unusable');
+        await wait(60);
+
+        const told = tab.of('auth');
+        ok(told.length, 'fallbacks: and every open tab is told the account has gone');
+        eq(told[told.length - 1].accounts.kick.connected, false,
+          'fallbacks: so the panel stops offering to send as it');
+      } finally { w.teardown(); }
+    }
+
+    // ── "Up to date" is a claim, and must not be made without asking ──
+    {
+      const w = bootWorker({
+        fetchImpl: async (url) => {
+          if (String(url).includes('api.github.com')) {
+            // What a rate-limited or offline check looks like.
+            return { ok: false, status: 403, json: async () => ({}) };
+          }
+          return { ok: false, status: 404, json: async () => ({}) };
+        },
+      });
+      try {
+        const status = await w.sandbox.FCM.checkForUpdate();
+        eq(status.checked, false,
+          'fallbacks: a check that never reached GitHub says so');
+        eq(!!status.available, false, 'fallbacks: and reports no update, because it found none');
+      } finally { w.teardown(); }
+    }
+    {
+      const w = bootWorker({
+        fetchImpl: async (url) => {
+          if (String(url).includes('api.github.com')) {
+            return { ok: true, json: async () => ({ tag_name: 'v99.0.0', html_url: 'https://x', assets: [] }) };
+          }
+          return { ok: false, status: 404, json: async () => ({}) };
+        },
+      });
+      try {
+        const status = await w.sandbox.FCM.checkForUpdate();
+        eq(status.checked, true, 'fallbacks: a check that did reach GitHub says so too');
+        eq(status.available, true, 'fallbacks: and reports the newer release it found');
+      } finally { w.teardown(); }
+    }
+  })();
+};
+
+// Where a message goes when the message is nothing but an emote.
+//
+// An emote is a name that only means anything where it is loaded. Sent to the
+// other chat it arrives as that bare word — "PogU", on its own, to people with
+// no idea what it was meant to be. So a message that is only emotes goes only
+// where they exist; a message with words in it goes to both, because then the
+// sentence is the message and both chats can read it.
+suites.emoterouting = function () {
+  const sandbox = makeSandbox({
+    chrome: { storage: { sync: { get: async () => ({}) } } },
+    document: stubDocument(),
+  });
+  const FCM = load(sandbox, ...SHARED, 'src/content/render.js');
+  FCM.setViewSettings(FCM.DEFAULT_SETTINGS);
+
+  // PogU is Twitch's, KEKW is Kick's, catJAM is on both — which is the ordinary
+  // shape of it, since 7TV and BTTV are loaded for each platform separately.
+  FCM.setEmotes('twitch', 'thirdparty', {
+    PogU: { url: 'https://cdn/pogu.webp', source: '7TV' },
+    catJAM: { url: 'https://cdn/cj.webp', source: 'BTTV' },
+  });
+  FCM.setEmotes('kick', 'thirdparty', {
+    KEKW: { url: 'https://cdn/kekw.webp', source: '7TV' },
+    catJAM: { url: 'https://cdn/cj.webp', source: 'BTTV' },
+  });
+
+  // ── Whose emote is it ──
+  eq(FCM.emotePlatforms('PogU'), ['twitch'], 'routing: a Twitch-only emote is Twitch\u2019s');
+  eq(FCM.emotePlatforms('KEKW'), ['kick'], 'routing: a Kick-only emote is Kick\u2019s');
+  eq(FCM.emotePlatforms('catJAM'), ['twitch', 'kick'], 'routing: one loaded on both is both\u2019s');
+  eq(FCM.emotePlatforms('nothing'), [], 'routing: a word that is no emote belongs to nobody');
+  // Object.prototype is in the chain of both stores.
+  eq(FCM.emotePlatforms('constructor'), [], 'routing: nor does a word that names a built-in');
+
+  // ── An emote on its own ──
+  eq(FCM.emoteOnlyPlatform('PogU'), 'twitch',
+    'routing: an emote only Twitch has goes only to Twitch');
+  eq(FCM.emoteOnlyPlatform('KEKW'), 'kick',
+    'routing: an emote only Kick has goes only to Kick');
+  eq(FCM.emoteOnlyPlatform('  PogU  '), 'twitch',
+    'routing: surrounding space does not make it a sentence');
+
+  // ── An emote both chats have settles nothing ──
+  eq(FCM.emoteOnlyPlatform('catJAM'), null,
+    'routing: an emote both chats have goes to both');
+
+  // ── Words alongside it send it everywhere ──
+  eq(FCM.emoteOnlyPlatform('PogU nice'), null,
+    'routing: an emote with something said next to it goes to both');
+  eq(FCM.emoteOnlyPlatform('that was great catJAM'), null,
+    'routing: and so does a sentence ending in one');
+  eq(FCM.emoteOnlyPlatform('hello everyone'), null,
+    'routing: an ordinary message is an ordinary message');
+  eq(FCM.emoteOnlyPlatform(''), null, 'routing: an empty box decides nothing');
+
+  // ── Several of them ──
+  eq(FCM.emoteOnlyPlatform('PogU PogU PogU'), 'twitch',
+    'routing: several of one platform\u2019s emotes still go only there');
+  eq(FCM.emoteOnlyPlatform('PogU catJAM'), 'twitch',
+    'routing: one exclusive emote decides it, even beside a shared one');
+  eq(FCM.emoteOnlyPlatform('PogU KEKW'), null,
+    'routing: two emotes pulling opposite ways go to both, since neither chat has all of it');
+
+  // ── A name that is an emote on neither ──
+  eq(FCM.emoteOnlyPlatform('Kappa'), null,
+    'routing: a name nothing has loaded is text, and text goes to both');
+
+  // ── Leaving a platform takes its emotes, and its claim, with it ──
+  FCM.resetPlatformView('kick');
+  eq(FCM.emoteOnlyPlatform('KEKW'), null,
+    'routing: an emote whose platform has been left is just a word again');
+  eq(FCM.emoteOnlyPlatform('catJAM'), 'twitch',
+    'routing: and one that was on both is now only the platform still here');
 };
 
 // ── Runner ────────────────────────────────────────────────────────────────────

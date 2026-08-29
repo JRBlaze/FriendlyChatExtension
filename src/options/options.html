@@ -173,7 +173,25 @@
   </section>
 
   <section>
-    <h2>Kick sign-in</h2>
+    <h2>Sign-in</h2>
+    <div class="field field-col">
+      <div class="field-text">
+        <label for="twitchClientId">Twitch application client ID</label>
+        <small>Leave this empty unless Twitch has refused the sign-in and told you to register
+          your own application. The overlay says so when that happens, and says which redirect
+          URL to give it.</small>
+      </div>
+      <input type="text" id="twitchClientId">
+    </div>
+    <div class="field field-col">
+      <div class="field-text">
+        <label for="kickProxyUrl">Kick proxy worker URL</label>
+        <small>The small service that performs Kick's token exchange, because it needs a secret
+          an extension cannot hold. Leave it empty to use the default one; set it if you run
+          your own, or if the default is unreachable from your network.</small>
+      </div>
+      <input type="text" id="kickProxyUrl">
+    </div>
     <div class="field">
       <div class="field-text">
         <label for="kickRedirect">Where Kick returns after sign-in</label>

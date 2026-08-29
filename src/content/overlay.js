@@ -28,6 +28,14 @@
   // between the click and the site drawing something.
   const PEEK_HOLD_MS = 1200;
 
+  // How long a slider or a typed number has to stop changing before it is
+  // written down. Every drag of a slider fires an input event per pixel, and
+  // writing each one through means both a storage write chrome.storage starts
+  // refusing partway along — quietly losing the setting the viewer just chose
+  // — and a full re-render per pixel. The change is shown at once either way;
+  // this only delays the write.
+  const SETTINGS_SETTLE_MS = 300;
+
   // However convincing the evidence, the panel comes back eventually. Nothing
   // should be able to leave it invisible indefinitely.
   const PEEK_MAX_MS = 2 * 60 * 1000;
@@ -59,6 +67,9 @@
     const otherPlatform = FCM.otherPlatform(hostPlatform);
 
     let settings = { ...FCM.DEFAULT_SETTINGS };
+    // A change made but not yet written down, and the timer that will write it.
+    let settlingPatch = null;
+    let settleTimer = null;
     const filter = new Set(FCM.PLATFORMS);
     const status = { twitch: { state: 'idle', channel: null }, kick: { state: 'idle', channel: null } };
     let counterpart = null;
@@ -321,6 +332,12 @@
       const src = (known && known.url) || img.getAttribute('src') || '';
       if (!src) return;
 
+      // The larger size is a fresh request, so at this point the image has no
+      // width and the box would be placed around nothing. Placing it again when
+      // the picture arrives is what stops a wide emote near the panel's right
+      // edge being clipped by it, and what keeps the box centred on the emote
+      // it is describing. A cached image still fires this, where it is a no-op.
+      peekImg.onload = () => { if (peekedEl === img) placeEmotePeek(img); };
       peekImg.src = FCM.largerEmoteUrl(src);
       peekImg.alt = name;
       peekName.textContent = name;
@@ -386,6 +403,41 @@
         width: w,
         height: Math.round(window.innerHeight * 0.68),
       });
+    }
+
+    /**
+     * Keeps a box within reach of the window it is being drawn in.
+     *
+     * The same rule the drag uses: a panel may hang off the edge, because
+     * someone dragging it there meant to, but never so far that there is
+     * nothing left to take hold of.
+     */
+    function clampToViewport(r) {
+      return {
+        left: Math.max(0, Math.min(window.innerWidth - 80, r.left)),
+        top: Math.max(0, Math.min(window.innerHeight - 40, r.top)),
+        width: Math.max(240, Math.min(r.width, window.innerWidth)),
+        height: Math.max(160, Math.min(r.height, window.innerHeight)),
+      };
+    }
+
+    /**
+     * The same box, brought wholly back onto the screen.
+     *
+     * For a box being restored rather than dragged. One saved on a 2560px
+     * monitor is entirely off a 1280px one, and every way back — the reset
+     * button, the header's double-click, the settings sheet — is inside the
+     * panel, so the overlay became unreachable on that site until extension
+     * storage was cleared by hand. A sliver at the edge is not enough either:
+     * the controls that undo it sit at the far end of the header.
+     */
+    function clampWhollyOnScreen(r) {
+      const box = clampToViewport(r);
+      return {
+        ...box,
+        left: Math.max(0, Math.min(window.innerWidth - box.width, box.left)),
+        top: Math.max(0, Math.min(window.innerHeight - box.height, box.top)),
+      };
     }
 
     function applyRect(r) {
@@ -475,7 +527,7 @@
       // their mouse would fight them for the panel.
       if (endDrag) return;
 
-      const box = { ...manualRect };
+      const box = clampToViewport(manualRect);
       const cards = settings.revealHighlights === false ? null : lastCards;
       if (cards && overlapsCards(box, cards)) {
         const bottom = box.top + box.height;
@@ -505,6 +557,27 @@
       const bottom = box.top + box.height;
       if (right <= cards.left + 2 || box.left >= cards.right - 2) return false;
       return bottom > cards.top + 2 && box.top < cards.bottom - 2;
+    }
+
+    /**
+     * Asks for a placement pass on the next frame.
+     *
+     * Scroll and resize arrive far more often than the panel can usefully move.
+     * The scroll listener is on the window in the capture phase, so the site's
+     * own message list scrolling itself on every batch of messages reaches it
+     * too — dozens of times a second on a busy channel, on top of anything the
+     * viewer scrolls themselves. Each pass searches the document for the chat
+     * column and forces a layout to measure it, which is not a thing to do per
+     * event. One pass per frame is as often as it could possibly matter.
+     */
+    let placementFrame = null;
+    function schedulePlacement() {
+      if (destroyed || placementFrame !== null) return;
+      if (!window.requestAnimationFrame) { syncPlacement(); return; }
+      placementFrame = window.requestAnimationFrame(() => {
+        placementFrame = null;
+        syncPlacement();
+      });
     }
 
     function syncPlacement() {
@@ -641,8 +714,8 @@
 
     function watchPlacement() {
       tick();
-      window.addEventListener('resize', syncPlacement, { passive: true });
-      window.addEventListener('scroll', syncPlacement, { passive: true, capture: true });
+      window.addEventListener('resize', schedulePlacement, { passive: true });
+      window.addEventListener('scroll', schedulePlacement, { passive: true, capture: true });
       // Twitch's own chat-width drag handle, sidebar collapses and ad breaks all
       // move the column without firing anything we can hook, so a poll backs the
       // observer up. The same tick re-reads the balances and notices one of the
@@ -652,6 +725,14 @@
       // just clicked open, so input on the page brings the next few checks
       // forward rather than raising the poll rate for everything.
       document.addEventListener('click', schedulePeekCheck, true);
+      // Kick's menus are Radix, which opens them on pointerdown and never waits
+      // for the click — so a press held still, or moved far enough that the
+      // click is cancelled, opened the panel and sent no click at all, and the
+      // overlay went on sitting over it until the slow backstop noticed seconds
+      // later. Pressing is the moment a menu appears on either site, so that is
+      // what the check follows; the click above stays for the menus that really
+      // do wait for one.
+      document.addEventListener('pointerdown', schedulePeekCheck, true);
       // A keystroke rarely opens a menu, and this fires for every character
       // typed into the site's own chat box, so it only arms the next tick's
       // scan rather than scheduling checks of its own.
@@ -787,12 +868,13 @@
       const stats = settings.showNativeStats === false ? null : native.stats();
       const signature = stats
         ? `${stats.points}|${stats.bits}|${stats.hasPoints}|${stats.hasBits}`
-          + `|${stats.canClaim}|${stats.hasMenu}`
+          + `|${stats.canClaim}|${stats.hasMenu}|${stats.hasIdentity}`
         : 'off';
       if (signature === statsSignature) return;
       statsSignature = signature;
 
-      const show = !!stats && !!(stats.hasPoints || stats.hasBits || stats.canClaim);
+      const show = !!stats
+        && !!(stats.hasPoints || stats.hasBits || stats.canClaim || stats.hasIdentity);
       nativeEl.classList.toggle('fcm-hidden', !show);
       nativeEl.replaceChildren();
       if (!show) return;
@@ -824,6 +906,22 @@
         claim.title = `${meta.name} has a bonus waiting — click to claim it`;
         claim.addEventListener('click', () => openNative('claim'));
         nativeEl.appendChild(claim);
+      }
+      // Last on the row, and only when the site is showing its own control for
+      // it. This is where a viewer sets the colour their name is drawn in and
+      // which of their badges show — the one thing about their own messages
+      // that the overlay renders and cannot change, because it belongs to the
+      // platform. So it opens the platform's own dialog rather than pretending
+      // to offer it here.
+      if (stats.hasIdentity) {
+        const identity = document.createElement('button');
+        identity.className = 'fcm-native-chip fcm-native-identity';
+        identity.dataset.kind = 'identity';
+        identity.textContent = 'Chat identity';
+        identity.title = `Open ${meta.name}'s own chat identity settings `
+          + '\u2014 the colour your name is drawn in, and your badges';
+        identity.addEventListener('click', () => openNative('identity'));
+        nativeEl.appendChild(identity);
       }
     }
 
@@ -942,6 +1040,14 @@
       const win = pipWindow;
       pipWindow = null;
       root.dataset.popped = 'false';
+      // The window can be closed after the overlay has been torn down — a
+      // channel switch with the panel popped out does exactly that — and
+      // putting the host back then would return a dead panel to the page for
+      // the new overlay to sit behind. Closing the window is still right.
+      if (destroyed) {
+        if (win) { try { win.close(); } catch (e) { /* already gone */ } }
+        return;
+      }
       if (host.parentNode !== document.documentElement) {
         document.documentElement.appendChild(host);
       }
@@ -1051,13 +1157,15 @@
         const geo = (stored[GEOMETRY_KEY] || {})[hostPlatform];
         if (geo && geo.manual) {
           manualPlacement = true;
-          manualRect = {
+          // Clamped into the remembered box itself, not just on the way to the
+          // screen: everything downstream — the card-avoidance, the resize
+          // handles, saveGeometry — works from this, and a box nobody can
+          // reach is not one to keep working from. Storage is left alone until
+          // the panel is next moved.
+          manualRect = clampWhollyOnScreen({
             left: geo.left, top: geo.top, width: geo.width, height: geo.height,
-          };
-          panel.style.left = `${geo.left}px`;
-          panel.style.top = `${geo.top}px`;
-          panel.style.width = `${geo.width}px`;
-          panel.style.height = `${geo.height}px`;
+          });
+          applyRect(manualRect);
         }
       } catch (e) { /* fall back to auto placement */ }
       refreshResetButton();
@@ -1153,8 +1261,11 @@
           } else if (mode === 'height') {
             panel.style.height = `${Math.max(160, start.height + dy)}px`;
           } else {
+            // Held to the window the same way the move does: dragging the left
+            // edge past the minimum width otherwise carries the whole panel
+            // sideways and off the screen.
             panel.style.width = `${Math.max(240, start.width - dx)}px`;
-            panel.style.left = `${start.left + dx}px`;
+            panel.style.left = `${Math.max(0, Math.min(window.innerWidth - 80, start.left + dx))}px`;
           }
         };
         const up = () => {
@@ -1361,8 +1472,74 @@
 
     let sheet = null;
 
+    /**
+     * Writes a settings change down.
+     *
+     * Whatever comes back is the whole of what is stored, including anything
+     * another tab changed while this was in flight — but not anything typed
+     * here since, which is newer than the write and has to survive it.
+     */
+    async function persistSetting(patch) {
+      const saved = await FCM.saveSettings(patch);
+      if (destroyed) return;
+      settings = { ...saved, ...(settlingPatch || {}) };
+      applySettings(settings);
+    }
+
+    // The same, once the slider or the keyboard has been still for a moment.
+    // Changes made in the meantime are collected rather than each waiting for a
+    // timer of its own, so the whole adjustment goes down as one write.
+    function persistSettingSoon(patch) {
+      settlingPatch = { ...(settlingPatch || {}), ...patch };
+      clearTimeout(settleTimer);
+      settleTimer = setTimeout(() => {
+        settleTimer = null;
+        const pending = settlingPatch;
+        settlingPatch = null;
+        if (pending) persistSetting(pending);
+      }, SETTINGS_SETTLE_MS);
+    }
+
+    // Closing the sheet, leaving the channel or closing the tab must not lose a
+    // change the viewer has just made and can see on screen.
+    function flushSettings() {
+      if (!settleTimer) return;
+      clearTimeout(settleTimer);
+      settleTimer = null;
+      const pending = settlingPatch;
+      settlingPatch = null;
+      if (pending) FCM.saveSettings(pending);
+    }
+
     function closeSheet() {
+      flushSettings();
       if (sheet) { sheet.remove(); sheet = null; }
+    }
+
+    /**
+     * Draws the sheet again, keeping what is being typed into it.
+     *
+     * Rebuilding is how the sheet picks up a change in connection state, and
+     * every control in it writes itself down as it changes — except the
+     * channel-link box, which is read when Save is pressed. So an account event
+     * arriving mid-word (the worker being recycled is enough, and the sheet is
+     * opened on that field precisely when a channel could not be matched) threw
+     * away what had been typed, scrolled back to the top and took the focus.
+     */
+    function refreshSheet() {
+      if (!sheet) return;
+      const typed = sheet.querySelector('[data-link-input]');
+      const value = typed ? typed.value : null;
+      const hadFocus = !!typed && shadow.activeElement === typed;
+      const caret = typed ? typed.selectionStart : null;
+      closeSheet();
+      openSheet();
+      const next = sheet && sheet.querySelector('[data-link-input]');
+      if (!next || value === null) return;
+      next.value = value;
+      if (!hadFocus) return;
+      next.focus({ preventScroll: true });
+      try { next.setSelectionRange(caret, caret); } catch (e) { /* not a text field */ }
     }
 
     /**
@@ -1552,18 +1729,43 @@
       `;
       panel.appendChild(sheet);
 
+      /**
+       * The number a numeric field is actually asking for.
+       *
+       * A `number` input hands back whatever was typed, including nothing at
+       * all — `Number('')` is 0 — and, unlike a slider, the browser does not
+       * hold it to the min and max written on the element. Storing that meant a
+       * blank box wrote 0, and every reader clamped it back to something usable,
+       * so the settings page and this sheet both showed a number that was not
+       * the one in effect. The element's own bounds are the bounds.
+       */
+      function fieldNumber(el, fallback) {
+        const raw = String(el.value).trim();
+        // Mid-edit: the box is empty because the viewer is retyping it, which
+        // is not a request for zero.
+        if (!raw) return fallback;
+        const min = el.min === '' ? -Infinity : Number(el.min);
+        const max = el.max === '' ? Infinity : Number(el.max);
+        return FCM.clampNumber(raw, min, max, fallback);
+      }
+
       sheet.querySelectorAll('[data-set]').forEach((el) => {
         const key = el.dataset.set;
         if (el.type === 'checkbox') el.checked = !!settings[key];
         else el.value = settings[key];
-        const evt = (el.type === 'range' || el.type === 'number' || el.type === 'text') ? 'input' : 'change';
-        el.addEventListener(evt, async () => {
+        const continuous = el.type === 'range' || el.type === 'number' || el.type === 'text';
+        const evt = continuous ? 'input' : 'change';
+        el.addEventListener(evt, () => {
           let value;
           if (el.type === 'checkbox') value = el.checked;
-          else if (el.type === 'range' || el.type === 'number') value = Number(el.value);
+          else if (el.type === 'range' || el.type === 'number') value = fieldNumber(el, settings[key]);
           else value = el.value;
-          settings = await FCM.saveSettings({ [key]: value });
+          // Shown straight away, whichever kind of field it is. Only the write
+          // waits, and only for the ones that fire while a hand is still moving.
+          settings = { ...settings, [key]: value };
           applySettings(settings);
+          if (continuous) persistSettingSoon({ [key]: value });
+          else persistSetting({ [key]: value });
         });
       });
 
@@ -1684,6 +1886,11 @@
       // Expanding has to restore the full chat-sized height, and collapsing
       // still needs the position and width kept in step.
       syncPlacement();
+      // And expanding puts the feed back on the live end. It had no box while
+      // it was collapsed, so it has no useful scroll position to return to —
+      // only the one it happened to be left with, which is wherever the chat
+      // was when the panel was put away.
+      if (!collapsed) feed.scrollToBottom();
     }
 
     function setVisible(next) {
@@ -1708,7 +1915,10 @@
         }
       }
       applyNativeChatVisibility();
-      if (next) syncPlacement();
+      // As with expanding: a panel that was off screen has no scroll position
+      // worth keeping, and coming back to the live chat is what showing it
+      // again means.
+      if (next) { syncPlacement(); feed.scrollToBottom(); }
     }
 
     function refreshSendNote() {
@@ -1717,7 +1927,14 @@
       const live = FCM.SEND_PLATFORMS.filter(
         (p) => active.has(p) && ['api', 'native'].includes(routeFor(p))
       );
-      const names = live.map((p) => FCM.PLATFORM_META[p].name);
+      // An emote on its own is only going where it exists, so the row says so
+      // rather than promising both chats and then quietly sending to one.
+      const emoteHome = FCM.emoteOnlyPlatform(inputEl.value);
+      const narrowedTo = emoteHome && live.length > 1 && live.includes(emoteHome)
+        ? emoteHome
+        : null;
+      const going = narrowedTo ? [narrowedTo] : live;
+      const names = going.map((p) => FCM.PLATFORM_META[p].name);
 
       if (replying) {
         const who = [...replyTo.values()].map((r) => r.name).join(', ');
@@ -1732,8 +1949,9 @@
 
       sendNoteEl.textContent = names.length
         ? `${replying ? 'replying on' : 'sending to'} ${names.join(' + ')}`
+          + (narrowedTo ? ` — that emote is ${FCM.PLATFORM_META[narrowedTo].name}'s` : '')
         : (replying ? 'reply has nowhere to go' : 'nowhere to send');
-      sendNoteEl.title = live.map((p) => {
+      sendNoteEl.title = going.map((p) => {
         const meta = FCM.PLATFORM_META[p];
         return routeFor(p) === 'api'
           ? `${meta.name}: as ${accounts[p].login || 'your connected account'}`
@@ -1956,7 +2174,12 @@
 
       const active = effectiveTargets();
       const replying = replyTo.size > 0;
-      const chosen = FCM.SEND_PLATFORMS.filter((p) => active.has(p));
+      const wanted = FCM.SEND_PLATFORMS.filter((p) => active.has(p));
+      // Nothing but emotes goes only where they exist. This only ever narrows,
+      // and never past what the viewer asked for: somebody who has picked one
+      // chat gets that chat, bare word and all, because they said so.
+      const emoteHome = FCM.emoteOnlyPlatform(text);
+      const chosen = emoteHome && wanted.includes(emoteHome) ? [emoteHome] : wanted;
       const routes = new Map(chosen.map((p) => [p, routeFor(p)]));
 
       // A Cheer cannot go through the API. Twitch has no endpoint that spends
@@ -2082,6 +2305,10 @@
     inputEl.addEventListener('input', () => {
       // Clearing the box abandons the reply, so the targets go back to normal.
       if (!inputEl.value.trim()) clearReplyTo();
+      // Where a message is going can depend on the message: an emote on its own
+      // goes only where that emote exists. The row has to follow what is
+      // actually in the box, or it promises both chats right up until Send.
+      refreshSendNote();
     });
     inputEl.addEventListener('keydown', (e) => {
       e.stopPropagation();
@@ -2122,7 +2349,12 @@
           panel, inputEl, feedEl, emoteBtn, toast,
           onReplyTo: setReplyTo,
           onFavourites: async (list) => {
-            settings = await FCM.saveSettings({ favouriteEmotes: list });
+            const saved = await FCM.saveSettings({ favouriteEmotes: list });
+            // The picker has already applied this list and may have applied a
+            // newer one since — saves are chained, so a second star pressed
+            // while the first was still being written comes back stamped with
+            // the older list and would put the star out again.
+            settings = { ...saved, favouriteEmotes: FCM.view.settings.favouriteEmotes };
             FCM.setViewSettings(settings);
           },
           canModerate: (platform) => !!canModerate[platform],
@@ -2189,6 +2421,10 @@
       },
 
       destroy() {
+        // Before the flag goes up: a change still waiting on its timer is one
+        // the viewer has already made and can see, and leaving the channel is
+        // not a reason to throw it away.
+        flushSettings();
         destroyed = true;
         if (compose) compose.closeAll();
         pendingSends.clear();
@@ -2201,9 +2437,14 @@
         clearPeekTimers();
         clearFocusTimers();
         hideEmotePeek();
-        window.removeEventListener('resize', syncPlacement);
-        window.removeEventListener('scroll', syncPlacement, true);
+        window.removeEventListener('resize', schedulePlacement);
+        window.removeEventListener('scroll', schedulePlacement, true);
+        if (placementFrame !== null && window.cancelAnimationFrame) {
+          window.cancelAnimationFrame(placementFrame);
+          placementFrame = null;
+        }
         document.removeEventListener('click', schedulePeekCheck, true);
+        document.removeEventListener('pointerdown', schedulePeekCheck, true);
         document.removeEventListener('keydown', armDialogScan, true);
         if (resizeObserver) resizeObserver.disconnect();
         if (themeWatcher) { themeWatcher.stop(); themeWatcher = null; }
@@ -2231,10 +2472,23 @@
       batch(rows) { rows.forEach((row) => feed.addMessage(row, filter)); },
 
       setStatus(platform, state, chan) {
+        const previous = status[platform].channel;
         status[platform] = { state, channel: chan || null };
         syncNativeEvents();
-        if (state === 'idle') feed.dropPlatform(platform);
-        if (chan) filter.add(platform);
+        // Leaving takes that platform's emotes with it. Only a real leave gets
+        // here: joining a different channel on the same platform leaves the old
+        // one silently, and everything dropped is sent again on the next join.
+        if (state === 'idle') {
+          feed.dropPlatform(platform);
+          FCM.resetPlatformView(platform);
+        }
+        // Only when this platform has arrived somewhere new. A socket dropping
+        // and coming back reports connecting and connected for the same
+        // channel, and turning the filter on for each of those quietly undid a
+        // viewer who had clicked the chip to hide that platform: new messages
+        // from it started arriving again, while the ones already on screen kept
+        // the class that hides them, so the feed had a hole in it as well.
+        if (chan && chan !== previous) filter.add(platform);
         renderChips();
         renderPrompt();
         renderTargets();
@@ -2304,7 +2558,7 @@
         renderTargets();
         refreshSendNote();
         // The settings sheet shows connection state, so rebuild it if it is open.
-        if (sheet) { closeSheet(); openSheet(); }
+        refreshSheet();
       },
 
       authError(platform, info) {
@@ -2315,7 +2569,7 @@
         authProblem = { platform, ...(info || {}), message: detail };
         feed.addSys(`[Account] ${detail}`);
         toast(`${name} sign-in failed — see Accounts in settings`);
-        if (sheet) { closeSheet(); openSheet(); }
+        if (sheet) refreshSheet();
         else openSheet();
       },
 

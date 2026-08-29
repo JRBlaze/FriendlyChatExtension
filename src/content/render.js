@@ -224,17 +224,29 @@
    * Everything dropped here is sent again by the worker when the next channel
    * is joined, so this costs nothing but the re-send that already happens.
    */
-  FCM.resetChannelView = function () {
-    FCM.PLATFORMS.forEach((platform) => {
-      view.emotes[platform] = { native: {}, thirdparty: {} };
-    });
+  /**
+   * The same, for one platform on its own.
+   *
+   * Correcting a linked counterpart leaves one chat and joins another without
+   * the host channel changing at all, so the whole view is never rebuilt — and
+   * the chat that was left went on contributing its emotes. The picker still
+   * listed them, the autocomplete still offered them, and typing one drew it as
+   * a picture in this feed while the people being written to saw the name.
+   */
+  FCM.resetPlatformView = function (platform) {
+    if (!view.emotes[platform]) return;
+    view.emotes[platform] = { native: {}, thirdparty: {} };
     // Global badges are the same everywhere and are re-sent on join regardless;
     // the channel's own are the ones that would be wrong here.
-    view.badges.twitch.channel = {};
-    chatters.clear();
+    if (platform === 'twitch') view.badges.twitch.channel = {};
     // Anything cached against this — the picker list, the autocomplete index —
     // has to rebuild rather than keep offering what is no longer loaded.
     view.emoteVersion++;
+  };
+
+  FCM.resetChannelView = function () {
+    FCM.PLATFORMS.forEach((platform) => FCM.resetPlatformView(platform));
+    chatters.clear();
   };
 
   FCM.setViewSettings = function (settings) {
@@ -300,10 +312,71 @@
     return null;
   };
 
+  /**
+   * Which platforms have an emote of this name loaded.
+   *
+   * A different question from findEmote's, which asks what an emote looks like
+   * and stops at the first answer. This one asks whose it is, and a name can be
+   * on one platform, on both, or on neither.
+   */
+  FCM.emotePlatforms = function (name) {
+    if (!name) return [];
+    return FCM.PLATFORMS.filter((platform) => {
+      const sets = view.emotes[platform];
+      if (!sets) return false;
+      // The same `hit.url` test the two lookups make, and for the same reason:
+      // "constructor" and "toString" are on Object.prototype, not in a store.
+      const hit = sets.native[name] || sets.thirdparty[name];
+      return !!(hit && hit.url);
+    });
+  };
+
+  /**
+   * The one platform a message of nothing but emotes can be read on.
+   *
+   * An emote is a name that only means anything where it is loaded. Sent to the
+   * other chat it arrives as that bare word — "PogU", alone, to people with no
+   * idea what it was meant to be — which is not the message anybody meant to
+   * send. So a message that is *only* emotes is only worth sending where they
+   * exist.
+   *
+   * Words alongside them change that completely: then the sentence is the
+   * message and the emote decorates it, and it belongs in both chats so both
+   * can read what was said. That is the whole point of a merged composer.
+   *
+   * @returns {string|null} the platform, or null when this is an ordinary
+   *   message, or when nothing about it points at one platform.
+   */
+  FCM.emoteOnlyPlatform = function (text) {
+    const words = String(text || '').trim().split(/\s+/).filter(Boolean);
+    if (!words.length) return null;
+    let only = null;
+    for (const word of words) {
+      const on = FCM.emotePlatforms(word);
+      // A word that is an emote nowhere is a word, and this is an ordinary
+      // message however short.
+      if (!on.length) return null;
+      // Loaded on both, so it reads the same in either chat and settles nothing
+      // on its own.
+      if (on.length > 1) continue;
+      // Two emotes pulling opposite ways: neither chat can show all of it, so
+      // this is not a choice to make on the viewer's behalf.
+      if (only && only !== on[0]) return null;
+      [only] = on;
+    }
+    return only;
+  };
+
   function lookupEmote(platform, name) {
     const sets = view.emotes[platform];
     if (!sets) return null;
-    return sets.native[name] || sets.thirdparty[name] || null;
+    // The same `hit.url` test findEmote makes above, and for the same reason:
+    // both stores are ordinary objects, so "constructor", "toString" and
+    // "valueOf" find something on Object.prototype rather than an emote. A
+    // viewer typing "the constructor is broken" had the word replaced by an
+    // empty image box. Nothing on that chain carries a url.
+    const hit = sets.native[name] || sets.thirdparty[name];
+    return (hit && hit.url) ? hit : null;
   }
 
   // Captures opening punctuation the URL is wrapped in — "(https://x)" is a
@@ -750,6 +823,9 @@
     // resolving their id from the username all over again.
     if (msg.userId) el.dataset.userId = String(msg.userId);
     el.dataset.user = authorLower;
+    // Kept apart from the display name above: the platform names one of them
+    // when it deletes somebody's messages, and it is not always this one.
+    if (msg.login) el.dataset.login = String(msg.login).toLowerCase();
     FCM.rememberChatter(platform, msg.author, msg.color);
 
     // The per-badge labels already say MOD/SUB/VIP, so the summary chip is only

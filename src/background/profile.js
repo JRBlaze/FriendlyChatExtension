@@ -53,7 +53,12 @@
         variables: { login },
       }),
     });
-    const user = res && res.data && res.data.user;
+    // Twitch answers a name nobody has with HTTP 200 and a null user, so a null
+    // *response* is a different thing: nobody answered at all. Flattening the
+    // two meant five seconds of bad wifi were remembered for half an hour as
+    // "no account found by that name".
+    if (!res) return { reason: 'refused' };
+    const user = res.data && res.data.user;
     return user || null;
   }
 
@@ -64,6 +69,7 @@
     // anyone, which is the part of this worth having without a sign-in.
     if (!record || !record.accessToken) {
       const basic = await twitchCreatedAt(login);
+      if (basic && basic.reason) return basic;
       if (!basic) return { reason: 'not-found' };
       return {
         displayName: basic.displayName || login,
@@ -86,7 +92,10 @@
       `${FCM.TWITCH_HELIX}/users?login=${encodeURIComponent(login)}`,
       { headers }
     );
-    const user = data && Array.isArray(data.data) ? data.data[0] : null;
+    // Same distinction as above: Helix answers an unknown login with an empty
+    // list, and answers nothing at all when it could not be reached.
+    if (!data) return { reason: 'refused' };
+    const user = Array.isArray(data.data) ? data.data[0] : null;
     if (!user) return { reason: 'not-found' };
 
     const profile = {
@@ -161,7 +170,11 @@
     // No channel to ask about, or Kick refused. The channel record still names
     // the account, which is better than an empty card.
     const info = await FCM.kickApi.channel(slug);
-    if (!info) return { reason: 'not-found' };
+    // Kick answers a channel that does not exist and a request its edge refused
+    // in exactly the same way, so this is read as the one that may come back.
+    // Being wrong the other way pins "no account by that name" on a real person
+    // for half an hour.
+    if (!info) return { reason: 'refused' };
     const user = info.user || {};
     return {
       displayName: FCM.usernameFrom(user) || slug,

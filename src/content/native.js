@@ -440,7 +440,8 @@
           // Whether the site named that control or the adapter guessed at it.
           // Only a named one is pressed without being asked.
           claimNamed: onScreen(c.claim) && c.claimNamed !== false,
-          hasMenu: hasPoints || hasBits,
+          hasIdentity: onScreen(c.chatIdentity),
+          hasMenu: hasPoints || hasBits || onScreen(c.chatIdentity),
         };
       },
 
@@ -450,15 +451,16 @@
        * token that could, and standing between a viewer and their balance is
        * not a thing to get subtly wrong.
        *
-       * @param {'points'|'bits'|'claim'} kind
+       * @param {'points'|'bits'|'claim'|'identity'} kind
        * @returns {boolean} whether there was a control to click
        */
       activate(kind) {
         const c = controls();
         if (!c) return false;
         const el = kind === 'claim' ? c.claim
-          : kind === 'bits' ? (c.cheer || c.openBalances)
-            : (c.openBalances || c.cheer);
+          : kind === 'identity' ? c.chatIdentity
+            : kind === 'bits' ? (c.cheer || c.openBalances)
+              : (c.openBalances || c.cheer);
         if (!onScreen(el)) return false;
         try { press(el); } catch (e) { return false; }
         return true;
