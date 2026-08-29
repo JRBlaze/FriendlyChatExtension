@@ -122,9 +122,12 @@
     link.textContent = 'Checking…';
     const status = await ask('updateCheck');
     renderUpdate(status);
+    // `checked === false` is a check that could not be made, which is a
+    // different thing from one that found nothing new. The plain read below
+    // carries no `checked` at all, so it keeps saying what it always did.
     link.textContent = status && status.available
       ? 'Update ready'
-      : (status ? 'Up to date' : 'Could not check');
+      : (status && status.checked !== false ? 'Up to date' : 'Could not check');
   });
 
   $('open-options').addEventListener('click', (e) => {

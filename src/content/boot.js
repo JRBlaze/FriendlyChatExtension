@@ -77,12 +77,7 @@
       reconnectTimer = setTimeout(() => {
         if (epoch !== navEpoch) return;
         connectPort();
-        if (!port) return;
-        sendHello();
-        // Only replay joins for the channel actually on screen.
-        activeJoins.forEach((chan, platform) => {
-          post({ cmd: 'join', platform, channel: chan });
-        });
+        announceSession();
       }, 1200);
     });
 
@@ -92,8 +87,44 @@
     keepaliveTimer = setInterval(() => post({ cmd: 'ping' }), 20000);
   }
 
+  // True while the session is being re-announced, so a failed send inside it
+  // cannot start a second one on top.
+  let announcing = false;
+
+  /**
+   * Tells a worker that has never heard of this tab everything it needs.
+   *
+   * Which channel is on screen, and which chats were joined. Anything that
+   * opens a fresh port has to do this, because the worker keeps its session
+   * against the port and a new one starts empty.
+   */
+  function announceSession() {
+    if (!port || announcing || !currentChannel) return;
+    announcing = true;
+    try {
+      sendHello();
+      // Only replay joins for the channel actually on screen.
+      activeJoins.forEach((chan, platform) => {
+        post({ cmd: 'join', platform, channel: chan });
+      });
+    } finally {
+      announcing = false;
+    }
+  }
+
   function post(msg) {
-    if (!port) connectPort();
+    if (!port) {
+      const epoch = navEpoch;
+      connectPort();
+      // Opening a port is not rejoining. The worker on the other end of this
+      // one has never heard of this tab, and connectPort() has just cancelled
+      // the reconnect that would have told it — so sending only the message
+      // that prompted this left the overlay showing a connection that no longer
+      // existed: chips still reading "connected", no chat ever arriving again,
+      // and nothing but a reload to get it back. Pressing Send or closing a
+      // chip in the second after the worker was evicted was enough.
+      if (port && epoch === navEpoch) announceSession();
+    }
     if (!port) return;
     try {
       port.postMessage(msg);
@@ -159,7 +190,12 @@
   }
 
   async function onReady(msg) {
+    const epoch = navEpoch;
     const settings = await FCM.loadSettings();
+    // Reading the settings is a real wait, and a channel switch inside it takes
+    // the overlay away — so this used to throw on a null overlay and abandon
+    // the rest of the handler, leaving the new channel unjoined.
+    if (epoch !== navEpoch || !overlay) return;
     // Re-attach to anything the worker still has open for this tab.
     FCM.PLATFORMS.forEach((platform) => {
       const conn = (msg.connections || {})[platform];
@@ -279,6 +315,7 @@
     if (site.id !== 'kick' || !overlay) return;
     const slug = FCM.normalizeChannel(channel || '');
     if (!slug) return;
+    const epoch = navEpoch;
     try {
       const res = await fetch(`https://kick.com/emotes/${encodeURIComponent(slug)}`, {
         headers: { Accept: 'application/json' },
@@ -286,9 +323,18 @@
       if (!res.ok) return;
       const store = FCM.parseKickEmotePayload(await res.json(), slug);
       const count = Object.keys(store).length;
-      if (!count || !overlay) return;
+      // The fetch is a real wait and a channel change lands inside it often
+      // enough to matter, so this is one channel's emote list and it must not
+      // be poured into the next channel's picker.
+      if (!count || !overlay || epoch !== navEpoch) return;
       overlay.setEmotes('kick', 'native', store);
       overlay.sys(`Loaded ${count} Kick emotes for this channel`);
+      // Sent back to be remembered. The worker only asks the page for this list
+      // when Kick's edge refused it — so the channels this path exists for were
+      // exactly the ones that were never cached, and every visit to one of them
+      // started with an empty picker and emote names rendering as plain text
+      // until the page fetched it again.
+      post({ cmd: 'cacheKickEmotes', channel: slug, store });
     } catch (e) { /* the picker simply has fewer emotes in it */ }
   }
 
@@ -384,9 +430,24 @@
 
   // Settings changed in the options page or another tab have to reach an overlay
   // that is already open, not just the next one to be created.
+  //
+  // Either area, not just sync. A save is written to both and is allowed to
+  // succeed on one — which is the whole point of writing both — so a browser
+  // that is not signed in, or has extension sync switched off, or has spent its
+  // sync write quota, stores the change locally and told nobody. Every tab in
+  // this browser reads the same local area, so that is the copy that actually
+  // has to be followed.
+  //
+  // Both landing means the same change arrives twice, so it is recognised by
+  // the stamp the save wrote rather than acted on again.
+  let lastSettingsStamp = 0;
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== 'sync' || !changes[FCM.STORAGE_KEYS.settings]) return;
-    if (!overlay) return;
+    if (area !== 'sync' && area !== 'local') return;
+    const change = changes[FCM.STORAGE_KEYS.settings];
+    if (!change || !overlay) return;
+    const stamp = (change.newValue && change.newValue.savedAt) || 0;
+    if (stamp && stamp === lastSettingsStamp) return;
+    lastSettingsStamp = stamp;
     FCM.loadSettings().then((settings) => {
       overlay.applyStoredSettings(settings);
       overlay.toast('Settings updated');

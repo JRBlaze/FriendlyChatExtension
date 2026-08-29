@@ -31,18 +31,50 @@
       sink.status('connecting');
       sink.sys(`Connecting to Kick: ${channel}...`);
 
+      // Kick's edge refuses plenty of requests that did not come from a tab,
+      // so a lookup that failed is usually temporary and worth asking again.
+      // A retry has to actually ask, though: a failed lookup is remembered as
+      // "no such channel" for longer than the first few backoffs, and answering
+      // the retry from that would make every attempt fail the same way.
       const info = await FCM.kickApi.channel(channel, {
         token: conn.auth ? conn.auth.token : null,
+        maxAge: conn.attempt ? 0 : FCM.LIVE_CACHE_TTL_MS,
       });
       // The channel may have changed entirely while that was in flight.
       if (!current()) return;
+
+      /**
+       * Tries again later, on the same terms a dropped socket gets.
+       *
+       * Everything before the socket exists used to give up permanently on the
+       * first failure, while the status chip went on saying it was trying —
+       * so the Kick half of the feed was silent for the life of the page and
+       * nothing said why.
+       */
+      const retryLater = (why) => {
+        if ((conn.attempt || 0) >= FCM.MAX_RECONNECT_ATTEMPTS) {
+          sink.sys(`Kick: ${why} — giving up (reconnect from the overlay to retry)`);
+          sink.status('error');
+          return;
+        }
+        const delay = FCM.backoffDelay(conn.attempt || 0);
+        sink.status('disconnected');
+        sink.sys(`Kick: ${why} — trying again in ${Math.round(delay / 1000)}s...`);
+        conn.retryTimer = setTimeout(() => {
+          if (!current() || conn.forceClose || conn.channel !== channel) return;
+          conn.attempt = (conn.attempt || 0) + 1;
+          FCM.kickSource.connect(channel, sink, conn, conn.auth);
+        }, delay);
+      };
+
       if (!info) {
-        sink.sys('Kick: could not load channel information');
-        sink.status('error');
+        retryLater('could not load channel information');
         return;
       }
       const chatroomId = info.chatroom?.id;
       if (!chatroomId) {
+        // The channel loaded and has no chatroom. That is an answer rather than
+        // a failure, and asking again will not change it.
         sink.sys('Kick: could not find that channel');
         sink.status('error');
         return;
@@ -70,11 +102,14 @@
       try {
         ws = new WebSocket(FCM.KICK_PUSHER_URL);
       } catch (e) {
-        sink.sys(`Kick: could not open a connection (${e.message})`);
-        sink.status('error');
+        retryLater(`could not open a connection (${e.message})`);
         return;
       }
       conn.ws = ws;
+      // This socket's own keepalive. Kept in the closure as well as on `conn`
+      // so a close arriving after a newer socket has installed its own cannot
+      // stop the live one pinging — Pusher drops a room that goes quiet.
+      let myPing = null;
 
       ws.onmessage = (e) => {
         if (!current()) return;
@@ -92,15 +127,17 @@
               data: { auth: '', channel: `channel.${channelId}` },
             }));
           }
-          conn.attempt = 0;
+          // Noted, not forgiven; see the close handler.
+          conn.connectedAt = Date.now();
           sink.status('connected');
           sink.sys(`Connected to Kick: ${channel}`);
           // Idle rooms otherwise get dropped by Pusher's inactivity timeout.
           if (conn.pingTimer) clearInterval(conn.pingTimer);
-          conn.pingTimer = setInterval(() => {
+          myPing = setInterval(() => {
             if (ws.readyState !== WebSocket.OPEN) return;
             ws.send(JSON.stringify({ event: 'pusher:ping', data: {} }));
           }, KICK_PING_MS);
+          conn.pingTimer = myPing;
           sink.joined(chatroomId);
           return;
         }
@@ -174,11 +211,23 @@
       ws.onerror = () => { if (current()) sink.sys('Kick: connection error'); };
 
       ws.onclose = () => {
-        if (conn.pingTimer) { clearInterval(conn.pingTimer); conn.pingTimer = null; }
+        // This socket's keepalive, not whatever is on `conn` now.
+        if (myPing) {
+          clearInterval(myPing);
+          if (conn.pingTimer === myPing) conn.pingTimer = null;
+          myPing = null;
+        }
         if (conn.ws === ws) conn.ws = null;
         // Superseded by a newer socket: say nothing, retry nothing.
         if (!current()) return;
         if (conn.forceClose) return;
+        // A connection that stayed up starts the next backoff from scratch; one
+        // that fell over immediately does not, so a room that will not hold is
+        // retried more and more slowly and eventually left alone.
+        if (conn.connectedAt && Date.now() - conn.connectedAt >= FCM.STABLE_CONNECTION_MS) {
+          conn.attempt = 0;
+        }
+        conn.connectedAt = 0;
         sink.status('disconnected');
         sink.sys('Kick: disconnected');
         if ((conn.attempt || 0) >= FCM.MAX_RECONNECT_ATTEMPTS) {

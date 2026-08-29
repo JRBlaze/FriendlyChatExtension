@@ -31,6 +31,14 @@
     }
 
     function isPinned() {
+      // A collapsed or hidden panel gives the feed no box at all, and every
+      // measurement off it reads zero — which came out as "following the live
+      // end" however far behind it actually was. So the messages that arrived
+      // while it was away were counted as seen, the jump button stayed hidden,
+      // and opening the panel again left the viewer somewhere in the middle of
+      // an hour ago with nothing on screen offering to take them back.
+      // Whatever was true when it had a box is still true now.
+      if (!feedEl.clientHeight) return wasPinned;
       return feedEl.scrollHeight - feedEl.scrollTop < feedEl.clientHeight + 120;
     }
 
@@ -195,7 +203,9 @@
         const lower = String(username || '').toLowerCase();
         if (!lower) return;
         eachRow(`.fcm-msg[data-platform="${platform}"]`, (el) => {
-          if (el.dataset.user === lower) el.classList.add('fcm-deleted');
+          if (el.dataset.user === lower || el.dataset.login === lower) {
+            el.classList.add('fcm-deleted');
+          }
         });
       },
 

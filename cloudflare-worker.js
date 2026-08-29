@@ -154,11 +154,21 @@ async function exchange(env, origin, params) {
     const detail = (data && (data.error_description || data.error || data.message))
       || (raw && raw.trim().slice(0, 300))
       || describeStatus(kickRes.status);
+    // Only 400 and 401 are Kick saying this token or this request is finished,
+    // and only those two may be passed through as themselves: the extension
+    // reads them as "the sign-in is spent" and deletes the account. Everything
+    // else — 429 when every user of this client id shares a rate limit, 5xx
+    // during a Kick incident, 403 when Cloudflare puts a challenge in front of
+    // id.kick.com, 404 if the endpoint ever moves — is a service having a bad
+    // day, and is reported as one so the account outlives it. Flattening those
+    // to 400 threw away a still-valid refresh token and made the viewer sign in
+    // again for a failure that had already gone away.
+    const refused = kickRes.status === 400 || kickRes.status === 401;
     return json({
       error: detail,
       status: kickRes.status,
       hint: hintForStatus(kickRes.status, params.grant_type),
-    }, kickRes.status === 401 ? 401 : 400, origin);
+    }, refused ? kickRes.status : 502, origin);
   }
 
   if (!data || !data.access_token) {

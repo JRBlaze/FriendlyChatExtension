@@ -129,6 +129,12 @@
             </button>
             <button id="native-claim" aria-label="Claim Bonus" hidden>+50</button>
             <button id="native-cheer" data-a-target="bits-button" aria-label="Cheer">Cheer</button>
+            <!-- Twitch's own chat identity control, which sits in the row around
+                 the message box rather than behind the settings gear. Pressing
+                 it opens Twitch's own dialog for the colour a name is drawn in
+                 and which badges show. -->
+            <button id="native-identity" data-a-target="chat-identity"
+              aria-label="Chat Identity">Identity</button>
           </div>
         </div>
       </section>
@@ -166,6 +172,8 @@
                      was being preferred over the button above, which sent people
                      to buy Kicks instead of opening the gift shop. -->
                 <button id="kick-get" data-testid="get-kicks">Get KICKs</button>
+                <button id="kick-identity" data-testid="chat-identity"
+                  aria-label="Chat Identity"><svg data-ds-icon="Identity" width="12" height="12"></svg></button>
                 <button id="send-message-button">Chat</button>
               </div>
             </div>
@@ -203,6 +211,7 @@
     <button data-act="collapse-chat">collapse chat (native)</button>
     <button data-act="bonus">toggle claim bonus</button>
     <button data-act="no-rewards">toggle rewards row</button>
+    <button data-act="no-identity">toggle identity button</button>
     <button data-act="auth-both">fake: both accounts</button>
     <button data-act="auth-none">fake: no accounts</button>
     <button data-act="long">+ long message</button>
@@ -346,6 +355,11 @@ mockComposer(document.querySelector('.kickcol .editor-input'), document.getEleme
   document.getElementById('native-claim').addEventListener('click', (e) => {
     e.currentTarget.hidden = true;
   });
+  document.getElementById('native-identity').addEventListener('click',
+    () => open('Chat Identity', 'Twitch draws its own name-colour and badge picker here.'));
+  // Kick's is Radix like the rest of its footer, so it opens on pointerdown.
+  document.getElementById('kick-identity').addEventListener('pointerdown',
+    () => openKickPanel('Chat Identity', 'Kick draws its own identity panel here.'));
   /**
    * The site's own viewer card, opened by clicking a name in the site's own
    * chat — which is exactly how the overlay opens it, rather than drawing a
@@ -691,6 +705,13 @@ function loadSources(bust) {
     'no-rewards': () => {
       const row = document.querySelector('.chatcol .rewards');
       row.style.display = row.style.display === 'none' ? '' : 'none';
+    },
+    // A site that is not showing the control at all: the chip must not appear.
+    'no-identity': () => {
+      ['native-identity', 'kick-identity'].forEach((id) => {
+        const b = document.getElementById(id);
+        if (b) b.style.display = b.style.display === 'none' ? '' : 'none';
+      });
     },
     'drop-selectors': () => {
       document.querySelector('[data-a-target="right-column-chat-bar"]')

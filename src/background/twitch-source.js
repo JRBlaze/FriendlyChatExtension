@@ -103,12 +103,20 @@
           // USERSTATE arrives after JOIN on an authenticated connection and is
           // what tells us whether this viewer can moderate here.
           if (command === 'USERSTATE' || command === 'GLOBALUSERSTATE') {
-            const badgeTag = tags.badges || '';
-            sink.moderator(
-              tags.mod === '1'
-              || badgeTag.includes('broadcaster/')
-              || badgeTag.includes('moderator/')
-            );
+            // Only the channel-scoped USERSTATE can answer this. GLOBALUSERSTATE
+            // describes the account rather than the room — it carries no `mod`
+            // tag and only global badges — and it arrives before the join, so
+            // letting it answer took the moderation controls out of the user
+            // menu on every reconnect and left the worker refusing commands
+            // until USERSTATE landed.
+            if (command === 'USERSTATE') {
+              const badgeTag = tags.badges || '';
+              sink.moderator(
+                tags.mod === '1'
+                || badgeTag.includes('broadcaster/')
+                || badgeTag.includes('moderator/')
+              );
+            }
             // Twitch lists the emote sets this account may use here, and it is
             // the one place it says so without a special scope. It arrives
             // after the join rather than with it, which is why the emote load
@@ -146,7 +154,9 @@
 
           // 366 = end of NAMES, i.e. the JOIN completed.
           if (command === '366') {
-            conn.attempt = 0;
+            // Noted, not forgiven: the attempt count is cleared in onclose, and
+            // only if this connection lasted long enough to have been one.
+            conn.connectedAt = Date.now();
             sink.status('connected');
             sink.sys(`Connected to Twitch: ${channel}`);
             sink.joined();
@@ -178,8 +188,14 @@
           // tags are handed on, because those are counted from the text inside
           // the wrapper rather than from the line as sent.
           const spoken = FCM.parseIrcAction(params[1] || '');
-          const text = spoken.text.trim();
-          if (!text) return;
+          // Not trimmed. Twitch counts its emote positions from the body as
+          // sent, so taking a leading space off shifts every one of them: a
+          // message of " Kappa" drew a stray "K" and an emote labelled "appa".
+          // The history replay never trimmed, so the same line rendered one way
+          // above and another below in the same feed. Emptiness is judged on a
+          // trimmed copy, which is the only thing the trim was ever for.
+          const text = spoken.text;
+          if (!text.trim()) return;
 
           if (tags.bits && Number(tags.bits) > 0) {
             sink.event(`${displayName} cheered ${tags.bits} bits!`);
@@ -191,6 +207,11 @@
           sink.chat({
             platform: 'twitch',
             author: displayName,
+            // CLEARCHAT names the login, and a display name is only the same
+            // string when it is plain ASCII. Somebody whose name is written in
+            // Cyrillic or Japanese was never dimmed when they were timed out,
+            // so the feed went on showing messages the platform had removed.
+            login: FCM.ircNick(prefix) || '',
             text,
             action: spoken.action,
             reply: FCM.twitchReplyContext(tags),
@@ -217,6 +238,13 @@
         // Superseded by a newer socket: say nothing, retry nothing.
         if (!current()) return;
         if (conn.forceClose) return;
+        // A connection that stayed up starts the next backoff from scratch; one
+        // that fell over immediately does not, so a room that will not hold is
+        // retried more and more slowly and eventually left alone.
+        if (conn.connectedAt && Date.now() - conn.connectedAt >= FCM.STABLE_CONNECTION_MS) {
+          conn.attempt = 0;
+        }
+        conn.connectedAt = 0;
         sink.status('disconnected');
         sink.sys('Twitch: disconnected');
         if ((conn.attempt || 0) >= FCM.MAX_RECONNECT_ATTEMPTS) {
@@ -266,6 +294,9 @@
           rows.push({
             platform: 'twitch',
             author: tags['display-name'] || FCM.ircNick(prefix) || 'unknown',
+            // Same as the live path: a timeout names the login, and the
+            // replayed messages are the ones most likely to be timed out.
+            login: FCM.ircNick(prefix) || '',
             text,
             action: spoken.action,
             reply: FCM.twitchReplyContext(tags),

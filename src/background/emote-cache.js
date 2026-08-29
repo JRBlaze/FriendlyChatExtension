@@ -48,6 +48,10 @@
     }
   }
 
+  // Writes are read-modify-write over one storage key, so they are queued
+  // rather than raced. See write() below.
+  let writeChain = Promise.resolve();
+
   FCM.emoteCache = {
     /**
      * The emotes last seen for this channel, or null.
@@ -72,11 +76,19 @@
      *
      * Merged rather than replaced, because the two kinds arrive from different
      * requests at different moments and writing one must not forget the other.
+     *
+     * Which is exactly why the writes are chained. Every one of them is
+     * read-modify-write over the whole cache, and the two kinds for a single
+     * join are fetched at the same time — so both used to read the map before
+     * either had written to it, and whichever finished last stored a copy with
+     * only its own half in it. The merge this comment describes never happened
+     * in the one case it was written for. Two tabs restoring at once lose a
+     * whole channel the same way.
      */
-    async write(platform, channel, accountId, kind, store) {
-      if (!store || !Object.keys(store).length) return;
-      if (Object.keys(store).length > MAX_ENTRIES_PER_STORE) return;
-      try {
+    write(platform, channel, accountId, kind, store) {
+      if (!store || !Object.keys(store).length) return writeChain;
+      if (Object.keys(store).length > MAX_ENTRIES_PER_STORE) return writeChain;
+      writeChain = writeChain.then(async () => {
         const all = await readAll();
         const key = cacheKey(platform, channel, accountId);
         const existing = all[key] || { kinds: {} };
@@ -88,9 +100,11 @@
         const keys = Object.keys(all).sort((a, b) => (all[a].at || 0) - (all[b].at || 0));
         while (keys.length > MAX_CHANNELS) delete all[keys.shift()];
         await chrome.storage.local.set({ [FCM.STORAGE_KEYS.emoteCache]: all });
-      } catch (e) {
-        // A cache that cannot be written costs a slower start and nothing else.
-      }
+      }).catch(() => {
+        // A cache that cannot be written costs a slower start and nothing else,
+        // and must not stop the writes queued behind it.
+      });
+      return writeChain;
     },
 
   };

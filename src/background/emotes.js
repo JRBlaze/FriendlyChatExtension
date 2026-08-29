@@ -101,7 +101,19 @@
        */
       const put = (name, url, source, channel) => {
         if (!name || !url) return;
-        if (!store[name]) store[name] = { url, source };
+        const known = store[name];
+        if (!known) {
+          store[name] = { url, source };
+        } else if (channel && !known.channel) {
+          // The channel's own set wins the picture. A name that is in both a
+          // provider's global set and this channel's is the channel saying
+          // "ours, not that one" — and which of the two requests happened to
+          // answer first is no basis for deciding whose artwork is drawn.
+          // Nothing has been rendered yet, so no picture changes under a
+          // message that is already on screen.
+          known.url = url;
+          known.source = source;
+        }
         // Set even when the name is already there. These fetches race, so a
         // name in both the channel's set and a global one would otherwise be
         // marked or not depending on which request came back first.
@@ -171,10 +183,13 @@
      * Every Twitch emote this viewer may use, as far as each source can say.
      *
      * The four fetches write into one store and each is allowed to fail on its
-     * own: a viewer with no account still gets globals, and one whose token is
-     * missing the emote scope still gets everything the USERSTATE set ids
-     * cover. Later writes do not overwrite earlier ones, so the most specific
-     * label a record carried is the one that survives.
+     * own, so a token missing the emote scope still gets everything the
+     * USERSTATE set ids cover. Later writes do not overwrite earlier ones, so
+     * the most specific label a record carried is the one that survives.
+     *
+     * A viewer with no account gets whatever Helix is willing to answer without
+     * one, which may be nothing at all; loadTwitchEmotes says so when that
+     * happens rather than leaving the picker quietly empty.
      *
      * @param {object} opts { clientId, token, userId, broadcasterId, setIds }
      * @returns {Promise<object>} name -> { url, source }

@@ -26,13 +26,21 @@
   const kickChannelCache = new Map(); // slug -> { at, data }
 
   FCM.kickApi = {
-    async channel(slug, { maxAge = FCM.LIVE_CACHE_TTL_MS, token = null } = {}) {
+    /**
+     * The channel record, and whether Kick answered at all.
+     *
+     * The second half only matters to callers that write the answer down; the
+     * rest use `channel()` below and see exactly what they always did.
+     */
+    async probe(slug, { maxAge = FCM.LIVE_CACHE_TTL_MS, token = null } = {}) {
       const key = FCM.normalizeChannel(slug);
-      if (!key) return null;
+      if (!key) return { reachable: true, data: null };
       // An authenticated read carries this viewer's moderator flags, which an
       // anonymous cached copy does not, so it never reuses the cache.
       const hit = token ? null : kickChannelCache.get(key);
-      if (hit && Date.now() - hit.at < maxAge) return hit.data;
+      if (hit && Date.now() - hit.at < maxAge) {
+        return { reachable: hit.reachable !== false, data: hit.data };
+      }
 
       const headers = { Accept: 'application/json' };
       if (token) headers.Authorization = `Bearer ${token}`;
@@ -40,16 +48,26 @@
 
       // v2 carries the livestream object; v1 is the older shape and is only a
       // fallback for when v2 is unavailable.
-      let data = await FCM.getJson(`https://kick.com/api/v2/channels/${encodeURIComponent(key)}`, init);
-      if (!data || !data.chatroom) {
-        data = await FCM.getJson(`https://kick.com/api/v1/channels/${encodeURIComponent(key)}`, init);
+      let res = await FCM.getJsonResult(`https://kick.com/api/v2/channels/${encodeURIComponent(key)}`, init);
+      if (!res.data || !res.data.chatroom) {
+        const older = await FCM.getJsonResult(`https://kick.com/api/v1/channels/${encodeURIComponent(key)}`, init);
+        // Reachable if either version answered: one being retired is not the
+        // network being out.
+        res = { reachable: res.reachable || older.reachable, data: older.data || res.data };
       }
+      const data = res.data;
       if (!data || (!data.chatroom && !data.id)) {
-        if (!token) cachePut(kickChannelCache, key, { at: Date.now(), data: null });
-        return null;
+        if (!token) {
+          cachePut(kickChannelCache, key, { at: Date.now(), data: null, reachable: res.reachable });
+        }
+        return { reachable: res.reachable, data: null };
       }
-      if (!token) cachePut(kickChannelCache, key, { at: Date.now(), data });
-      return data;
+      if (!token) cachePut(kickChannelCache, key, { at: Date.now(), data, reachable: true });
+      return { reachable: true, data };
+    },
+
+    async channel(slug, opts) {
+      return (await FCM.kickApi.probe(slug, opts)).data;
     },
 
     summarize(slug, data) {
@@ -99,13 +117,19 @@
     + ' stream{id viewersCount title createdAt game{name}}}}';
 
   FCM.twitchApi = {
-    async channel(login, { maxAge = FCM.LIVE_CACHE_TTL_MS } = {}) {
+    // As with Kick: the record, plus whether Twitch answered at all.
+    async probe(login, { maxAge = FCM.LIVE_CACHE_TTL_MS } = {}) {
       const key = FCM.normalizeChannel(login);
-      if (!key) return null;
+      if (!key) return { reachable: true, data: null };
       const hit = twitchChannelCache.get(key);
-      if (hit && Date.now() - hit.at < maxAge) return hit.data;
+      if (hit && Date.now() - hit.at < maxAge) {
+        return { reachable: hit.reachable !== false, data: hit.data };
+      }
 
       let user = null;
+      // Twitch answers an unknown login with a 200 and a null user, so getting
+      // that far is itself the answer.
+      let answered = false;
       try {
         const r = await fetch(FCM.TWITCH_GQL_URL, {
           method: 'POST',
@@ -119,6 +143,7 @@
         if (r.ok) {
           const body = await r.json();
           user = body && body.data ? body.data.user : null;
+          answered = true;
         }
       } catch (e) {
         user = null;
@@ -142,10 +167,15 @@
         });
         const entry = Array.isArray(fallback) ? fallback[0] : fallback;
         user = entry && entry.data ? entry.data.user : null;
+        if (fallback) answered = true;
       }
 
-      cachePut(twitchChannelCache, key, { at: Date.now(), data: user });
-      return user;
+      cachePut(twitchChannelCache, key, { at: Date.now(), data: user, reachable: answered });
+      return { reachable: answered, data: user };
+    },
+
+    async channel(login, opts) {
+      return (await FCM.twitchApi.probe(login, opts)).data;
     },
 
     summarize(login, user) {
@@ -223,10 +253,11 @@
 
   FCM.platformApi = {
     async summary(platform, channel, opts) {
-      if (platform === 'kick') {
-        return FCM.kickApi.summarize(channel, await FCM.kickApi.channel(channel, opts));
-      }
-      return FCM.twitchApi.summarize(channel, await FCM.twitchApi.channel(channel, opts));
+      const api = platform === 'kick' ? FCM.kickApi : FCM.twitchApi;
+      const res = await api.probe(channel, opts);
+      // `reachable` says whether "not there" was an answer or a silence, which
+      // is the difference between a miss worth remembering and one that is not.
+      return { ...api.summarize(channel, res.data), reachable: res.reachable };
     },
   };
 
@@ -252,6 +283,24 @@
     if (!/^[a-z0-9_-]{2,30}$/.test(slug)) return null;
     return slug;
   };
+
+  // Writes here are read-modify-write over one storage key, and both tabs of a
+  // two-stream evening write to it — as does the options page. Chained so each
+  // sees the last, the same way settings and tokens are.
+  let linkWriteChain = Promise.resolve();
+
+  function updateLinkStore(change) {
+    linkWriteChain = linkWriteChain.then(async () => {
+      const store = await readLinkStore();
+      const next = change(store);
+      if (next) await writeLinkStore(next);
+      return next;
+    }).catch(() => {
+      // A pairing that could not be written down is re-derived next time, and
+      // must not stop the writes queued behind it.
+    });
+    return linkWriteChain;
+  }
 
   async function readLinkStore() {
     try {
@@ -313,11 +362,12 @@
     // `manual` entries are the user's own mapping and never expire or get
     // overwritten by a guess.
     async set(platform, channel, record) {
-      const store = await readLinkStore();
-      store[FCM.links.key(platform, channel)] = {
-        ...record, at: Date.now(), v: LINK_RECORD_VERSION,
-      };
-      await writeLinkStore(store);
+      await updateLinkStore((store) => {
+        store[FCM.links.key(platform, channel)] = {
+          ...record, at: Date.now(), v: LINK_RECORD_VERSION,
+        };
+        return store;
+      });
     },
 
     /**
@@ -462,8 +512,10 @@
 
     push(self, 'same-name');
 
+    let everyoneAnswered = true;
     for (const candidate of candidates) {
       const summary = await FCM.platformApi.summary(other, candidate.slug);
+      if (summary.reachable === false) everyoneAnswered = false;
       if (summary.exists) {
         // Only written when it is news. Re-writing on every visit reset the
         // clock, so a guess made once was renewed each time it was used and
@@ -479,7 +531,13 @@
     }
 
     // Remember the miss too, so every page view does not re-probe the same name.
-    await FCM.links.set(platform, self, { none: true });
+    //
+    // Only when somebody actually said no. A lookup that never got through says
+    // nothing about whether this streamer is on the other platform, and writing
+    // it down as "there is nobody" stopped the merge being offered for the next
+    // six hours — for a network blip that had already passed. Re-probing on the
+    // next view is much the cheaper mistake.
+    if (everyoneAnswered) await FCM.links.set(platform, self, { none: true });
     return null;
   };
 })(self.FCM);

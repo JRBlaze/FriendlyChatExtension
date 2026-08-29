@@ -485,9 +485,15 @@
 /* The viewer collapsed the site's own chat. The overlay is a chat, so it goes
    with it — panel and launcher both, because a floating button is still
    something in the way of a video someone has just cleared the chat off. Its
-   own open/closed state is untouched, so it comes back as it was. */
-.fcm-root.fcm-page-chat-hidden .fcm-panel,
-.fcm-root.fcm-page-chat-hidden .fcm-launcher { display: none !important; }
+   own open/closed state is untouched, so it comes back as it was.
+
+   Not while it is in a window of its own. There it is covering nothing, and
+   collapsing the page's chat — the natural thing to do once the chat has its
+   own window — turned that window into an empty rectangle with nothing in it
+   to bring it back. The state is still tracked, so putting the panel back on
+   the page still lands it hidden if the site's chat is still away. */
+.fcm-root.fcm-page-chat-hidden:not([data-popped="true"]) .fcm-panel,
+.fcm-root.fcm-page-chat-hidden:not([data-popped="true"]) .fcm-launcher { display: none !important; }
 /* Struck through and muted, not faded: it is a record of what was said and
    then removed, and still has to be readable. */
 .fcm-deleted .fcm-body { text-decoration: line-through; color: var(--text-muted); }

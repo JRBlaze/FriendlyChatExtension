@@ -93,9 +93,12 @@
       'App\\Events\\SubscriptionEvent': `${sender} subscribed.`,
       'App\\Events\\ChannelSubscriptionEvent': `${sender} subscribed.`,
       'App\\Events\\ResubscriptionEvent': `${sender} resubscribed.`,
-      'App\\Events\\GiftedSubscriptionsEvent': `${sender} gifted ${count || '?'} subs${recipient && count === 1 ? ` to ${recipient}` : ''}.`,
+      // Number(), not ===: Kick sends the quantity as a string often enough that
+      // a single gift read as "gifted 1 subs" and dropped the name of the person
+      // it went to. The heuristic further down already had this right.
+      'App\\Events\\GiftedSubscriptionsEvent': `${sender} gifted ${count || '?'} sub${Number(count) === 1 ? '' : 's'}${recipient && Number(count) === 1 ? ` to ${recipient}` : ''}.`,
       'App\\Events\\SubscriptionGiftedEvent': `${sender} gifted a sub${recipient ? ` to ${recipient}` : ''}.`,
-      'App\\Events\\LuckyUsersWhoGotGiftSubscriptionsEvent': `${sender} gifted ${count || '?'} subs${luckyUsernames.length ? ` to ${luckyUsernames.slice(0, 3).join(', ')}${luckyUsernames.length > 3 ? ', and more' : ''}` : ''}.`,
+      'App\\Events\\LuckyUsersWhoGotGiftSubscriptionsEvent': `${sender} gifted ${count || '?'} sub${Number(count) === 1 ? '' : 's'}${luckyUsernames.length ? ` to ${luckyUsernames.slice(0, 3).join(', ')}${luckyUsernames.length > 3 ? ', and more' : ''}` : ''}.`,
       'App\\Events\\ChatroomClearEvent': 'Chat was cleared by a moderator.',
       'App\\Events\\StreamHostEvent': `${sender} is hosting the channel.`,
       'App\\Events\\HypeTrainStartedEvent': `${sender} started a Hype Train!`,
@@ -114,7 +117,16 @@
     if (shortName.includes('Subscription')) return `${sender} subscribed.`;
 
     // Housekeeping events are not worth a row in the feed.
-    if (/Updated|Statistic|Leaderboard|Livestream|Pinned|Deleted|Banned/i.test(shortName)) return '';
+    //
+    // The stream starting and stopping belongs here too. Those arrive on the
+    // channel rather than the chatroom, match none of the shapes above, and
+    // fell through to the last line — so restarting a stream put "Someone
+    // triggered StreamerIsLive." in the feed, which is an internal event name
+    // attributed to nobody. `Delete` rather than `Deleted` so PollDeleteEvent
+    // is caught as well; PollUpdateEvent is named in the map above and Kick's
+    // message deletions never reach here at all.
+    if (/Updated|Statistic|Leaderboard|Livestream|Pinned|Delete|Banned|StreamerIsLive|StopStream|ChatMove/i
+      .test(shortName)) return '';
     return `${sender} triggered ${shortName}.`;
   };
 })(self.FCM);

@@ -166,7 +166,11 @@
     if (!data || !data.tag_name) {
       state.failedAt = now;
       await writeState(state);
-      return FCM.updateStatus();
+      // Still worth returning what is known — an update an earlier check found
+      // is still there — but the caller has to be able to tell that this one
+      // never reached GitHub. "Up to date" is a claim about the running
+      // version, and it was being made without having asked anybody.
+      return { ...(await FCM.updateStatus()), checked: false };
     }
 
     const latest = String(data.tag_name).replace(/^v/i, '');
@@ -189,7 +193,7 @@
     };
     await writeState(next);
 
-    const status = await FCM.updateStatus();
+    const status = { ...(await FCM.updateStatus()), checked: true };
     await paintBadge(status.available);
     return status;
   };
@@ -203,12 +207,24 @@
    */
   FCM.watchForUpdates = function () {
     try {
-      chrome.alarms.create(ALARM, {
-        periodInMinutes: CHECK_INTERVAL_MINUTES,
-        // Not immediately: a browser start already has plenty to do, and this
-        // is the least urgent thing in it.
-        delayInMinutes: 1,
-      });
+      // Only when there is not one already. `create` replaces an alarm of the
+      // same name, and this runs on every worker start — which is constantly —
+      // so re-arming pushed the check one minute into a future that kept being
+      // moved. On a busy machine it never arrived at all, and a new release was
+      // never noticed; on a quieter one every restart bought another call
+      // against GitHub's hourly budget for the whole address.
+      //
+      // Alarms outlive the worker and the browser, and Chrome fires an overdue
+      // one shortly after start, so nothing is lost by leaving it alone.
+      Promise.resolve(chrome.alarms.get(ALARM)).then((existing) => {
+        if (existing) return;
+        chrome.alarms.create(ALARM, {
+          periodInMinutes: CHECK_INTERVAL_MINUTES,
+          // Not immediately: a browser start already has plenty to do, and this
+          // is the least urgent thing in it.
+          delayInMinutes: 1,
+        });
+      }).catch(() => {});
     } catch (e) {
       // No alarms available; the check on wake below still runs.
     }

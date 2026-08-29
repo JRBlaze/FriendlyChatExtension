@@ -24,12 +24,28 @@
    * extension's redirect URL has not been added to the app, so that is what
    * the message explains — with the exact URL to paste.
    */
-  FCM.explainAuthFailure = function (platform, rawMessage, authUrl) {
+  /**
+   * @param {object} [context] what the attempt itself knows:
+   *   `redirect` the address this sign-in actually sent, and `detail` the
+   *   platform's own words, apart from any guess wrapped around them.
+   */
+  FCM.explainAuthFailure = function (platform, rawMessage, authUrl, context) {
     const raw = String(rawMessage || '');
+    const ctx = context || {};
     const name = FCM.PLATFORM_META[platform].name;
-    const uri = redirectUri();
+    // The redirect this attempt really used, when the caller knows it. Kick's
+    // default flow reuses the desktop app's registered address and never sends
+    // the extension's own — so naming that one told people to register a URL
+    // this sign-in has no use for, and doing it changed nothing.
+    const uri = ctx.redirect || redirectUri();
 
-    const redirectProblem = /redirect|could not be loaded|invalid.?uri|mismatch/i.test(raw);
+    // Classified on what the platform said, not on the guess the proxy attaches
+    // to it. That guess names redirect_uri for every 400 it passes on, which
+    // includes the ordinary one from pressing Connect twice and spending the
+    // code — and sent that person off to re-register a URL that was already
+    // right.
+    const said = String(ctx.detail || raw);
+    const redirectProblem = /redirect|could not be loaded|invalid.?uri|mismatch/i.test(said);
     if (redirectProblem) {
       return {
         needsRedirectSetup: true,
@@ -78,11 +94,28 @@
     }
   }
 
+  // Both platforms live under one storage key, so every write here is
+  // read-modify-write over a record the other platform is also in. Two of them
+  // overlapping lets the second read before the first has written and put back
+  // a copy without it — which is a signed-in account vanishing, or a signed-out
+  // one coming back, for no reason the viewer can see. A send refreshing a Kick
+  // token while a Twitch sign-in completes is enough to do it. Chained so each
+  // write sees the one before it, the same way settings are.
+  let writeChain = Promise.resolve();
+
+  function updateAuth(change) {
+    writeChain = writeChain.then(async () => {
+      const current = await readAuth();
+      const next = change(current);
+      await chrome.storage.local.set({ [FCM.STORAGE_KEYS.auth]: next });
+      return next;
+    // A failed write must not stop every write after it.
+    }).catch(() => readAuth());
+    return writeChain;
+  }
+
   async function writeAuth(patch) {
-    const current = await readAuth();
-    const next = { ...current, ...patch };
-    await chrome.storage.local.set({ [FCM.STORAGE_KEYS.auth]: next });
-    return next;
+    return updateAuth((current) => ({ ...current, ...patch }));
   }
 
   FCM.auth = {
@@ -100,10 +133,11 @@
     },
 
     async clear(platform) {
-      const current = await readAuth();
-      delete current[platform];
-      await chrome.storage.local.set({ [FCM.STORAGE_KEYS.auth]: current });
-      return current;
+      return updateAuth((current) => {
+        const next = { ...current };
+        delete next[platform];
+        return next;
+      });
     },
 
     // What the UI needs to know, without ever handing it a token.
@@ -183,7 +217,12 @@
         clearInterval(poll);
         clearTimeout(timer);
         if (tabId != null) {
-          try { chrome.tabs.remove(tabId); } catch (e) { /* already gone */ }
+          // Promise-returning, so a throw is not what a closed tab produces:
+          // it rejects, and an unhandled rejection here is reported as an
+          // extension error for a tab the viewer simply closed themselves.
+          try {
+            Promise.resolve(chrome.tabs.remove(tabId)).catch(() => {});
+          } catch (e) { /* already gone */ }
         }
         action();
       }
@@ -349,13 +388,20 @@
       + `&code_challenge=${challenge}&code_challenge_method=S256`
       + `&state=${encodeURIComponent(state)}`;
 
+    // Every failure below is annotated with the redirect this attempt actually
+    // sent, so anything explaining it names that one rather than the
+    // extension's own — which this flow may never have used.
+    const withRedirect = (err) => Object.assign(err, { usedRedirect: redirect });
+
     const landed = viaTab ? await launchViaTab(url, redirect) : await launch(url);
     const params = paramsFrom(landed);
     if (params.get('error')) {
-      throw new Error(String(params.get('error_description') || params.get('error')).replace(/\+/g, ' '));
+      throw withRedirect(new Error(
+        String(params.get('error_description') || params.get('error')).replace(/\+/g, ' ')
+      ));
     }
     if (params.get('state') !== state) {
-      throw new Error('Sign-in response did not match the request.');
+      throw withRedirect(new Error('Sign-in response did not match the request.'));
     }
     const code = params.get('code');
     if (!code) throw new Error('Kick did not return an authorization code.');
@@ -370,7 +416,12 @@
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.access_token) {
       const detail = data.error || 'Kick refused the token exchange.';
-      throw new Error(data.hint ? `${detail} — ${data.hint}` : detail);
+      const err = withRedirect(new Error(data.hint ? `${detail} — ${data.hint}` : detail));
+      // Kick's own words, kept apart from the hint the proxy wraps around them,
+      // so the failure is classified on what Kick said rather than on a guess
+      // that names the redirect whatever went wrong.
+      err.detail = detail;
+      throw err;
     }
 
     const record = {
@@ -408,6 +459,24 @@
    *   the proxy restarting, a 502 on the way through. Only the first of those
    *   is a reason to forget the account.
    */
+  // One refresh at a time, however many callers want one.
+  //
+  // Kick rotates the refresh token: the first request spends it and is given a
+  // new one. A second request carrying the same spent token is answered
+  // invalid_grant, which is read — correctly — as "this token is finished",
+  // and the account is deleted. Deleted, moments after being refreshed
+  // perfectly well. Two tabs opening at once, or a join and a send crossing, is
+  // all it takes, so the callers share one request instead of racing.
+  let kickRefreshInFlight = null;
+
+  function refreshKickShared(settings, record) {
+    if (kickRefreshInFlight) return kickRefreshInFlight;
+    kickRefreshInFlight = refreshKick(settings, record).finally(() => {
+      kickRefreshInFlight = null;
+    });
+    return kickRefreshInFlight;
+  }
+
   async function refreshKick(settings, record) {
     if (!record.refreshToken) return REFUSED;
     let res;
@@ -437,7 +506,14 @@
     // invalid_grant whatever status carried it. A 500, a 502 or a proxy that
     // answered with something else is a service having a bad day, and the
     // account outlives that.
-    if (res.status === 400 || res.status === 401) return REFUSED;
+    //
+    // Kick's own status is preferred over the proxy's where the body carries
+    // one. Older deployed workers reported every upstream failure as a 400,
+    // which read as "spent" and deleted a sign-in over a rate limit or a
+    // five-minute outage; the worker no longer does that, but a worker is
+    // deployed separately from the extension and may well be the old one.
+    const upstream = Number(data && data.status) || res.status;
+    if (upstream === 400 || upstream === 401) return REFUSED;
     if (data && data.error === 'invalid_grant') return REFUSED;
     return null;
   }
@@ -460,13 +536,20 @@
     if (!nearlyExpired) return record;
 
     if (platform === 'kick') {
-      const refreshed = await refreshKick(settings, record);
+      const refreshed = await refreshKickShared(settings, record);
       if (refreshed && refreshed !== REFUSED) return refreshed;
       // Out of reach rather than refused: the account stays, and the next
       // attempt tries again. Unusable this moment is not gone.
       if (refreshed === null) return null;
     }
     await FCM.auth.clear(platform);
+    // Nobody asked for this — a refresh was refused because the token had been
+    // revoked elsewhere — so nothing is waiting to redraw. Whatever is still
+    // showing the account as connected has to be told, or the composer goes on
+    // offering a send that cannot work and only says so after it has failed.
+    if (FCM.auth.onCleared) {
+      try { FCM.auth.onCleared(platform); } catch (e) { /* nothing listening */ }
+    }
     return null;
   };
 

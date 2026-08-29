@@ -62,6 +62,7 @@ function bootWorker(opts = {}) {
   const timers = { intervals: new Set(), timeouts: new Set() };
 
   const listeners = {};
+  const alarms = new Map();
   const chrome = {
     runtime: {
       onConnect: { addListener: (fn) => { listeners.connect = fn; } },
@@ -69,8 +70,12 @@ function bootWorker(opts = {}) {
       lastError: null,
     },
     tabs: { onRemoved: { addListener: (fn) => { listeners.tabRemoved = fn; } } },
+    // Alarms are kept rather than only noted, because whether one exists is
+    // the whole question for both the heartbeat and the update check.
     alarms: {
-      create: (name, info) => { listeners.alarmInfo = { name, info }; },
+      create: (name, info) => { alarms.set(name, info); listeners.alarmInfo = { name, info }; },
+      clear: async (name) => alarms.delete(name),
+      get: async (name) => alarms.get(name) || undefined,
       onAlarm: { addListener: (fn) => { listeners.alarm = fn; } },
     },
     storage: {
@@ -121,12 +126,27 @@ function bootWorker(opts = {}) {
       };
     }
     if (u.includes('/messages?limit=')) {
-      return { ok: true, json: async () => ({ data: { messages: [] } }) };
+      return { ok: true, json: async () => ({ data: { messages: opts.kickHistory || [] } }) };
     }
     if (u.includes('recent-messages.robotty.de')) {
-      return { ok: true, json: async () => ({ messages: [] }) };
+      return { ok: true, json: async () => ({ messages: opts.twitchHistory || [] }) };
     }
     return { ok: false, status: 404, json: async () => ({}) };
+  };
+
+  /**
+   * The default responses, but with a request held open until the test lets it
+   * go.
+   *
+   * `opts.hold(url)` returns a promise for the calls it wants to stall and
+   * nothing for the rest. Every channel-switch race in the worker lives in the
+   * window between asking for something and being answered, so a test can only
+   * reach it by holding that window open on purpose.
+   */
+  const heldFetch = async (url, init) => {
+    const gate = opts.hold && opts.hold(String(url));
+    if (gate) await gate;
+    return defaultFetch(url, init);
   };
 
   const sandbox = {
@@ -137,7 +157,7 @@ function bootWorker(opts = {}) {
     crypto: { getRandomValues: (a) => a, subtle: { digest: async () => new ArrayBuffer(32) } },
     btoa: (s) => Buffer.from(s, 'binary').toString('base64'),
     TextEncoder,
-    fetch: opts.fetchImpl || defaultFetch,
+    fetch: opts.fetchImpl || (opts.hold ? heldFetch : defaultFetch),
     setTimeout: (fn, ms) => { const t = setTimeout(fn, ms); timers.timeouts.add(t); return t; },
     clearTimeout: (t) => { clearTimeout(t); timers.timeouts.delete(t); },
     setInterval: (fn, ms) => { const t = setInterval(fn, ms); timers.intervals.add(t); return t; },
@@ -187,7 +207,7 @@ function bootWorker(opts = {}) {
   const port = makeTab(1);
 
   return {
-    sandbox, sockets, posted, fetchCalls, storage, listeners, timers, makeTab,
+    sandbox, sockets, posted, fetchCalls, storage, listeners, timers, makeTab, alarms,
     port: port.port,
     connect() { port.connect(); return port.port; },
     send(msg) { return port.send(msg); },

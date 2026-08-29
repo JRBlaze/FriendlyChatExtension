@@ -68,19 +68,77 @@
   }
 
   /**
-   * The first match that is in the page at all, laid out or not.
+   * Every match that is in the page at all, laid out or not.
    *
    * Everything else here insists on a box, because an element with no size is
    * usually one the site has finished with. This is the one question where the
    * absence of a box is the answer: a chat column that exists and measures
    * nothing is a chat the viewer has collapsed.
    */
-  function firstInDom(selectors) {
+  function allInDom(selectors) {
     for (const sel of selectors) {
-      const el = document.querySelector(sel);
-      if (el) return el;
+      const found = document.querySelectorAll(sel);
+      if (found && found.length) return Array.from(found);
+    }
+    return [];
+  }
+
+  /**
+   * The site's own chat identity control: the one that opens the dialog where a
+   * viewer sets the colour their name is drawn in and which of their badges
+   * show.
+   *
+   * Both sites put a dedicated button for it in the row around the message box,
+   * so this looks there rather than anywhere else on the page. Named matches
+   * first; then the accessible name, which is the part of a control that has to
+   * survive a redesign because it is what the control says it is.
+   *
+   * The send button is excluded by name on the way past. Nothing else in that
+   * row is worth pressing by accident, and that one is.
+   */
+  function identityIn(scope, extraSelectors) {
+    if (!scope) return null;
+    const named = firstIn(scope, [
+      '[data-a-target*="identity" i]',
+      '[data-testid*="identity" i]',
+      'button[aria-label*="chat identity" i]',
+      'button[title*="chat identity" i]',
+      'button[aria-label*="identity" i]',
+      'button[title*="identity" i]',
+    ].concat(extraSelectors || []));
+    const asButton = clickable(named);
+    if (asButton) return asButton;
+
+    for (const btn of scope.querySelectorAll('button')) {
+      const label = `${btn.getAttribute('aria-label') || ''} `
+        + `${btn.getAttribute('title') || ''} ${btn.textContent || ''}`
+        .replace(/\s+/g, ' ').trim();
+      // Bounded: a real control says what it is in two or three words, and a
+      // longer string is a paragraph that happens to contain the word.
+      if (label.length > 40) continue;
+      if (!/\bidentity\b/i.test(label)) continue;
+      if (/^(chat|send)$/i.test((btn.textContent || '').replace(/\s+/g, ' ').trim())) continue;
+      if (!btn.getClientRects().length) continue;
+      return btn;
     }
     return null;
+  }
+
+  /**
+   * Every element any of these selectors names, laid out or not.
+   *
+   * For the questions where a chat that is present but has been put away is
+   * still the chat: what a viewer pasted into it belongs to them whether or not
+   * the column currently has a box.
+   */
+  function allMatching(selectors) {
+    const out = [];
+    selectors.forEach((sel) => {
+      document.querySelectorAll(sel).forEach((el) => {
+        if (out.indexOf(el) === -1) out.push(el);
+      });
+    });
+    return out;
   }
 
   /**
@@ -91,12 +149,23 @@
    * nothing. An element that is not there at all is a different answer — that
    * is a page whose chat we never found, and the overlay has its own handling
    * for that which this must not override.
+   *
+   * Every copy is measured, not just the first. Kick ships its whole chat
+   * twice, once for real and once inside a `display: none` streaming
+   * placeholder carrying the same ids, and the dead copy measures nothing
+   * however open the real one is — so reading only the first one in the
+   * document said "collapsed" on a Kick page whose chat was plainly there, and
+   * the panel and its launcher both went off screen with nothing left to press
+   * to bring them back. A column is collapsed only when no copy of it has a
+   * box.
    */
   function chatCollapsedIn(selectors) {
-    const el = firstInDom(selectors);
-    if (!el) return false;
-    const r = el.getBoundingClientRect();
-    return r.width < 40 || r.height < 40;
+    const found = allInDom(selectors);
+    if (!found.length) return false;
+    return !found.some((el) => {
+      const r = el.getBoundingClientRect();
+      return r.width >= 40 && r.height >= 40;
+    });
   }
 
   // The message list is the anchor the native-region code climbs from, so it is
@@ -351,22 +420,62 @@
    * trap documented elsewhere in here and not one this shares.
    */
   function scrapeHints(otherHostPattern, site) {
-    let chat = null;
+    let chat = [];
     try {
-      chat = site && site.chatContainer ? site.chatContainer() : null;
+      chat = site && site.chatScope ? site.chatScope() : [];
     } catch (e) {
-      chat = null;
+      chat = [];
     }
+    // Nothing that could be the chat was found, so there is no way to tell a
+    // link the streamer put on their own page from one a viewer pasted into
+    // chat a moment ago. Guessing wrong hands any viewer the choice of which
+    // account this channel is paired with — and with cross-connect set to
+    // always, the overlay then opens that chat and shows it as the streamer's.
+    // Finding nothing is the safe answer: the pairing falls back to the name.
+    if (!chat.length) return [];
     const out = [];
     document.querySelectorAll('a[href]').forEach((a) => {
       const href = a.getAttribute('href') || '';
       if (!otherHostPattern.test(href)) return;
       if (!a.getClientRects().length) return;
-      if (chat && chat.contains(a)) return;
+      // Every copy of the chat, laid out or not. A collapsed column still holds
+      // what was pasted into it, and its links come back the moment it is
+      // opened again.
+      if (chat.some((el) => el === a || el.contains(a))) return;
       out.push(href);
     });
     return Array.from(new Set(out)).slice(0, 40);
   }
+
+  // Named once because two questions are asked of them: which box the panel
+  // should cover (which wants the one being laid out) and which part of the
+  // page is the site's own chat (which wants all of them, laid out or not).
+  const TWITCH_CHAT_COLUMNS = [
+    'div[data-a-target="right-column-chat-bar"]',
+    'section[data-test-selector="chat-room-component-layout"]',
+    'div[data-test-selector="chat-room-component-layout"]',
+    '.channel-root__right-column',
+    '.right-column',
+  ];
+  const TWITCH_CHAT_LISTS = [
+    'div[data-test-selector="chat-scrollable-area__message-container"]',
+    'div[data-a-target="chat-scroller"]',
+    '.chat-scrollable-area__message-container',
+    '.chat-list--default',
+  ];
+  const KICK_CHAT_COLUMNS = [
+    '#chatroom',
+    '#channel-chatroom',
+    '[data-testid="chat-container"]',
+    'aside[class*="chatroom"]',
+    'div[class*="chatroom"]',
+  ];
+  const KICK_CHAT_LISTS = [
+    '#chatroom-messages',
+    '[data-testid="chat-message-list"]',
+    '[data-chat-entry]',
+    'div[class*="chat-message-list"]',
+  ];
 
   const twitch = {
     id: 'twitch',
@@ -395,21 +504,15 @@
      */
     watchNow() { return null; },
 
+    // Everything that could be the site's own chat, however it is laid out.
+    chatScope() {
+      return allMatching([...TWITCH_CHAT_COLUMNS, ...TWITCH_CHAT_LISTS]);
+    },
+
     chatContainer() {
       return resolveChatBox(
-        [
-          'div[data-a-target="right-column-chat-bar"]',
-          'section[data-test-selector="chat-room-component-layout"]',
-          'div[data-test-selector="chat-room-component-layout"]',
-          '.channel-root__right-column',
-          '.right-column',
-        ],
-        [
-          'div[data-test-selector="chat-scrollable-area__message-container"]',
-          'div[data-a-target="chat-scroller"]',
-          '.chat-scrollable-area__message-container',
-          '.chat-list--default',
-        ]
+        TWITCH_CHAT_COLUMNS,
+        TWITCH_CHAT_LISTS
       );
     },
 
@@ -515,6 +618,13 @@
         // is "whichever other button the summary has grown", which is fair to
         // offer someone and not fair to press on their behalf.
         claimNamed: !!named,
+        // Twitch's own chat identity button, which sits in the row around the
+        // message box. It opens Twitch's own dialog — the viewer's name colour
+        // and which of their badges show — and this only ever opens it.
+        chatIdentity: identityIn(bar || summary, [
+          'button[data-a-target="chat-badge-carousel"]',
+          'button[data-test-selector*="badge-carousel" i]',
+        ]),
       };
     },
 
@@ -612,21 +722,14 @@
       return kickWatchNowButton();
     },
 
+    chatScope() {
+      return allMatching([...KICK_CHAT_COLUMNS, ...KICK_CHAT_LISTS]);
+    },
+
     chatContainer() {
       return resolveChatBox(
-        [
-          '#chatroom',
-          '#channel-chatroom',
-          '[data-testid="chat-container"]',
-          'aside[class*="chatroom"]',
-          'div[class*="chatroom"]',
-        ],
-        [
-          '#chatroom-messages',
-          '[data-testid="chat-message-list"]',
-          '[data-chat-entry]',
-          'div[class*="chat-message-list"]',
-        ]
+        KICK_CHAT_COLUMNS,
+        KICK_CHAT_LISTS
       );
     },
 
@@ -771,6 +874,11 @@
           'button[title*="claim" i]',
         ])),
         claimNamed: true,
+        // The same control on Kick, in the same place: its own button in the
+        // footer around the message box. The icon is the last resort, the way
+        // it is for every other Kick control that carries no label — and
+        // byIcon already refuses the send button.
+        chatIdentity: identityIn(footer) || byIcon(/identity|persona|badge/i),
       };
     },
 

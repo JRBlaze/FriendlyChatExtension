@@ -105,6 +105,30 @@
     );
   };
 
+  /**
+   * The same, but saying whether anybody answered.
+   *
+   * `getJson` returns null for "there is nothing there" and for "the request
+   * never got through", and most callers are right not to care. The ones that
+   * write the answer down are not: remembering "this streamer has no channel on
+   * the other platform" because the network was out for five seconds keeps a
+   * merge that would have worked from being offered for the next six hours.
+   *
+   * A 404 is an answer; a refusal, a rate limit, a 5xx or a connection that
+   * never opened is not.
+   *
+   * @returns {Promise<{reachable: boolean, data: *}>}
+   */
+  FCM.getJsonResult = function (url, init) {
+    return fetch(url, init)
+      .then(async (r) => {
+        if (r.ok) return { reachable: true, data: await r.json().catch(() => null) };
+        if (r.status === 404 || r.status === 410) return { reachable: true, data: null };
+        return { reachable: false, data: null };
+      })
+      .catch(() => ({ reachable: false, data: null }));
+  };
+
   // Fetch JSON without letting a failing provider reject the caller.
   FCM.getJson = function (url, init) {
     return fetch(url, init)
