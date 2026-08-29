@@ -96,6 +96,31 @@
    * The send button is excluded by name on the way past. Nothing else in that
    * row is worth pressing by accident, and that one is.
    */
+  /**
+   * Kick's chat identity control.
+   *
+   * Kick labels nothing in this footer — no accessible name, no title, and
+   * generated class names — so this goes by the two things it does mark: the
+   * badge's own test id, and the icon inside it.
+   *
+   * Named exactly rather than loosely on purpose. Kick renders every badge in
+   * chat with a `identity-badge-*` test id, so a search for anything containing
+   * "identity" matches a subscriber or moderator badge just as happily, and an
+   * icon search for "badge" matches VerifiedBadge and ModeratorBadge. Only the
+   * chat identity one opens the identity panel.
+   */
+  function identityInFooter(footer, byIcon) {
+    if (!footer) return null;
+    const marked = firstIn(footer, [
+      '[data-testid="identity-badge-chat_identity"]',
+      '[data-testid*="chat_identity" i]',
+    ]);
+    const asButton = clickable(marked);
+    if (asButton) return asButton;
+    // The icon, exactly: not the /badge/ that also names Verified and Moderator.
+    return byIcon(/^IdentityBadge$/i) || identityIn(footer);
+  }
+
   function identityIn(scope, extraSelectors) {
     if (!scope) return null;
     const named = firstIn(scope, [
@@ -577,6 +602,10 @@
         '.community-points-summary',
       ]);
       const bar = this.nativeFooter();
+      // The whole composer row, which holds the badge carousel as well as the
+      // buttons container. Wider than `bar` deliberately, and only used for the
+      // identity lookup below, which asks for named controls.
+      const inputRow = firstReal(['.chat-input', '[class*="chat-input"]']);
       const scope = summary || bar;
       // "Whichever button is there" is only safe inside the points summary. The
       // wider buttons container also holds the emote picker and Send, and a
@@ -618,12 +647,26 @@
         // is "whichever other button the summary has grown", which is fair to
         // offer someone and not fair to press on their behalf.
         claimNamed: !!named,
-        // Twitch's own chat identity button, which sits in the row around the
-        // message box. It opens Twitch's own dialog — the viewer's name colour
-        // and which of their badges show — and this only ever opens it.
-        chatIdentity: identityIn(bar || summary, [
-          'button[data-a-target="chat-badge-carousel"]',
-          'button[data-test-selector*="badge-carousel" i]',
+        // Twitch calls this the badge carousel, and that is the only name it
+        // has: the button carries `chat-badge-carousel-badge-icon` and an
+        // accessible name of "ChatBadgeCarousel", and the word identity appears
+        // nowhere on it. Searching for the word found nothing, which is why the
+        // chip never appeared.
+        //
+        // It also sits in the chat input row rather than in the buttons
+        // container with Cheer, the emote picker, the balances, the settings
+        // gear and Send — which was the only place this looked. Both halves had
+        // to be wrong for it to work, and both were.
+        //
+        // Verified against a signed-in channel page: the wrapper is
+        // `div[data-a-target="chat-badge-carousel"]`, so the button is asked for
+        // by name first and reached through the wrapper second.
+        chatIdentity: identityIn(inputRow || bar || summary, [
+          'button[data-a-target="chat-badge-carousel-badge-icon"]',
+          'button[data-a-target*="badge-carousel" i]',
+          '[data-a-target="chat-badge-carousel"] button',
+          '.chat-input__badge-carousel button',
+          'button[aria-label*="badgecarousel" i]',
         ]),
       };
     },
@@ -878,7 +921,7 @@
         // footer around the message box. The icon is the last resort, the way
         // it is for every other Kick control that carries no label — and
         // byIcon already refuses the send button.
-        chatIdentity: identityIn(footer) || byIcon(/identity|persona|badge/i),
+        chatIdentity: identityInFooter(footer, byIcon),
       };
     },
 
