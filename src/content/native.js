@@ -424,7 +424,10 @@
       stats() {
         const c = controls();
         if (!c) {
-          return { points: '', bits: '', hasPoints: false, hasBits: false, canClaim: false, hasMenu: false };
+          return {
+            points: '', bits: '', hasPoints: false, hasBits: false,
+            canClaim: false, claimNamed: false, hasMenu: false,
+          };
         }
         const hasPoints = onScreen(c.pointsValue) || onScreen(c.openBalances);
         const hasBits = onScreen(c.bitsValue) || onScreen(c.cheer);
@@ -434,6 +437,9 @@
           hasPoints,
           hasBits,
           canClaim: onScreen(c.claim),
+          // Whether the site named that control or the adapter guessed at it.
+          // Only a named one is pressed without being asked.
+          claimNamed: onScreen(c.claim) && c.claimNamed !== false,
           hasMenu: hasPoints || hasBits,
         };
       },

@@ -511,6 +511,10 @@
           'button[aria-label="Cheer"]',
         ]),
         claim: named || spare || null,
+        // Whether that came from Twitch's own words or from a guess. The guess
+        // is "whichever other button the summary has grown", which is fair to
+        // offer someone and not fair to press on their behalf.
+        claimNamed: !!named,
       };
     },
 
@@ -758,10 +762,15 @@
         bitsValue: kicksValue || kicksButton,
         openBalances: clickable(points) || kicksButton,
         cheer: kicksButton,
+        // Named only, deliberately: there is no "whichever button is spare"
+        // fallback here the way there is on Twitch, because Kick's footer holds
+        // the emote picker and Send and a wrong guess would press one of those.
+        // So a claim control either says what it is or is not offered.
         claim: clickable(firstIn(footer, [
           'button[aria-label*="claim" i]',
           'button[title*="claim" i]',
         ])),
+        claimNamed: true,
       };
     },
 

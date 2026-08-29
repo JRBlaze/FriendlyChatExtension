@@ -2552,7 +2552,8 @@ suites.native = function () {
 
   const withClaim = controlPage();
   const cb = bridgeFor(page(content), withClaim.site).bridge;
-  eq(cb.stats(), { points: '4,201', bits: '350', hasPoints: true, hasBits: true, canClaim: true, hasMenu: true },
+  eq(cb.stats(), { points: '4,201', bits: '350', hasPoints: true, hasBits: true,
+    canClaim: true, claimNamed: true, hasMenu: true },
     'native: both balances and a waiting bonus are reported');
 
   ok(cb.activate('points'), 'native: the rewards control is there to click');
@@ -2573,7 +2574,8 @@ suites.native = function () {
   eq(noClaim.chest.clicks, 0, 'native: a control that is not on screen is never clicked');
 
   const bare = bridgeFor(page(content), { messageList: () => container }).bridge;
-  eq(bare.stats(), { points: '', bits: '', hasPoints: false, hasBits: false, canClaim: false, hasMenu: false },
+  eq(bare.stats(), { points: '', bits: '', hasPoints: false, hasBits: false,
+    canClaim: false, claimNamed: false, hasMenu: false },
     'native: a site with no controls of its own reports nothing');
   ok(!bare.activate('points'), 'native: and offers nothing to click');
 
@@ -2582,7 +2584,8 @@ suites.native = function () {
     messageList: () => container,
     nativeControls: () => { throw new Error('selectors moved'); },
   }).bridge;
-  eq(angry.stats(), { points: '', bits: '', hasPoints: false, hasBits: false, canClaim: false, hasMenu: false },
+  eq(angry.stats(), { points: '', bits: '', hasPoints: false, hasBits: false,
+    canClaim: false, claimNamed: false, hasMenu: false },
     'native: a throwing adapter reads as no controls');
 
   // Kick's Kicks button is labelled "Get KICKs" and shows no balance. A control
@@ -6414,6 +6417,181 @@ suites.twitchmenus = function () {
     eq(bridge.dialogOver(CHAT_BOX), null,
       'twitchmenus: a panel already on screen when the overlay mounted is furniture, not a menu');
   }
+};
+
+suites.claim = function () {
+  // The bonus chest is the one part of channel points that is lost purely by
+  // not being at the keyboard: it is on screen for a couple of minutes and then
+  // gone. The panel already knew about it and drew a button to be noticed;
+  // these cover pressing it instead, and the two things that must hold when
+  // something presses a control on someone's behalf — the right control, and
+  // once.
+
+  function el({ w = 40, h = 20, attrs = {} } = {}) {
+    const node = {
+      nodeType: 1,
+      isConnected: true,
+      tagName: 'BUTTON',
+      style: {},
+      children: [],
+      parentElement: null,
+      textContent: '',
+      clicks: 0,
+      getAttribute: (k) => (k in attrs ? attrs[k] : null),
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      contains: () => false,
+      getBoundingClientRect: () => ({ width: w, height: h, top: 0, left: 0, right: w, bottom: h }),
+      // Kept apart on purpose. A press is a pointer/mouse sequence *and* a
+      // click, because some controls listen for one and some for the other,
+      // and counting them together would hide a control being clicked twice.
+      click() { node.clicks++; },
+      dispatchEvent(e) { node.events.push(e && e.type); return true; },
+    };
+    node.events = [];
+    return node;
+  }
+
+  // A bridge over an adapter that reports whatever the test hands it.
+  function bridgeFor(controls) {
+    const sandbox = makeSandbox({
+      document: {
+        body: el({ w: 1440, h: 900 }),
+        documentElement: el({ w: 1440, h: 900 }),
+        querySelectorAll: () => [],
+        querySelector: () => null,
+        elementFromPoint: () => null,
+      },
+      // Real enough to carry a type, which is the only part of the event the
+      // control being pressed would look at.
+      window: {
+        MouseEvent: function (type) { this.type = type; },
+        PointerEvent: function (type) { this.type = type; },
+      },
+      getComputedStyle: () => ({ position: 'static', display: 'block', visibility: 'visible' }),
+    });
+    const FCM = load(sandbox, ...SHARED, 'src/content/native.js');
+    return FCM.createNativeBridge({
+      id: 'twitch',
+      messageList: () => null,
+      nativeControls: () => controls,
+    });
+  }
+
+  // ── A named control is reported as one ──
+  {
+    const claim = el({ w: 90, h: 26, attrs: { 'aria-label': 'Claim Bonus' } });
+    const bridge = bridgeFor({ claim, claimNamed: true });
+    const stats = bridge.stats();
+    ok(stats.canClaim, 'claim: a bonus on screen is reported');
+    ok(stats.claimNamed, 'claim: and reported as one the site named');
+  }
+
+  // ── A guessed control is reported, but marked as a guess ──
+  //
+  // Twitch's adapter falls back to "whichever other button the points summary
+  // has grown". That is a fair thing to offer somebody and not a fair thing to
+  // press for them, so the two cases have to be told apart.
+  {
+    const claim = el({ w: 90, h: 26 });
+    const bridge = bridgeFor({ claim, claimNamed: false });
+    const stats = bridge.stats();
+    ok(stats.canClaim, 'claim: a guessed control is still offered to a person');
+    eq(stats.claimNamed, false, 'claim: but is marked as a guess, not an identification');
+  }
+
+  // ── Nothing on screen is not a bonus ──
+  {
+    const bridge = bridgeFor({ claim: el({ w: 0, h: 0, attrs: { 'aria-label': 'Claim Bonus' } }), claimNamed: true });
+    eq(bridge.stats().canClaim, false, 'claim: a control with no box is not a waiting bonus');
+    eq(bridge.stats().claimNamed, false, 'claim: and is not something to press either');
+  }
+
+  // ── Pressing it presses the site's own button ──
+  //
+  // The overlay never grants points itself. It has nothing that could, and
+  // standing between somebody and their own balance is not a thing to get
+  // subtly wrong — so the whole action is a click on the site's own control.
+  {
+    const claim = el({ w: 90, h: 26, attrs: { 'aria-label': 'Claim Bonus' } });
+    const bridge = bridgeFor({ claim, claimNamed: true });
+    ok(bridge.activate('claim'), 'claim: pressing it reports that there was something to press');
+    eq(claim.clicks, 1, "claim: and the site's own button is clicked exactly once");
+    eq(claim.events, ['pointerdown', 'mousedown', 'pointerup', 'mouseup'],
+      'claim: with the pointer sequence a React control expects in front of it');
+  }
+
+  // ── A bonus that has gone is not pressed ──
+  {
+    const claim = el({ w: 0, h: 0, attrs: { 'aria-label': 'Claim Bonus' } });
+    const bridge = bridgeFor({ claim, claimNamed: true });
+    eq(bridge.activate('claim'), false, 'claim: a bonus that has gone reports nothing to press');
+    eq(claim.clicks, 0, 'claim: and nothing is clicked');
+  }
+
+  // ── An adapter with no claim control at all ──
+  {
+    const bridge = bridgeFor({ claim: null, claimNamed: false });
+    eq(bridge.stats().canClaim, false, 'claim: a site with no bonus control offers nothing');
+    eq(bridge.activate('claim'), false, 'claim: and pressing it does nothing');
+  }
+};
+
+suites.defaults = function () {
+  // The settings a fresh install starts on. These are the answers given on
+  // somebody's behalf before they have said anything, which is exactly why they
+  // are worth pinning down rather than leaving to whoever edits the list next.
+  const FCM = load(makeSandbox(), ...SHARED);
+
+  eq(FCM.DEFAULT_SETTINGS.crossPromptMode, 'ask',
+    'defaults: a new install ASKS before connecting the other platform');
+
+  // Asking is only meaningful if it is also offered. 'never' would hide the
+  // prompt outright and 'always' would connect without being asked, and both
+  // are decisions belonging to the person, not to the default.
+  ok(['ask', 'always', 'never'].includes(FCM.DEFAULT_SETTINGS.crossPromptMode),
+    'defaults: and the mode is one the prompt actually understands');
+
+  eq(FCM.DEFAULT_SETTINGS.autoClaimBonus, true,
+    'defaults: channel point bonuses are claimed unless turned off');
+  eq(FCM.DEFAULT_SETTINGS.watchWhenLive, true,
+    "defaults: Kick's profile is swapped for the stream unless turned off");
+
+  // Loading with nothing stored has to give the same answers. The defaults are
+  // merged under whatever was saved, so a key missing from storage — which is
+  // every key, on a first run — has to fall through to the value above.
+  return (async () => {
+    const empty = makeSandbox({
+      chrome: {
+        storage: {
+          sync: { get: async () => ({}), set: async () => {} },
+          local: { get: async () => ({}), set: async () => {} },
+        },
+      },
+    });
+    const F = load(empty, ...SHARED);
+    const settings = await F.loadSettings();
+    eq(settings.crossPromptMode, 'ask',
+      'defaults: and a first run with nothing stored still asks');
+    eq(settings.autoClaimBonus, true, 'defaults: and still claims bonuses');
+
+    // A stored blob written by an older version knows nothing about the newer
+    // keys, and must not end up with them undefined.
+    const older = makeSandbox({
+      chrome: {
+        storage: {
+          sync: { get: async (k) => ({ [k]: { savedAt: 1, fontSize: 15 } }), set: async () => {} },
+          local: { get: async () => ({}), set: async () => {} },
+        },
+      },
+    });
+    const G = load(older, ...SHARED);
+    const upgraded = await G.loadSettings();
+    eq(upgraded.fontSize, 15, 'defaults: an older stored setting is kept');
+    eq(upgraded.crossPromptMode, 'ask',
+      'defaults: and a key it never had still arrives at the default');
+    eq(upgraded.autoClaimBonus, true, 'defaults: for every new key, not just the first');
+  })();
 };
 
 // ── Runner ────────────────────────────────────────────────────────────────────

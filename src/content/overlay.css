@@ -202,54 +202,72 @@
   background: linear-gradient(135deg, var(--twitch) 0%, var(--kick) 100%);
 }
 
-/* The chips take the space the title bar has left over and no more.
-   A channel name can be thirty characters, and the chip carrying it used to
-   set its own width from its text and paint straight over the buttons on the
-   right — nowrap content in a flex item that had nothing telling it to give
-   way. Three things stop that: the row never wraps to a second line, it clips
-   anything that still will not fit, and the chips themselves may shrink. */
+/* The chips get a row of their own, under the title bar.
+
+   They used to sit in the title bar between the MERGED mark and the buttons,
+   which is a strip about 130px wide once those two have taken their share —
+   and two chips carrying "Twitch · someone" and "Kick · someone-else" need
+   rather more than 130px. Squeezing them in there meant a choice between
+   painting over the buttons and truncating the names, and both of those are
+   worse than the row being one line taller.
+
+   So the constraint is removed rather than managed. Across the full width of
+   the panel two ordinary names fit side by side; two long ones wrap onto a
+   second line. Nothing is clipped and nothing is ellipsised at any width,
+   which is the point — a channel name that has been cut off is not a channel
+   name, it is a guess. */
 .fcm-chips {
   display: flex;
   align-items: center;
-  gap: 5px;
-  flex: 1 1 auto;
-  min-width: 0;
-  flex-wrap: nowrap;
-  overflow: hidden;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 6px 9px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
 }
+/* Nothing to show yet — before the first status arrives — is not worth a
+   band of empty surface across the top of the panel. */
+.fcm-chips:empty { display: none; }
 
 .fcm-chip-btn {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  height: 21px;
-  padding: 0 8px;
+  gap: 6px;
+  min-height: 23px;
+  padding: 2px 9px;
   border-radius: 999px;
   border: 1px solid var(--border);
   background: var(--surface2);
   color: var(--text-muted);
   font-family: var(--fcm-mono);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.03em;
   cursor: pointer;
+  /* Never shrunk and never clipped: a chip is as wide as its name needs, and
+     if that will not sit beside the other one it goes on the next line. The
+     cap is the panel, for a panel dragged narrower than a single name. */
+  flex-shrink: 0;
+  max-width: 100%;
   white-space: nowrap;
-  /* A flex item will not shrink below its own content unless it is told it
-     may, which is what `min-width: 0` is doing here. */
-  min-width: 0;
-  flex-shrink: 1;
   transition: border-color .15s, background .15s, color .15s, opacity .15s;
 }
-/* The name is the part that gives way. The status dot and the disconnect
-   cross keep their size, so a squeezed chip still says what it is doing and
-   can still be clicked to leave. */
+/* Only the name may wrap, and only once the cap above has actually bitten.
+
+   `break-word` rather than `anywhere` is the whole of it. The two break text
+   identically; they differ in what they say the element's *smallest possible*
+   width is, and `anywhere` says one character — which let the chip collapse
+   to a narrow column and stack its name down the panel, 300px tall for a
+   name that fits on one line. `break-word` leaves the intrinsic width alone,
+   so the chip is still sized by its whole name and only breaks when there is
+   genuinely nowhere left to put it. */
 .fcm-chip-btn > span:not(.fcm-live-dot):not(.fcm-live-pip) {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
+  white-space: normal;
+  overflow-wrap: break-word;
+  text-align: left;
 }
-.fcm-chip-btn > [data-act="disconnect"] { flex-shrink: 0; overflow: visible; }
+.fcm-chip-btn > [data-act="disconnect"] { flex-shrink: 0; }
 .fcm-chip-btn:hover { border-color: var(--border2); }
 .fcm-chip-btn[data-on="false"] { color: var(--text-dim); background: var(--surface); }
 .fcm-chip-btn[data-platform="twitch"][data-on="true"] {
@@ -288,7 +306,10 @@
 
 @keyframes fcm-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
 
-.fcm-actions { display: flex; align-items: center; gap: 3px; flex-shrink: 0; }
+/* `margin-left: auto` rather than `space-between` on the header, because the
+   header now holds exactly two things and the buttons belong hard right
+   whether or not the brand beside them is showing. */
+.fcm-actions { display: flex; align-items: center; gap: 3px; flex-shrink: 0; margin-left: auto; }
 
 .fcm-icon-btn {
   width: 22px; height: 22px;

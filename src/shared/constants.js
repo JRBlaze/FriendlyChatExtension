@@ -143,6 +143,10 @@
                                 // pinned messages stay visible above the panel
     showNativeStats: true,      // read bits, Kicks and channel points off the
                                 // page, and open the site's own rewards menu
+    // Press the site's own "claim bonus" control as soon as it appears. The
+    // chest is only there for a couple of minutes and is the one part of
+    // channel points that is lost purely by not being at the keyboard.
+    autoClaimBonus: true,
     // Composer
     sendTargets: ['twitch', 'kick'],  // which platforms a typed message goes to
     // Credentials the OAuth flows use. Defaults are the desktop app's, and can
