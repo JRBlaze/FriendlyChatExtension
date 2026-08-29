@@ -141,6 +141,47 @@
     return null;
   }
 
+  // Kick's channel-profile tab strip — Home, About, Videos, Clips, Schedule.
+  // These ids are the one part of that page that is not generated Tailwind.
+  const KICK_PROFILE_TABS = [
+    '[data-testid="channel-home-tab"]',
+    '[data-testid="channel-about-tab"]',
+    '[data-testid="channel-videos-tab"]',
+    '[data-testid="channel-clips-tab"]',
+    '[data-testid="channel-schedule-tab"]',
+  ].join(',');
+
+  /**
+   * Kick's "Watch now" button: the way back to the stream from a channel's
+   * profile.
+   *
+   * Matched on the play icon rather than on the words, because `data-ds-icon`
+   * is the one name in Kick's markup that survives both a restyle and a
+   * translation. That alone is not enough — the video's own transport control
+   * carries the same icon, and pressing that would pause the stream the moment
+   * it started. What tells them apart is a label: the button in the card says
+   * what it does, and the one in the player is an icon and nothing else.
+   *
+   * Its own words are still preferred where they are there, so a page with two
+   * labelled play buttons on it picks the right one rather than the first.
+   */
+  function kickWatchNowButton() {
+    let labelled = null;
+    for (const icon of document.querySelectorAll('[data-ds-icon="Play"]')) {
+      const btn = icon.closest ? icon.closest('button') : null;
+      if (!btn) continue;
+      // The sizeless copy in Kick's streaming placeholder is not the one on
+      // screen, and pressing it does nothing at all.
+      const r = btn.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) continue;
+      const text = (btn.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!text) continue;
+      if (/^watch\b/i.test(text)) return btn;
+      if (!labelled) labelled = btn;
+    }
+    return labelled;
+  }
+
   /**
    * The block that holds a site's own chat, worked out from where its messages
    * are rather than from what it calls things.
@@ -345,6 +386,15 @@
       return /^[a-z0-9_]{2,30}$/.test(slug) ? slug : null;
     },
 
+    /**
+     * Nothing to press. Twitch has one channel page and it plays whatever is
+     * running, for the streamer as much as for anyone else, so there is no
+     * profile here to be stranded on. Answered rather than left off, so the
+     * caller can ask both sites the same question without knowing which it
+     * is on.
+     */
+    watchNow() { return null; },
+
     chatContainer() {
       return resolveChatBox(
         [
@@ -518,6 +568,44 @@
       if (slug === 'popout' && parts[1]) slug = parts[1].toLowerCase();
       if (FCM.KICK_RESERVED.has(slug)) return null;
       return /^[a-z0-9_-]{2,30}$/.test(slug) ? slug : null;
+    },
+
+    /**
+     * Kick's own "Watch now" button, when the page has opened a channel's
+     * profile over a stream that is running.
+     *
+     * Kick draws a channel two ways. A visitor arriving at a live one gets the
+     * player and the chat; the profile — Home, About, Videos, Clips, Schedule —
+     * is what an offline channel gets. The streamer is the exception: Kick
+     * hands them their own profile whether or not they are live, so the one
+     * person who cannot watch the stream by typing its address is the person
+     * sending it.
+     *
+     * Kick's own way across is a "Watch now" button, and pressing it swaps the
+     * profile for the player without touching the address. So there is nothing
+     * here to navigate and nothing to reload — this finds Kick's button, and
+     * the caller presses it.
+     *
+     * Null unless all three hold, because each is a reason not to press:
+     *
+     *   - **The address is the channel itself.** `/name/about`, `/name/videos`
+     *     and `/name/clips` are pages someone asked for by name, and taking
+     *     them to the player instead would be taking away what they chose.
+     *   - **The profile is what is on screen.** The button stays in the page
+     *     after the swap, sized and all, so it cannot report its own success.
+     *     The tabs going is what says it worked; without asking, this would
+     *     press it again on every look.
+     *   - **The button is there at all.** Kick only draws it while the channel
+     *     is live, which makes its presence the liveness test as well as the
+     *     control — nothing here has to ask an API whether to bother, and an
+     *     offline profile is left exactly as it is.
+     */
+    watchNow() {
+      // Sub-pages and `/popout/name` are somewhere someone meant to be.
+      const parts = location.pathname.split('/').filter(Boolean);
+      if (parts.length !== 1 || !this.channelFromUrl()) return null;
+      if (!firstReal([KICK_PROFILE_TABS])) return null;
+      return kickWatchNowButton();
     },
 
     chatContainer() {

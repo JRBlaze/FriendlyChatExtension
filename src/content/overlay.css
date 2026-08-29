@@ -122,6 +122,35 @@
      enforce their own minimums when the panel is moved by hand. */
 }
 
+/* Popped out into a window of its own.
+   The panel is no longer floating over a page, it *is* the page, so everything
+   that made it a floating panel comes off: the fixed box the placement code
+   was keeping it in, the rounded corners and shadow that separated it from
+   what was behind it, and the resize corner, which the window frame now does.
+   The inline left/top/width/height the placement code last wrote are still on
+   the element, which is why every one of them has to be overridden here. */
+.fcm-root[data-popped="true"] .fcm-panel {
+  position: static !important;
+  left: auto !important;
+  top: auto !important;
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none;
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  opacity: 1 !important;
+}
+.fcm-root[data-popped="true"] .fcm-resize { display: none; }
+/* Nothing of ours is over the page any more, so there is nothing to stand
+   aside from — and a peek left on would hide the whole window. */
+.fcm-root[data-popped="true"] .fcm-panel.fcm-peek {
+  opacity: 1 !important; visibility: visible; pointer-events: auto;
+}
+/* The window's own title bar drags it; the header is just a header again. */
+.fcm-root[data-popped="true"] .fcm-header { cursor: default; }
+
 .fcm-panel.fcm-collapsed { height: auto !important; min-height: 0; }
 .fcm-panel.fcm-collapsed .fcm-feed,
 .fcm-panel.fcm-collapsed .fcm-composer,
@@ -173,7 +202,21 @@
   background: linear-gradient(135deg, var(--twitch) 0%, var(--kick) 100%);
 }
 
-.fcm-chips { display: flex; align-items: center; gap: 5px; flex: 1; min-width: 0; flex-wrap: wrap; }
+/* The chips take the space the title bar has left over and no more.
+   A channel name can be thirty characters, and the chip carrying it used to
+   set its own width from its text and paint straight over the buttons on the
+   right — nowrap content in a flex item that had nothing telling it to give
+   way. Three things stop that: the row never wraps to a second line, it clips
+   anything that still will not fit, and the chips themselves may shrink. */
+.fcm-chips {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
 
 .fcm-chip-btn {
   display: inline-flex;
@@ -191,8 +234,22 @@
   letter-spacing: 0.04em;
   cursor: pointer;
   white-space: nowrap;
+  /* A flex item will not shrink below its own content unless it is told it
+     may, which is what `min-width: 0` is doing here. */
+  min-width: 0;
+  flex-shrink: 1;
   transition: border-color .15s, background .15s, color .15s, opacity .15s;
 }
+/* The name is the part that gives way. The status dot and the disconnect
+   cross keep their size, so a squeezed chip still says what it is doing and
+   can still be clicked to leave. */
+.fcm-chip-btn > span:not(.fcm-live-dot):not(.fcm-live-pip) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.fcm-chip-btn > [data-act="disconnect"] { flex-shrink: 0; overflow: visible; }
 .fcm-chip-btn:hover { border-color: var(--border2); }
 .fcm-chip-btn[data-on="false"] { color: var(--text-dim); background: var(--surface); }
 .fcm-chip-btn[data-platform="twitch"][data-on="true"] {
