@@ -1,0 +1,49 @@
+# The offline test suite, on every pull request and on main.
+#
+# The suite is the only thing standing between a change and a browser: there is
+# no build, no linter and no staging copy of Twitch to try things on. Running it
+# locally was working right up until somebody forgot, which is the same way the
+# README's version badge sat four releases out of date.
+#
+# Nothing here installs anything. tests/run.js needs fs, path and vm and no
+# more — every platform response it exercises is stubbed, so this never touches
+# the network and cannot go red because Twitch was slow.
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Read-only: this reports on the code, it does not change it.
+permissions:
+  contents: read
+
+concurrency:
+  # A second push to the same branch retires the run still going for the first.
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  suite:
+    runs-on: ubuntu-latest
+    strategy:
+      # One version failing tells you which, rather than stopping the others
+      # and leaving you to guess.
+      fail-fast: false
+      matrix:
+        # The two supported LTS lines and current. The extension itself only has
+        # to satisfy Chrome, but the suite is what people run by hand, and it
+        # should run on whatever Node they happen to have.
+        node: ['20', '22', '24']
+    name: node ${{ matrix.node }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      # Includes the repo suite, which fails if the manifest version, the
+      # README's download link and the version badge have drifted apart.
+      - run: node tests/run.js
