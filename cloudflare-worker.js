@@ -4,6 +4,13 @@
 // (omitting it answers 400, a wrong one answers 401), so the code exchange
 // cannot happen in the browser. This keeps the secret here.
 //
+// It also hands out the two client ids, so neither is written into the
+// extension. A client id is not a secret — it travels in every authorise URL
+// and on every API call, so anyone running the extension can read it off their
+// own network tab — but keeping it here means it lives in one place that can
+// be changed in a minute, instead of being published in the source and pinned
+// there until every install has taken an update.
+//
 // Based on the Friendly Chat desktop app's worker, with two changes:
 //
 //   1. Failures are reported properly. Kick answers a bad token request with
@@ -22,6 +29,7 @@
 //   wrangler login
 //   wrangler secret put KICK_CLIENT_ID
 //   wrangler secret put KICK_CLIENT_SECRET
+//   wrangler secret put TWITCH_CLIENT_ID
 //   wrangler deploy
 
 export default {
@@ -33,13 +41,30 @@ export default {
       return new Response(null, { status: 204, headers: cors(origin) });
     }
 
+    // Says which of the three values are set without ever echoing one back, so
+    // a deployment can be checked from a browser and a missing secret is a
+    // sentence rather than a sign-in that fails much later for no stated
+    // reason.
     if (url.pathname === '/health' && request.method === 'GET') {
-      return json({ ok: true, service: 'friendly-chat-kick-proxy' }, 200, origin);
+      return json({
+        ok: true,
+        service: 'friendly-chat-proxy',
+        kick_client_id: Boolean(env.KICK_CLIENT_ID),
+        kick_client_secret: Boolean(env.KICK_CLIENT_SECRET),
+        twitch_client_id: Boolean(env.TWITCH_CLIENT_ID),
+      }, 200, origin);
     }
 
     // The client id is public; the secret never leaves this worker.
     if (url.pathname === '/kick-config' && request.method === 'GET') {
       return json({ client_id: env.KICK_CLIENT_ID || '' }, 200, origin);
+    }
+
+    // Twitch needs no secret — the implicit grant is a public-client flow — so
+    // this is only about where the id lives. An empty answer is not an error
+    // here: the extension turns it into a sentence naming the secret to set.
+    if (url.pathname === '/twitch-config' && request.method === 'GET') {
+      return json({ client_id: env.TWITCH_CLIENT_ID || '' }, 200, origin);
     }
 
     // ── Redirect bridge ──────────────────────────────────────────────────────

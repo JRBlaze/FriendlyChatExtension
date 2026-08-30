@@ -575,6 +575,20 @@
 
 .fcm-emote { max-height: 26px; vertical-align: middle; margin: -2px 1px; }
 
+/* A Cheer: the Cheermote and the amount it was worth, drawn as the one thing
+   they are so a line break can never strand the number away from its picture.
+   The colour is the tier's own and arrives inline with the message, because it
+   is the message that says which tier this was; everything else is here. Sized
+   in em so a Cheer quoted in a reply, or replayed in a user's history, shrinks
+   with the emote beside it instead of towering over it.
+
+   The colour arrives as the same --author-dark/--author-light pair a username
+   carries, and is applied with those above: Twitch picks its tier colours for
+   a dark chat, and the 1-Bit grey is unreadable on this panel's light theme
+   until the same lightness correction is applied to it. */
+.fcm-cheer { white-space: nowrap; }
+.fcm-cheer-amount { font-weight: 700; font-size: 0.95em; margin-left: 2px; }
+
 /* What an emote looks like when you stop on it. Chat draws emotes small enough
    to read a line of text around, which answers "is there an emote here" and not
    "which one". Positioned by script against the panel, so only the look is
@@ -625,9 +639,11 @@
 .fcm-mention-twitch { color: var(--twitch-text); }
 .fcm-mention-kick { color: var(--kick-text); }
 .fcm-mention-user[style*="--author-dark"],
-.fcm-replyto-name[style*="--author-dark"] { color: var(--author-dark); }
+.fcm-replyto-name[style*="--author-dark"],
+.fcm-cheer-amount[style*="--author-dark"] { color: var(--author-dark); }
 .fcm-root[data-theme="light"] .fcm-mention-user[style*="--author-light"],
-.fcm-root[data-theme="light"] .fcm-replyto-name[style*="--author-light"] { color: var(--author-light); }
+.fcm-root[data-theme="light"] .fcm-replyto-name[style*="--author-light"],
+.fcm-root[data-theme="light"] .fcm-cheer-amount[style*="--author-light"] { color: var(--author-light); }
 
 /* `/me`. Both platforms drop the colon and paint the line in the sender's
    colour, which is the only thing left saying this is an action once the CTCP

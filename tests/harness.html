@@ -201,6 +201,7 @@
     <button data-act="burst">+ 40 burst</button>
     <button data-act="event">+ event</button>
     <button data-act="rows">+ action/reply/first</button>
+    <button data-act="cheers">+ cheers</button>
     <button data-act="sys">+ status</button>
     <button data-act="prompt">show live prompt</button>
     <button data-act="connect-kick">connect kick</button>
@@ -522,6 +523,17 @@ function loadSources(bust) {
     },
   });
 
+  // The Cheermotes the worker fetches on join. A Cheer arrives as the plain
+  // word the viewer typed, so without these the feed can only show it as one.
+  const CHEER_CDN = 'https://d3aqoihi2n8ty8.cloudfront.net/actions/cheer/dark/animated';
+  overlay.setCheermotes(FCM.GLOBAL_CHEERMOTES, [
+    { prefix: 'Cheer', minBits: 1,     color: '#979797', url: `${CHEER_CDN}/1/2.gif` },
+    { prefix: 'Cheer', minBits: 100,   color: '#9c3ee8', url: `${CHEER_CDN}/100/2.gif` },
+    { prefix: 'Cheer', minBits: 1000,  color: '#1db2a5', url: `${CHEER_CDN}/1000/2.gif` },
+    { prefix: 'Cheer', minBits: 5000,  color: '#0099fe', url: `${CHEER_CDN}/5000/2.gif` },
+    { prefix: 'Cheer', minBits: 10000, color: '#f43021', url: `${CHEER_CDN}/10000/2.gif` },
+  ]);
+
   overlay.setStatus('twitch', 'connected', 'examplestreamer');
 
   const TWITCH_LINES = [
@@ -532,6 +544,9 @@ function loadSources(bust) {
     ['ExampleStreamer', 'thanks for the raid everyone', { badgesRaw: 'broadcaster/1', badgeClass: 'mod', color: '#FF4500' }],
     // Split so the literal does not close this script tag.
     ['EscapeTest', '<scr' + 'ipt>alert(1)</scr' + 'ipt> & "quotes" render as text', { color: '#B8860B' }],
+    // A Cheer. The Bits count is what makes the word a picture: the same line
+    // without it renders as the text it is, which is what Twitch does too.
+    ['BitsGiver', 'that clutch deserved this Cheer1000', { color: '#FFAA00', bits: 1000 }],
   ];
   const KICK_LINES = [
     ['kickviewer',   'first time here, this is sick [emote:37226:emojiKEK]', { badgesRaw: [{ type: 'subscriber' }], badgeClass: 'sub' }],
@@ -588,6 +603,27 @@ function loadSources(bust) {
       });
       overlay.event('twitch', 'Fan resubscribed (24 months).', { body: 'thanks for the year!' });
       overlay.event('twitch', 'JRBlaze redeemed Feed your hedgehog (50 points).');
+    },
+    // Every tier at once, plus the two lines that must *not* draw one: a word
+    // that merely ends in digits, and the shape of a Cheer with nothing spent.
+    cheers: () => {
+      const at = Date.now();
+      [1, 100, 1000, 5000, 10000].forEach((bits, i) => overlay.chat({
+        platform: 'twitch', author: 'BitsGiver', text: `Cheer${bits} enjoy`,
+        bits, color: '#FFAA00', messageId: `c${i}-${at}`, timestamp: at,
+      }));
+      overlay.chat({
+        platform: 'twitch', author: 'BigDonor', text: 'Cheer100 and Cheer5000 in one message',
+        bits: 5100, color: '#FF4500', messageId: `c6-${at}`, timestamp: at,
+      });
+      overlay.chat({
+        platform: 'twitch', author: 'NoBits', text: 'Cheer100 is what I would send if I had any',
+        color: '#8A2BE2', messageId: `c7-${at}`, timestamp: at,
+      });
+      overlay.chat({
+        platform: 'twitch', author: 'Counter', text: 'that was hello123 not a Cheer',
+        bits: 100, color: '#5CD65C', messageId: `c8-${at}`, timestamp: at,
+      });
     },
     sys:    () => overlay.sys('Kick: disconnected'),
     prompt: () => overlay.setCounterpart({

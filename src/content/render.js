@@ -7,6 +7,7 @@
 //
 // Token kinds: {type:'text',text} | {type:'emote',url,name,cls,source}
 //              {type:'link',url,text} | {type:'mention',text}
+//              {type:'cheer',url,name,amount,color}
 (function (FCM) {
   'use strict';
 
@@ -106,6 +107,10 @@
       kick: { native: {}, thirdparty: {} },
     },
     badges: { twitch: { global: {}, channel: {} } },
+    // Lowercased Cheermote prefix -> its tiers, largest first. Empty until the
+    // worker has asked Twitch what this channel accepts, which is why a Cheer
+    // is only ever drawn from what arrived rather than guessed at.
+    cheermotes: new Map(),
     settings: { ...FCM.DEFAULT_SETTINGS },
     selfNames: [],
   };
@@ -153,6 +158,33 @@
       }
     });
     if (changed) view.emoteVersion++;
+  };
+
+  /**
+   * The Cheermote tiers this channel accepts, as the worker read them off
+   * Twitch on join.
+   *
+   * Replaced rather than merged, unlike the emote stores: this is the whole
+   * answer for one channel and it arrives in one piece, and the broadcaster's
+   * own Cheermotes in it are theirs alone — the next channel's Cheer of the
+   * same name is a different picture.
+   */
+  FCM.setCheermotes = function (tiers) {
+    if (!Array.isArray(tiers) || !tiers.length) return;
+    const next = new Map();
+    tiers.forEach((tier) => {
+      if (!tier || !tier.prefix || !tier.url) return;
+      const minBits = Number(tier.minBits);
+      if (!Number.isFinite(minBits) || minBits < 1) return;
+      const key = String(tier.prefix).toLowerCase();
+      const list = next.get(key) || [];
+      list.push({ minBits, url: String(tier.url), color: String(tier.color || '') });
+      next.set(key, list);
+    });
+    // Largest first, so the tier a Cheer lands in is simply the first one its
+    // amount reaches.
+    next.forEach((list) => list.sort((a, b) => b.minBits - a.minBits));
+    view.cheermotes = next;
   };
 
   FCM.setBadges = function (platform, badges) {
@@ -238,7 +270,13 @@
     view.emotes[platform] = { native: {}, thirdparty: {} };
     // Global badges are the same everywhere and are re-sent on join regardless;
     // the channel's own are the ones that would be wrong here.
-    if (platform === 'twitch') view.badges.twitch.channel = {};
+    if (platform === 'twitch') {
+      view.badges.twitch.channel = {};
+      // Cheermotes go the same way, and for a sharper reason than badges: a
+      // custom one belongs to the channel that sells it, so keeping the list
+      // would draw the last streamer's Cheermote over this streamer's Cheer.
+      view.cheermotes = new Map();
+    }
     // Anything cached against this — the picker list, the autocomplete index —
     // has to rebuild rather than keep offering what is no longer loaded.
     view.emoteVersion++;
@@ -292,6 +330,12 @@
     // FFZ: .../<id>/2, sometimes with an extension
     if (value.includes('frankerfacez.com') || value.includes('cdn.ffz')) {
       return value.replace(/\/[124](\.[a-z0-9]+)?$/i, '/4$1');
+    }
+    // Cheermotes: .../actions/<prefix>/<theme>/<animated|static>/<tier>/<size>.
+    // Matched on the shape of the path rather than the host, which Twitch has
+    // moved before and would move again.
+    if (/\/actions\/[^/]+\/(?:dark|light)\/(?:animated|static)\/\d+\/[0-9.]+\.[a-z0-9]+$/i.test(value)) {
+      return value.replace(/\/[0-9.]+(\.[a-z0-9]+)$/i, '/4$1');
     }
     // Kick already serves one size, and it is the big one.
     return value;
@@ -474,7 +518,37 @@
     };
   }
 
-  function expandTextRun(text, platform) {
+  /**
+   * The Cheermote a word spells out, or null when it spells nothing.
+   *
+   * Only ever asked of a message that actually spent Bits. Twitch leaves
+   * Cheermotes out of the emotes tag — a Cheer arrives as the plain word the
+   * viewer typed — so the alternative to reading it back out of the text is
+   * the feed showing "Cheer100" where every other chat shows the animation.
+   */
+  function cheerTokenFor(word) {
+    const m = FCM.CHEER_TOKEN.exec(word);
+    if (!m) return null;
+    // Nothing is guessed: a prefix with no tiers loaded is left as text, which
+    // is what the whole message did before this channel's list arrived.
+    const tiers = view.cheermotes.get(m[1].toLowerCase());
+    if (!tiers || !tiers.length) return null;
+    const amount = Number(m[2]);
+    if (!Number.isSafeInteger(amount) || amount < 1) return null;
+    // Sorted largest first, so the first tier the amount reaches is its own.
+    // Below the smallest is still a Cheer — Twitch's ladder starts at 1, but a
+    // channel whose list starts higher should not lose the picture over it.
+    const tier = tiers.find((t) => amount >= t.minBits) || tiers[tiers.length - 1];
+    return {
+      type: 'cheer',
+      url: tier.url,
+      name: word,
+      amount: String(amount),
+      color: tier.color,
+    };
+  }
+
+  function expandTextRun(text, platform, cheers) {
     const out = [];
     if (!text) return out;
     let buffer = '';
@@ -484,6 +558,16 @@
     String(text).split(/(\s+)/).forEach((word) => {
       if (!word) return;
       if (/^\s+$/.test(word)) { buffer += word; return; }
+
+      // Before the emote lookup, because Twitch has already decided: the
+      // message carried Bits, so this word is what they were spent on, even
+      // where somebody's emote set happens to hold the same name.
+      const cheer = cheers ? cheerTokenFor(word) : null;
+      if (cheer) {
+        flush();
+        out.push(cheer);
+        return;
+      }
 
       const emote = lookupEmote(platform, word);
       if (emote) {
@@ -641,6 +725,24 @@
         return `<img class="fcm-emote ${token.cls}" src="${FCM.escapeHtml(token.url)}"`
           + ` alt="${FCM.escapeHtml(token.name)}" loading="lazy">`;
       }
+      if (token.type === 'cheer') {
+        // Drawn the way every Twitch chat draws one: the Cheermote with what
+        // it cost written beside it, in the colour of the tier it reached.
+        // The colour is the point — it is what makes a 10000 Bit Cheer read as
+        // bigger than a 100 without anybody counting digits.
+        //
+        // Through the same per-theme pair a username gets, because Twitch's
+        // ladder is chosen for a dark chat and this panel has a light theme:
+        // the 1-Bit grey measures 2.8:1 on it, well under the 4.5 everything
+        // else here is held to. Only the lightness moves, so the tier is still
+        // recognisably its own colour, and the pair means a panel switched to
+        // light stays readable without redrawing rows already on screen.
+        const style = FCM.authorColorStyle(token.color);
+        return '<span class="fcm-cheer">'
+          + `<img class="fcm-emote twitch-emote fcm-cheer-emote" src="${FCM.escapeHtml(token.url)}"`
+          + ` alt="${FCM.escapeHtml(token.name)}" loading="lazy">`
+          + `<span class="fcm-cheer-amount"${style}>${FCM.escapeHtml(token.amount)}</span></span>`;
+      }
       if (token.type === 'link') {
         return `<a href="${FCM.escapeHtml(token.url)}" target="_blank" rel="noopener noreferrer"`
           + ` class="fcm-link">${FCM.escapeHtml(token.text)}</a>`;
@@ -678,9 +780,15 @@
     else if (platform === 'kick') tokens = tokenizeKick(text, opts.emotes);
     else tokens = [{ type: 'text', text }];
 
+    // A Cheer is only a Cheer because the message paid for it. Somebody typing
+    // "Cheer100" with no Bits behind it spends nothing and Twitch draws it as
+    // the words they are — so the Bits count is what unlocks the picture here,
+    // rather than the text looking right.
+    const cheers = platform === 'twitch' && Number(opts.bits) > 0;
+
     const expanded = [];
     tokens.forEach((token) => {
-      if (token.type === 'text') expanded.push(...expandTextRun(token.text, platform));
+      if (token.type === 'text') expanded.push(...expandTextRun(token.text, platform, cheers));
       else expanded.push(token);
     });
 

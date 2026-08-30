@@ -296,13 +296,17 @@ async function sendCachedEmotes(session, platform, generation) {
 }
 
 /**
- * The Cheermote prefixes this channel accepts, so a Cheer can be told apart
- * from an ordinary word ending in digits before the message is sent.
+ * The Cheermotes this channel accepts: the prefixes, so a Cheer can be told
+ * apart from an ordinary word ending in digits before the message is sent, and
+ * the tiers under each one, so a Cheer that arrives is drawn as the animation
+ * it is rather than left in the feed as the text somebody typed.
  *
  * Worth asking the channel rather than assuming the global set, because a
  * broadcaster's own Cheermotes are exactly the ones a regular of that channel
- * types. A failure here is not worth reporting: the overlay falls back to the
- * global list, which covers everything except those custom prefixes.
+ * types — and they are the ones with no picture anywhere else. A failure here
+ * is not worth reporting: the overlay falls back to the global prefix list,
+ * which still routes a Cheer correctly, and a Cheer with no tier known simply
+ * stays as text, which is what it did before.
  */
 async function loadCheermotes(session, platform, generation) {
   const conn = session.conns[platform];
@@ -323,6 +327,7 @@ async function loadCheermotes(session, platform, generation) {
     ? data.data.map((entry) => entry && entry.prefix).filter(Boolean)
     : [];
   if (!prefixes.length) return;
+  const tiers = FCM.parseCheermoteTiers(data);
   // Merged with the global list rather than replacing it: the API answers for
   // this channel, and a viewer who types a global Cheermote it omitted should
   // still have it recognised.
@@ -330,7 +335,7 @@ async function loadCheermotes(session, platform, generation) {
   // A custom prefix belongs to the channel that accepts it; the next channel
   // would recognise a word as a Cheer that it will not take.
   if (!sink.current()) return;
-  send(session, { type: 'cheermotes', platform, prefixes: merged });
+  send(session, { type: 'cheermotes', platform, prefixes: merged, tiers });
 }
 
 /**
@@ -376,9 +381,11 @@ async function loadTwitchEmotesNow(session, platform, generation, sink) {
   const settings = await FCM.loadSettings();
   if (!sink.current()) return;
   const record = await FCM.auth.get('twitch');
-  const clientId = (record && record.clientId)
-    || settings.twitchClientId
-    || FCM.DEFAULT_TWITCH_CLIENT_ID;
+  // Whatever this account signed in with, which is stored alongside the token.
+  // Nothing is fetched to fill a gap here: every Helix call below needs that
+  // token as well as the id, so a viewer with no account has nothing to ask
+  // with and asking the proxy would buy an empty answer either way.
+  const clientId = (record && record.clientId) || settings.twitchClientId || '';
 
   const store = await FCM.emoteLoader.twitchNative({
     clientId,

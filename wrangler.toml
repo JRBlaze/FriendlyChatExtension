@@ -1,6 +1,6 @@
 name               = "friendly-chat-kick-proxy"
 main               = "cloudflare-worker.js"
-compatibility_date = "2024-09-23"
+compatibility_date = "2026-05-01"
 workers_dev        = true
 
 # Deploying from this folder replaces the worker already running at
@@ -9,9 +9,30 @@ workers_dev        = true
 # reconfiguring.
 #
 # Secrets live outside the code and survive a redeploy. They only need setting
-# if they have never been set, or if the Kick application changes:
+# if they have never been set, or if the application behind one changes:
 #   wrangler secret put KICK_CLIENT_ID
 #   wrangler secret put KICK_CLIENT_SECRET
+#   wrangler secret put TWITCH_CLIENT_ID
+#
+# TWITCH_CLIENT_ID is the Twitch application's client id. It is not a secret in
+# the cryptographic sense — it travels in every authorise URL — but holding it
+# here keeps it out of the published source and lets it be changed without
+# shipping an extension update. The extension asks for it at sign-in.
 #
 # Then:
 #   wrangler deploy
+
+# Settings that were only ever set in the dashboard. They are written down here
+# because wrangler treats a config file as the whole truth: anything this file
+# does not mention is deployed as its default, so a plain `wrangler deploy` was
+# about to turn the Workers logs off and preview URLs on, neither of which
+# anybody asked for. Note that preview_urls is not workers_dev above — it
+# governs the per-version preview addresses, not the one the extension calls.
+preview_urls = false
+
+[observability]
+enabled = true
+
+[observability.logs]
+enabled = true
+invocation_logs = true

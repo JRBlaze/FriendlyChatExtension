@@ -5,6 +5,10 @@
 # manifest.json carries only the public half, which is what pins the ID.
 *.pem
 
+# Wrangler's local cache. It records which Cloudflare account this machine is
+# logged in to, which is a fact about the machine and not about the worker.
+.wrangler/
+
 node_modules/
 dist/
 *.zip

@@ -62,6 +62,51 @@
     return store;
   };
 
+  /**
+   * Twitch's Cheermote payload, flattened to the little a drawn Cheer needs.
+   *
+   * A Cheermote is a prefix with tiers under it — 1, 100, 1000, 5000, 10000 —
+   * and the tier a Cheer lands in is the largest one its amount reaches. Each
+   * tier ships four sizes, in light and dark, animated and static, which is
+   * hundreds of urls for something the feed draws one of. Only that one is
+   * kept, and animated is preferred because the animation is the whole point
+   * of a Cheermote: the static picture is what a Cheer looked like before.
+   *
+   * Dark, to match the Twitch emotes in the same row — those are requested
+   * from the emote CDN's dark set for the same reason.
+   *
+   * @param {object} data the Helix bits/cheermotes response
+   * @returns {Array<{prefix: string, minBits: number, color: string, url: string}>}
+   */
+  FCM.parseCheermoteTiers = function (data) {
+    const entries = Array.isArray(data?.data) ? data.data : [];
+    const tiers = [];
+    entries.forEach((entry) => {
+      const prefix = entry?.prefix;
+      if (!prefix || !Array.isArray(entry.tiers)) return;
+      entry.tiers.forEach((tier) => {
+        const minBits = Number(tier?.min_bits);
+        if (!Number.isFinite(minBits) || minBits < 1) return;
+        const images = tier?.images?.dark || tier?.images?.light;
+        const sizes = images?.animated || images?.static;
+        const url = sizes?.['2'] || sizes?.['1.5'] || sizes?.['1'];
+        if (!url) return;
+        tiers.push({
+          prefix: String(prefix),
+          minBits,
+          // The colour the amount is written in — Twitch's own ladder from
+          // grey through purple to red, which is how a big Cheer reads as big
+          // at a glance. Left empty when it is missing or not a plain hex
+          // colour; the renderer falls back rather than trusting it into a
+          // style attribute.
+          color: /^#[0-9a-f]{3,8}$/i.test(String(tier?.color || '')) ? String(tier.color) : '',
+          url: String(url),
+        });
+      });
+    });
+    return tiers;
+  };
+
   FCM.sevenTvUrl = function (emote) {
     const host = emote?.data?.host?.url || emote?.host?.url;
     if (!host) return null;
