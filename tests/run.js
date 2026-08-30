@@ -1237,7 +1237,26 @@ suites.settings = function () {
       eq(areas.local[KEY].favouriteEmotes.length, 4,
         'settings: the local copy is what kept it');
 
+      // Both areas stamped the same millisecond, holding different things. The
+      // stamp is only a millisecond and both areas are written from one save,
+      // so a tie means either the same write reached both — in which case
+      // either answers — or one of them refused. The one that refuses is sync.
+      //
+      // Written straight into the areas rather than saved, so the tie is the
+      // test rather than something the clock has to be fast enough to produce:
+      // this failed on CI and passed on every developer machine, which is the
+      // worst way for a real bug to present itself.
+      areas.sync[KEY] = { favouriteEmotes: ['StaleFromSync'], savedAt: 5000 };
+      areas.local[KEY] = { favouriteEmotes: ['FreshFromLocal'], savedAt: 5000 };
+      eq((await F.loadSettings()).favouriteEmotes, ['FreshFromLocal'],
+        'settings: an equal stamp is answered by local, which is the copy that never refuses');
+
       // And the newer copy is the one that wins on load.
+      areas.sync[KEY] = { favouriteEmotes: ['Newer'], savedAt: 9000 };
+      areas.local[KEY] = { favouriteEmotes: ['Older'], savedAt: 5000 };
+      eq((await F.loadSettings()).favouriteEmotes, ['Newer'],
+        'settings: but a genuinely newer sync copy still wins, or another browser could never change anything');
+
       syncRefuses = false;
       await F.saveSettings({ favouriteEmotes: ['OnlyThis'] });
       eq((await F.loadSettings()).favouriteEmotes, ['OnlyThis'],
