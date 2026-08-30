@@ -206,6 +206,197 @@
     return savingChain;
   };
 
+  // ── Backup ──────────────────────────────────────────────────────────────────
+  //
+  // Everything worth keeping, in one file that can be put somewhere safe.
+  //
+  // Chrome deletes an extension's storage when the extension is removed, and
+  // "remove it, load it again" is a perfectly ordinary way to update one loaded
+  // unpacked — so the favourites, the channel pairings and every setting can go
+  // without anything having gone wrong. storage.sync brings them back only for
+  // somebody signed into Chrome with sync switched on, which is not everybody
+  // and is not something this extension can arrange. A file does not depend on
+  // any of that.
+  //
+  // Deliberately not in it:
+  //   auth        account tokens. They are per-device credentials, which is why
+  //               they live in local and never in sync, and a settings file
+  //               that anybody might mail themselves is not where one belongs.
+  //               Importing therefore never signs anyone in.
+  //   emoteCache  the largest thing stored and the one thing that rebuilds
+  //               itself on the next visit anyway.
+  //   update      describes this installation rather than this person.
+  FCM.BACKUP_FORMAT = 'friendly-chat-extension-backup';
+  FCM.BACKUP_VERSION = 1;
+  // The storage keys a backup carries, by their name in STORAGE_KEYS.
+  FCM.BACKUP_STORES = ['settings', 'links', 'geometry', 'sendTargets'];
+
+  const plainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+
+  // "twitch:somechannel". Anything else was not written by this extension.
+  function channelKeyed(store, valueOk) {
+    if (!plainObject(store)) return null;
+    const out = {};
+    Object.keys(store).forEach((key) => {
+      const at = String(key).indexOf(':');
+      if (at < 1 || key.length <= at + 1) return;
+      if (!FCM.PLATFORMS.includes(key.slice(0, at))) return;
+      const value = store[key];
+      if (!valueOk(value)) return;
+      out[key] = value;
+    });
+    return out;
+  }
+
+  /**
+   * A settings object with everything this build does not recognise removed.
+   *
+   * Every key is checked against the type of its default, which is the whole
+   * guard: a file is something a person can edit, mail, or be handed, and this
+   * writes to storage. A key that is not a setting cannot get in, and neither
+   * can a number where a boolean belongs — an opacity of "wide" would apply
+   * itself to the panel on the next load and there would be nothing on screen
+   * to say why. Anything dropped simply falls back to its default, because
+   * loadSettings merges over those anyway.
+   */
+  function cleanSettings(value) {
+    if (!plainObject(value)) return null;
+    const out = {};
+    Object.keys(FCM.DEFAULT_SETTINGS).forEach((key) => {
+      if (!(key in value)) return;
+      const fallback = FCM.DEFAULT_SETTINGS[key];
+      const incoming = value[key];
+
+      if (Array.isArray(fallback)) {
+        if (!Array.isArray(incoming)) return;
+        const strings = incoming.filter((v) => typeof v === 'string' && v.trim());
+        if (key === 'sendTargets') {
+          const targets = strings.filter((p) => FCM.PLATFORMS.includes(p));
+          // At least one target always stays selected, so an empty list is not
+          // a state to restore anybody into.
+          if (targets.length) out[key] = Array.from(new Set(targets));
+          return;
+        }
+        out[key] = Array.from(new Set(strings)).slice(0, FCM.FAVOURITE_EMOTE_LIMIT);
+        return;
+      }
+      if (typeof fallback === 'boolean') {
+        if (typeof incoming === 'boolean') out[key] = incoming;
+        return;
+      }
+      if (typeof fallback === 'number') {
+        if (typeof incoming === 'number' && Number.isFinite(incoming)) out[key] = incoming;
+        return;
+      }
+      if (typeof incoming === 'string') out[key] = incoming;
+    });
+    // Dropped on purpose: the stamp says when the settings were last written,
+    // and importing is writing them. saveSettings puts the real one on.
+    delete out.savedAt;
+    return out;
+  }
+
+  /**
+   * A file, from whatever the storage areas currently hold.
+   *
+   * @param {object} stores  by BACKUP_STORES name, as read out of storage
+   * @param {string} [appVersion]  which build wrote it, for a human reading it
+   */
+  FCM.buildBackup = function (stores, appVersion) {
+    const out = {
+      format: FCM.BACKUP_FORMAT,
+      backupVersion: FCM.BACKUP_VERSION,
+      extensionVersion: String(appVersion || ''),
+      savedAt: new Date().toISOString(),
+    };
+    FCM.BACKUP_STORES.forEach((name) => {
+      const value = stores && stores[name];
+      if (plainObject(value)) out[name] = value;
+    });
+    return out;
+  };
+
+  /**
+   * What is safe to write back, out of a file somebody chose.
+   *
+   * Never throws and never half-applies: everything is checked first and the
+   * caller is handed either a complete set of stores to write or a reason not
+   * to write anything. A section that does not survive its check is left out
+   * rather than emptied, so importing a file with no channel links in it keeps
+   * the links already here instead of quietly deleting them.
+   *
+   * @param {*} parsed  the parsed JSON, from anywhere
+   * @returns {{ok: boolean, error?: string, stores?: object, counts?: object}}
+   */
+  FCM.readBackup = function (parsed) {
+    if (!plainObject(parsed)) {
+      return { ok: false, error: 'That file is not a Friendly Chat backup.' };
+    }
+    if (parsed.format !== FCM.BACKUP_FORMAT) {
+      return { ok: false, error: 'That file is not a Friendly Chat backup.' };
+    }
+    // Forward compatibility is not something this can fake: a newer file may
+    // mean things this build would apply wrongly, and saying so is better than
+    // importing three quarters of it.
+    if (Number(parsed.backupVersion) > FCM.BACKUP_VERSION) {
+      return {
+        ok: false,
+        error: 'That backup was written by a newer version of the extension. '
+          + 'Update the extension and try again.',
+      };
+    }
+
+    const stores = {};
+    const counts = {};
+
+    const settings = cleanSettings(parsed.settings);
+    if (settings && Object.keys(settings).length) {
+      stores.settings = settings;
+      counts.settings = Object.keys(settings).length;
+      counts.favourites = (settings.favouriteEmotes || []).length;
+    }
+
+    const links = channelKeyed(parsed.links, plainObject);
+    if (links && Object.keys(links).length) {
+      // The same ceiling the discovery cache keeps for itself. A file is not a
+      // way around it.
+      const keys = Object.keys(links).slice(0, FCM.LINK_STORE_LIMIT);
+      const capped = {};
+      keys.forEach((k) => { capped[k] = links[k]; });
+      stores.links = capped;
+      counts.links = keys.length;
+    }
+
+    const sendTargets = channelKeyed(parsed.sendTargets, (v) => Array.isArray(v)
+      && v.length > 0 && v.every((p) => FCM.PLATFORMS.includes(p)));
+    if (sendTargets && Object.keys(sendTargets).length) {
+      stores.sendTargets = sendTargets;
+      counts.sendTargets = Object.keys(sendTargets).length;
+    }
+
+    if (plainObject(parsed.geometry)) {
+      const geometry = {};
+      FCM.PLATFORMS.forEach((platform) => {
+        const box = parsed.geometry[platform];
+        if (!plainObject(box)) return;
+        // Only the numbers, and only real ones. A width of null lands in
+        // clampWhollyOnScreen and comes back out as a panel of no size.
+        const ok = ['left', 'top', 'width', 'height']
+          .every((f) => typeof box[f] === 'number' && Number.isFinite(box[f]));
+        if (ok) geometry[platform] = { ...box, manual: !!box.manual };
+      });
+      if (Object.keys(geometry).length) {
+        stores.geometry = geometry;
+        counts.geometry = Object.keys(geometry).length;
+      }
+    }
+
+    if (!Object.keys(stores).length) {
+      return { ok: false, error: 'That backup had nothing in it this version can use.' };
+    }
+    return { ok: true, stores, counts };
+  };
+
   // Turns a status line into a labelled row, the way the desktop app does, so
   // "Kick: disconnected" renders with a Kick chip rather than as body text.
   FCM.formatSystemMessage = function (txt) {

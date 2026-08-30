@@ -936,6 +936,185 @@ suites.render = function () {
 // shape, and words. Colour on its own would leave the states indistinguishable
 // to anyone who cannot separate amber from green from red — so what matters
 // here is that no state the worker can report is left without wording.
+// Chrome deletes an extension's storage when the extension is removed, and
+// removing and re-loading is one ordinary way to update one loaded unpacked —
+// so a backup file is the only thing that makes favourites and channel links
+// survive that. Importing writes to storage from a file a person chose, which
+// is why nothing here trusts the file.
+suites.backup = function () {
+  const FCM = load(makeSandbox(), ...SHARED);
+
+  const full = {
+    settings: {
+      ...FCM.DEFAULT_SETTINGS,
+      opacity: 80,
+      theme: 'light',
+      favouriteEmotes: ['PogU', 'catJAM'],
+      highlightNames: 'MyName',
+      savedAt: 1700000000000,
+    },
+    links: { 'twitch:streamer': { channel: 'streamer-kick', manual: true } },
+    geometry: { twitch: { manual: true, left: 100, top: 50, width: 400, height: 700 } },
+    sendTargets: { 'twitch:streamer': ['kick'] },
+  };
+
+  // ── The round trip ─────────────────────────────────────────────────────────
+  {
+    const file = FCM.buildBackup(full, '1.15.0');
+    eq(file.format, FCM.BACKUP_FORMAT, 'backup: the file says what it is');
+    eq(file.extensionVersion, '1.15.0', 'backup: and which build wrote it');
+    ok(file.savedAt, 'backup: and when');
+
+    // Through JSON, because that is the only way it ever travels.
+    const back = FCM.readBackup(JSON.parse(JSON.stringify(file)));
+    ok(back.ok, 'backup: its own file reads back');
+    eq(back.stores.settings.favouriteEmotes, ['PogU', 'catJAM'],
+      'backup: the favourites come back in the order they were kept in');
+    eq(back.stores.settings.opacity, 80, 'backup: and every other setting with them');
+    eq(back.stores.settings.theme, 'light', 'backup: including the ones that are words');
+    eq(back.stores.links['twitch:streamer'].channel, 'streamer-kick',
+      'backup: channel links survive');
+    eq(back.stores.sendTargets['twitch:streamer'], ['kick'],
+      'backup: so does where a channel sends');
+    eq(back.stores.geometry.twitch.width, 400, 'backup: and where the panel was dragged to');
+    eq(back.counts.favourites, 2, 'backup: the count offered before importing is the real one');
+
+    // The stamp is when the settings were last written, and importing is
+    // writing them. Carrying the old one over would make a restored file look
+    // older than whatever is already in the other storage area, and
+    // loadSettings takes the newer of the two.
+    eq(back.stores.settings.savedAt, undefined, 'backup: the save stamp is not restored');
+  }
+
+  // ── Tokens are never in it ─────────────────────────────────────────────────
+  //
+  // They are per-device credentials — the reason they live in local and never
+  // in sync — and a file someone might mail themselves is not where one goes.
+  {
+    const file = FCM.buildBackup({ ...full, auth: { twitch: { accessToken: 'SECRET' } } }, '1.15.0');
+    missing(JSON.stringify(file), 'SECRET', 'backup: an account token cannot get into the file');
+    missing(JSON.stringify(file), 'auth', 'backup: the auth store is not carried at all');
+  }
+
+  // ── A file is something a person can edit ──────────────────────────────────
+  {
+    const hostile = FCM.readBackup({
+      format: FCM.BACKUP_FORMAT,
+      backupVersion: 1,
+      settings: {
+        opacity: 'wide',                 // a number that is not one
+        showBadges: 'yes',               // a boolean that is not one
+        theme: { evil: true },           // a string that is not one
+        favouriteEmotes: ['PogU', 42, null, { name: 'x' }, '  ', 'catJAM'],
+        sendTargets: ['twitch', 'myspace'],
+        __proto__: 'polluted',
+        somethingInvented: 'hello',
+      },
+      links: { 'twitch:ok': { channel: 'x' }, 'notaplatform:bad': { channel: 'y' }, plain: {} },
+      sendTargets: { 'twitch:ok': ['twitch'], 'twitch:bad': ['myspace'], 'twitch:empty': [] },
+      geometry: { twitch: { left: 1, top: 2, width: null, height: 4 }, myspace: { left: 1 } },
+    });
+
+    ok(hostile.ok, 'backup: a file with junk in it still restores what was good');
+    const s = hostile.stores.settings;
+    eq(s.opacity, undefined, 'backup: a setting of the wrong type is dropped, not applied');
+    eq(s.showBadges, undefined, 'backup: including a boolean written as a word');
+    eq(s.theme, undefined, 'backup: and an object where a string belongs');
+    eq(s.somethingInvented, undefined, 'backup: a key this build has never heard of is dropped');
+    eq(s.favouriteEmotes, ['PogU', 'catJAM'],
+      'backup: favourites keep only the names that are names');
+    eq(s.sendTargets, ['twitch'], 'backup: a send target that is not a platform is dropped');
+    // Dropping the whole key rather than restoring an empty list: at least one
+    // target always stays selected, so [] is not a state to put anybody in.
+    eq(FCM.readBackup({
+      format: FCM.BACKUP_FORMAT, settings: { sendTargets: ['myspace'], opacity: 50 },
+    }).stores.settings.sendTargets, undefined,
+    'backup: and a list with nothing left in it is not restored at all');
+
+    eq(Object.keys(hostile.stores.links), ['twitch:ok'],
+      'backup: a link key naming no platform we know is dropped');
+    eq(Object.keys(hostile.stores.sendTargets), ['twitch:ok'],
+      'backup: so is a send target that names one');
+    eq(hostile.stores.geometry, undefined,
+      'backup: a panel box with a missing number is not restored as a panel of no size');
+  }
+
+  // Prototype pollution, which a JSON file is a natural way to attempt.
+  {
+    const parsed = JSON.parse('{"format":"' + FCM.BACKUP_FORMAT
+      + '","settings":{"__proto__":{"polluted":true},"opacity":50}}');
+    const out = FCM.readBackup(parsed);
+    ok(out.ok, 'backup: it still reads');
+    eq(({}).polluted, undefined, 'backup: and nothing reached Object.prototype');
+    eq(out.stores.settings.opacity, 50, 'backup: while the real setting came through');
+  }
+
+  // ── Files that are not ours, and files from the future ─────────────────────
+  {
+    ok(!FCM.readBackup(null).ok, 'backup: nothing is not a backup');
+    ok(!FCM.readBackup('a string').ok, 'backup: neither is a string');
+    ok(!FCM.readBackup([1, 2, 3]).ok, 'backup: nor an array');
+    ok(!FCM.readBackup({ settings: { opacity: 50 } }).ok,
+      'backup: nor a JSON file that never claimed to be one');
+    contains(FCM.readBackup({ hello: 'world' }).error, 'not a Friendly Chat backup',
+      'backup: and it says so plainly');
+
+    const future = FCM.readBackup({
+      format: FCM.BACKUP_FORMAT, backupVersion: FCM.BACKUP_VERSION + 1, settings: { opacity: 50 },
+    });
+    ok(!future.ok, 'backup: a file from a newer build is refused');
+    contains(future.error, 'newer version',
+      'backup: rather than a quarter-applied import nobody can see the shape of');
+
+    const empty = FCM.readBackup({ format: FCM.BACKUP_FORMAT, backupVersion: 1 });
+    ok(!empty.ok, 'backup: a backup with nothing usable in it is refused');
+  }
+
+  // ── A section left out is left alone ───────────────────────────────────────
+  //
+  // Restoring settings from a file that was written before any channel had been
+  // linked must not delete the links found since. Absent is not empty.
+  {
+    const partial = FCM.readBackup({
+      format: FCM.BACKUP_FORMAT, backupVersion: 1,
+      settings: { favouriteEmotes: ['PogU'] },
+    });
+    ok(partial.ok, 'backup: a file with only settings in it is fine');
+    eq(partial.stores.links, undefined, 'backup: and says nothing about links');
+    eq(partial.stores.geometry, undefined, 'backup: or about the panel position');
+    eq(Object.keys(partial.stores), ['settings'],
+      'backup: so importing it cannot clear what it does not mention');
+  }
+
+  // ── Ceilings a file cannot talk its way past ───────────────────────────────
+  {
+    const many = {};
+    for (let i = 0; i < FCM.LINK_STORE_LIMIT + 50; i++) many[`twitch:c${i}`] = { channel: `k${i}` };
+    const favourites = [];
+    for (let i = 0; i < FCM.FAVOURITE_EMOTE_LIMIT + 50; i++) favourites.push(`emote${i}`);
+
+    const capped = FCM.readBackup({
+      format: FCM.BACKUP_FORMAT, backupVersion: 1,
+      settings: { favouriteEmotes: favourites },
+      links: many,
+    });
+    eq(capped.stores.settings.favouriteEmotes.length, FCM.FAVOURITE_EMOTE_LIMIT,
+      'backup: a file cannot store more favourites than the picker keeps');
+    eq(Object.keys(capped.stores.links).length, FCM.LINK_STORE_LIMIT,
+      'backup: nor more channel links than the cache keeps for itself');
+  }
+
+  // Duplicates in a hand-edited file would each draw their own star.
+  {
+    const deduped = FCM.readBackup({
+      format: FCM.BACKUP_FORMAT, backupVersion: 1,
+      settings: { favouriteEmotes: ['PogU', 'PogU', 'catJAM'] },
+    });
+    eq(deduped.stores.settings.favouriteEmotes, ['PogU', 'catJAM'],
+      'backup: a favourite listed twice is restored once');
+  }
+};
+
 suites.states = function () {
   const sandbox = makeSandbox({});
   const FCM = load(sandbox, 'src/shared/namespace.js', 'src/shared/constants.js');

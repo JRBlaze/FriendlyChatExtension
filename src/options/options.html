@@ -211,6 +211,28 @@
   </section>
 
   <section>
+    <h2>Backup</h2>
+    <p class="section-note">
+      Everything on this page, your favourite emotes, the channel links below, where each
+      channel's messages go and where you dragged the panel — written to one file you can keep
+      somewhere safe. Worth doing before you update the extension: Chrome deletes an extension's
+      storage if it is removed and loaded again, which is one perfectly ordinary way to update
+      one, and there is nothing this extension can do to stop that.
+    </p>
+    <p class="section-note">
+      Account sign-ins are <em>not</em> in the file. Tokens belong to the browser they were
+      issued to, so importing never signs you in anywhere — connect accounts from the overlay's
+      own settings panel, as usual.
+    </p>
+    <div class="field-actions">
+      <button id="export-settings" class="btn">Export to a file</button>
+      <button id="import-settings" class="btn btn-ghost">Import from a file</button>
+      <input type="file" id="import-file" accept="application/json,.json" hidden>
+      <span id="backup-note" class="section-note" role="status"></span>
+    </div>
+  </section>
+
+  <section>
     <h2>Channel links</h2>
     <p class="section-note">
       How each channel was matched to its counterpart on the other platform. Links found
