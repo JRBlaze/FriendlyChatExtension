@@ -67,9 +67,13 @@
     // this page to do it. A blank value means "use the default", which is what
     // every reader of these keys already falls back to, so the default is shown
     // as the placeholder rather than filled in.
+    //
+    // The Twitch client id has no default to show: it comes from the proxy,
+    // which is not asked until somebody signs in. Its placeholder says so in
+    // the markup instead.
     const TEXTS = [
       { id: 'highlightNames' },
-      { id: 'twitchClientId', fallback: FCM.DEFAULT_TWITCH_CLIENT_ID },
+      { id: 'twitchClientId' },
       { id: 'kickProxyUrl', fallback: FCM.DEFAULT_KICK_PROXY_URL },
     ];
     TEXTS.forEach(({ id, fallback }) => {

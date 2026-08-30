@@ -136,7 +136,7 @@ feed. Open a Kick channel and it works the other way round.
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.14.2.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.15.0.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and a folder named `FriendlyChatExtension-main`. The
@@ -432,6 +432,22 @@ IRC tag, so it renders whether or not anyone has fetched a list. The picker is a
 question: it can only offer what it has been told about, and it was being told about nothing from
 Twitch at all.
 
+**Cheers are the exception, and they had to be fixed separately.** A Cheermote is not in that
+tag. Twitch sends a Cheer as the plain word the viewer typed — `Cheer100` — with the amount in a
+`bits` tag beside it, and leaves working out that the word is a picture to whoever is drawing the
+message. So the feed showed `Cheer100` as text on the one message in chat somebody had actually
+paid for, while every other client on the same stream showed the animation.
+
+The channel's Cheermotes are now fetched on join, the same as its badges: each prefix, the tiers
+under it, and for each tier the animated image and the colour Twitch writes the amount in. A word
+is only turned into one when the message really did spend Bits, so typing the shape of a Cheer
+with an empty balance still renders as the words it is — which is what Twitch does with it too.
+The tier is the largest the amount reaches, so 999 Bits draws the 100 tier and 5000 draws the top
+one, and the amount beside the picture carries that tier's colour: grey, then purple, then green,
+then blue, then red. A prefix the channel never sold is left as text rather than guessed at, and
+the list is dropped when you leave the channel — a broadcaster's own Cheermote belongs to them,
+and keeping it would draw the last streamer's picture over this streamer's Cheer.
+
 What an account may use comes from four places, and the difference between them matters:
 
 | | what it knows | needs |
@@ -491,6 +507,16 @@ are not currently browsing**, so a message can go to Twitch and Kick at once.
   exchanged through the same Cloudflare Worker the desktop app uses; the secret stays on the
   worker and never reaches the browser. Kick needs no setup.
 
+**Neither client id is written into this extension.** Both are asked for at sign-in, from the
+same worker. For Kick that is a correctness argument — the worker holds the matching client
+secret, so only the worker knows which application that secret belongs to, and a copy here could
+only go stale. For Twitch it is a maintenance one: a client id is public by design (it travels in
+the authorise URL and on every Helix call, so anyone running the extension can read it off their
+own network tab), but an id written into the source is pinned there until every install has taken
+an update, while one held by the worker can be rotated in a minute. If you have registered your
+own Twitch application because Twitch refused the sign-in, put its id in the extension's options
+page and it wins outright — the proxy is not asked at all.
+
 Tokens live in `chrome.storage.local`, never in `storage.sync`, so they are not replicated across
 your browsers. Kick tokens refresh silently; a Twitch implicit token cannot be refreshed, so when
 it expires the overlay says so and asks you to reconnect.
@@ -508,6 +534,8 @@ Nothing is proxied through a server, and no API key or sign-in is involved.
 | Kick channel, live state, history, emotes | `kick.com/api/v2/...` and `kick.com/emotes/...` |
 | Third-party emotes | 7TV, BetterTTV, FrankerFaceZ |
 | Sending, when an account is connected | `api.twitch.tv/helix/chat/messages`, `api.kick.com/public/v1/chat` |
+| Cheermotes, so a Cheer draws as one | `api.twitch.tv/helix/bits/cheermotes`, on join |
+| Which application to sign in against | the Cloudflare Worker's `/twitch-config` and `/kick-config`, at sign-in only |
 
 Reading chat is anonymous — no account, no API key. Requests to Kick are made with
 `credentials: 'omit'` so your Kick cookies are never attached. What gets stored is your settings,
@@ -557,7 +585,7 @@ tests/
   background.js    boots the real service worker with the platforms stubbed
   harness.html     the overlay against a mock channel page
   contrast.js      WCAG AA auditor, run from the harness or either page
-cloudflare-worker.js   the Kick token-exchange proxy, deployed separately
+cloudflare-worker.js   the token-exchange proxy and client-id source, deployed separately
 wrangler.toml
 ```
 
@@ -837,7 +865,7 @@ DOM, so nothing in the page's layout or stacking contexts has to be fought with.
 node tests/run.js
 ```
 
-898 assertions, no network. It drives the real parsers with real payload shapes: IRC lines with
+1400+ assertions, no network. It drives the real parsers with real payload shapes: IRC lines with
 tags and emote positions, Kick Pusher events, emote sets from every provider, and the
 counterpart matcher against stubbed platform APIs — including the cases that matter most, like a
 manual mapping beating a same-name guess and a failing emote provider not taking the others down.
@@ -912,6 +940,56 @@ driven on either site. Setting `window.autoSendResult` answers a send with a can
 per-platform result, which is how the partial-failure and expired-token paths get exercised. Setting `composerMode` in the console to `paste-only`, `beforeinput`, `plain`,
 `readonly` or `no-submit` switches how the mock composer behaves, which covers each branch of
 the send path.
+
+### Deploying the proxy
+
+The worker in `cloudflare-worker.js` does two jobs: it performs Kick's token exchange, which
+needs a client secret an extension cannot hold, and it hands out both platforms' client ids so
+neither is written into the source. It is deployed separately from the extension, and the
+extension reaches it at the URL in `FCM.DEFAULT_KICK_PROXY_URL` unless the options page names
+another one.
+
+Three values live on it, all set as secrets so none of them is in this repository:
+
+| Secret | What it is |
+| --- | --- |
+| `KICK_CLIENT_ID` | the Kick application's client id |
+| `KICK_CLIENT_SECRET` | its secret — the only one that is genuinely secret |
+| `TWITCH_CLIENT_ID` | the Twitch application's client id |
+
+From the project root:
+
+```bash
+npm install -g wrangler
+```
+
+```bash
+wrangler login
+```
+
+```bash
+wrangler secret put TWITCH_CLIENT_ID
+```
+
+```bash
+wrangler deploy
+```
+
+`wrangler secret put` prompts for the value and stores it on the worker; it is never written to
+disk here. Secrets survive a redeploy, so the two Kick ones only need setting if they have never
+been set or if the Kick application changes. Deploying from this folder replaces the worker
+already running under the same name, so the URL does not change and nothing in the extension
+needs reconfiguring.
+
+Check it afterwards by opening `/health` in a browser. It reports which of the three values are
+set without ever echoing one back:
+
+```json
+{"ok":true,"service":"friendly-chat-proxy","kick_client_id":true,"kick_client_secret":true,"twitch_client_id":true}
+```
+
+A `false` there is the whole diagnosis. If `twitch_client_id` is false the Twitch sign-in fails
+with a message naming the secret to set, rather than failing silently later on.
 
 ## Bugs this testing found
 
@@ -1141,6 +1219,12 @@ was never going to see in a friendly test:
   the extension's redirect URL is registered with them. The overlay's *Settings -> Accounts*
   panel shows the URL to register and whatever the platform actually said, and keeps it there
   until the account connects. Nothing in the extension can do that part for you.
+- **Cheers only animate with a Twitch account connected.** The Cheermote list comes from
+  `helix/bits/cheermotes`, and Helix answers nobody without a token — so an anonymous viewer,
+  who is the one case reading chat otherwise needs no account for, still sees `Cheer100` as the
+  text it arrived as. Everything else about the message is unaffected. Twitch's public GQL
+  endpoint can answer this one without a token, the way the live-state lookup already does; that
+  is the route out if it matters.
 - **Moderation needs a connected account** on the platform in question, with the scopes granted
   at sign-in. Without one the platform never tells us you hold the badge, so the tools stay
   hidden rather than appearing and then failing.

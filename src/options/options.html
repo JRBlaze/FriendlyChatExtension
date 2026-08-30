@@ -179,15 +179,17 @@
         <label for="twitchClientId">Twitch application client ID</label>
         <small>Leave this empty unless Twitch has refused the sign-in and told you to register
           your own application. The overlay says so when that happens, and says which redirect
-          URL to give it.</small>
+          URL to give it. Left empty, the proxy below is asked which application to sign in
+          against.</small>
       </div>
-      <input type="text" id="twitchClientId">
+      <input type="text" id="twitchClientId" placeholder="asked for from the proxy">
     </div>
     <div class="field field-col">
       <div class="field-text">
-        <label for="kickProxyUrl">Kick proxy worker URL</label>
+        <label for="kickProxyUrl">Proxy worker URL</label>
         <small>The small service that performs Kick's token exchange, because it needs a secret
-          an extension cannot hold. Leave it empty to use the default one; set it if you run
+          an extension cannot hold, and that hands out both platforms' client ids so neither is
+          written into the extension. Leave it empty to use the default one; set it if you run
           your own, or if the default is unreachable from your network.</small>
       </div>
       <input type="text" id="kickProxyUrl">

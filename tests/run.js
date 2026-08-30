@@ -455,6 +455,7 @@ suites.twitchhistory = function () {
     '@display-name=Answerer;id=h2;reply-parent-display-name=Asker;'
       + 'reply-parent-msg-body=what\sgame :a!a@a.tmi.twitch.tv PRIVMSG #c :Elden Ring',
     '@display-name=NewHere;id=h3;first-msg=1 :n!n@n.tmi.twitch.tv PRIVMSG #c :hello',
+    '@display-name=Giver;id=h4;bits=100 :g!g@g.tmi.twitch.tv PRIVMSG #c :Cheer100',
   ];
 
   const sandbox = makeSandbox({
@@ -466,7 +467,7 @@ suites.twitchhistory = function () {
     const batches = [];
     await FCM.twitchSource.fetchHistory('c', { sys() {}, batch: (rows) => batches.push(rows) }, 60);
     const rows = batches[0] || [];
-    eq(rows.length, 3, 'history: every replayed message becomes a row');
+    eq(rows.length, 4, 'history: every replayed message becomes a row');
     eq(rows[0].text, 'waves', 'history: a replayed /me is unwrapped too');
     eq(rows[0].action, true, 'history: and still reads as an action');
     eq(rows[1].reply.name, 'Asker', 'history: a replayed reply still says what it answered');
@@ -474,6 +475,11 @@ suites.twitchhistory = function () {
     // turned up. Acting on it an hour late is meaningless, so it is left off.
     ok(!rows[2].firstMessage,
       'history: a first message replayed from an hour ago is not flagged as new');
+    // A replayed Cheer is still a Cheer. Without the Bits count the same
+    // message would draw its Cheermote when it arrived live and spell the word
+    // out when it came back in the replay above it.
+    eq(rows[3].bits, 100, 'history: a replayed Cheer still says what it spent');
+    eq(rows[0].bits, 0, 'history: and a message that spent nothing says so');
   })();
 };
 
@@ -533,6 +539,12 @@ suites.render = function () {
       'https://cdn.betterttv.net/emote/5f1b018/3x', 'render: BTTV at 3x, the largest it has');
     eq(bigger('https://cdn.frankerfacez.com/emote/1234/2'),
       'https://cdn.frankerfacez.com/emote/1234/4', 'render: FFZ at 4');
+    eq(bigger('https://d3aqoihi2n8ty8.cloudfront.net/actions/cheer/dark/animated/100/2.gif'),
+      'https://d3aqoihi2n8ty8.cloudfront.net/actions/cheer/dark/animated/100/4.gif',
+      'render: a Cheermote at 4, still animated');
+    eq(bigger('https://d3aqoihi2n8ty8.cloudfront.net/actions/cheer/dark/animated/100/1.5.gif'),
+      'https://d3aqoihi2n8ty8.cloudfront.net/actions/cheer/dark/animated/100/4.gif',
+      'render: whatever size the tier was served at');
 
     // Kick serves one size and it is already the big one.
     eq(bigger('https://files.kick.com/emotes/37226/fullsize'),
@@ -817,6 +829,106 @@ suites.render = function () {
     // And the extremes, which have no hue to preserve, still come back legible.
     ok(parts('#000000').dark !== '#000000', 'render: black is lifted off a dark feed');
     ok(parts('#FFFFFF').light !== '#ffffff', 'render: white is dropped onto a light feed');
+  })();
+
+  // ── Cheers are drawn, not spelled ──────────────────────────────────────────
+  //
+  // Twitch leaves Cheermotes out of the emotes tag: a Cheer arrives as the word
+  // the viewer typed and nothing else. A feed that reads only that tag showed
+  // "Cheer100" as text where every other chat on the same stream showed the
+  // animation, which is the one message in chat that somebody paid for.
+  (function cheers() {
+    // The payload as Twitch sends it, cut down to the one image and colour a
+    // drawn Cheer needs.
+    const parsed = FCM.parseCheermoteTiers({
+      data: [{
+        prefix: 'Cheer',
+        tiers: [{
+          min_bits: 100,
+          color: '#9c3ee8',
+          images: {
+            dark: {
+              animated: { 1: 'https://c/1.gif', 1.5: 'https://c/1.5.gif', 2: 'https://c/2.gif' },
+              static: { 2: 'https://c/static.png' },
+            },
+            light: { animated: { 2: 'https://c/light.gif' } },
+          },
+        }],
+      }],
+    });
+    eq(parsed.length, 1, 'cheer: every tier of every prefix becomes an entry');
+    eq(parsed[0].url, 'https://c/2.gif', 'cheer: the animated picture is the one kept');
+    eq(parsed[0].minBits, 100, 'cheer: with the amount it takes to reach it');
+    eq(parsed[0].color, '#9c3ee8', 'cheer: and the colour that says how big it was');
+    eq(FCM.parseCheermoteTiers({}).length, 0, 'cheer: an empty payload yields nothing');
+    eq(FCM.parseCheermoteTiers(null).length, 0, 'cheer: and so does a missing one');
+    // Never trusted into a style attribute on the word of the payload.
+    eq(FCM.parseCheermoteTiers({
+      data: [{ prefix: 'X', tiers: [{ min_bits: 1, color: 'red;background:url(x)', images: { dark: { animated: { 2: 'https://c/x.gif' } } } }] }],
+    })[0].color, '', 'cheer: a colour that is not a plain hex value is dropped');
+
+    FCM.setCheermotes([
+      { prefix: 'Cheer', minBits: 1, color: '#979797', url: 'https://c/cheer/1.gif' },
+      { prefix: 'Cheer', minBits: 100, color: '#9c3ee8', url: 'https://c/cheer/100.gif' },
+      { prefix: 'Cheer', minBits: 1000, color: '#1db2a5', url: 'https://c/cheer/1000.gif' },
+      { prefix: 'SquadW', minBits: 1, color: '#979797', url: 'https://c/squadw/1.gif' },
+    ]);
+
+    const paid = FCM.renderMessageBody('twitch', 'great play Cheer100', { bits: 100 });
+    contains(paid.html, 'c/cheer/100.gif', 'cheer: the Cheermote is drawn');
+    contains(paid.html, 'alt="Cheer100"', 'cheer: named as the token that was typed');
+    contains(paid.html, '>100<', 'cheer: with what it cost beside it');
+    contains(paid.html, '--author-dark:', "cheer: in that tier's own colour");
+    // Through the readability pass every other colour in the panel goes
+    // through, because Twitch picks these for a dark chat and this one has a
+    // light theme: the 1-Bit grey is 2.8:1 on it untouched.
+    contains(FCM.renderMessageBody('twitch', 'Cheer1', { bits: 1 }).html,
+      '--author-light:#676767',
+      'cheer: and lifted to stay readable when the panel is on its light theme');
+    missing(FCM.renderMessageBody('twitch', 'Cheer1', { bits: 1 }).html, '--author-light:#979797',
+      'cheer: rather than left at the grey Twitch draws on black');
+    missing(paid.html, '>Cheer100<', 'cheer: and the bare word is gone from the row');
+    contains(paid.html, 'great play ', 'cheer: the rest of the message survives');
+
+    // The tier is the largest the amount reaches — the ladder, not the nearest
+    // rung, which is how Twitch itself picks the picture.
+    contains(FCM.renderMessageBody('twitch', 'Cheer999', { bits: 999 }).html,
+      'c/cheer/100.gif', 'cheer: an amount between tiers stays on the lower one');
+    contains(FCM.renderMessageBody('twitch', 'Cheer5000', { bits: 5000 }).html,
+      'c/cheer/1000.gif', 'cheer: and past the top tier it stays on the top one');
+    contains(FCM.renderMessageBody('twitch', 'cheer100', { bits: 100 }).html,
+      'c/cheer/100.gif', 'cheer: prefixes match however they were capitalised');
+
+    // Several in one message, including the broadcaster's own.
+    const many = FCM.renderMessageBody('twitch', 'Cheer100 gg SquadW1', { bits: 101 });
+    contains(many.html, 'c/cheer/100.gif', 'cheer: the first of several is drawn');
+    contains(many.html, 'c/squadw/1.gif', "cheer: and the broadcaster's own with it");
+    contains(many.html, ' gg ', 'cheer: with the words between them untouched');
+
+    // The Bits are what make it a Cheer. Somebody typing the shape of one with
+    // an empty balance spends nothing, and Twitch draws them the words they
+    // typed — so this has to read the message, not the text.
+    const unpaid = FCM.renderMessageBody('twitch', 'great play Cheer100', {});
+    missing(unpaid.html, 'c/cheer/100.gif', 'cheer: no Bits, no Cheermote');
+    contains(unpaid.html, 'Cheer100', 'cheer: the word stays the word it is');
+
+    missing(FCM.renderMessageBody('twitch', 'hello123', { bits: 100 }).html,
+      'fcm-cheer', 'cheer: a word ending in digits is not a Cheer');
+    missing(FCM.renderMessageBody('twitch', 'nothanks50', { bits: 50 }).html,
+      'fcm-cheer', 'cheer: nor is an amount on a prefix this channel never sold');
+    missing(FCM.renderMessageBody('kick', 'Cheer100', { bits: 100 }).html,
+      'fcm-cheer', 'cheer: and Kick has no Cheermotes to draw');
+
+    // A message cannot smuggle markup in through the amount or the name.
+    const trickyCheer = FCM.renderMessageBody('twitch', 'Cheer100 <img src=x onerror=alert(1)>',
+      { bits: 100 });
+    missing(trickyCheer.html, '<img src=x', 'cheer: a Cheer message escapes like any other');
+
+    // A custom Cheermote belongs to the channel that sells it, so leaving takes
+    // it away rather than drawing the last streamer's picture over this one.
+    FCM.resetPlatformView('twitch');
+    missing(FCM.renderMessageBody('twitch', 'Cheer100', { bits: 100 }).html,
+      'fcm-cheer', 'cheer: leaving a channel takes its Cheermotes with it');
   })();
 };
 
@@ -3044,7 +3156,7 @@ suites.native = function () {
 };
 
 suites.auth = function () {
-  function build({ redirect, launchError, tokenResponse, configResponse } = {}) {
+  function build({ redirect, launchError, tokenResponse, configResponse, twitchConfig } = {}) {
     const store = {};
     const calls = [];
     const sandbox = makeSandbox({
@@ -3095,6 +3207,10 @@ suites.auth = function () {
         if (u.includes('/kick-config')) {
           return { ok: true, json: async () => (configResponse || { client_id: 'kick-cid' }) };
         }
+        if (u.includes('/twitch-config')) {
+          if (twitchConfig === 'offline') throw new TypeError('Failed to fetch');
+          return { ok: true, json: async () => (twitchConfig || { client_id: 'tw-cid' }) };
+        }
         if (u.includes('/kick-token') || u.includes('/kick-refresh')) {
           // A refresh that cannot leave the machine at all, which is a
           // different thing from one Kick turned down.
@@ -3132,7 +3248,17 @@ suites.auth = function () {
       const result = await FCM.auth.connect('twitch', {});
       eq(result.login, 'me', 'auth: twitch reports who signed in');
 
-      const authUrl = new URL(calls[0].authUrl);
+      // The client id is not written into the extension. It comes from the
+      // proxy, the same way Kick's does, so the application this build signs in
+      // against can be changed without shipping an update to every install.
+      ok(calls.some((c) => (c.url || '').includes('/twitch-config')),
+        'auth: the proxy is asked which Twitch application to sign in against');
+      const authUrl = new URL(calls.find((c) => c.authUrl).authUrl);
+      eq(authUrl.searchParams.get('client_id'), 'tw-cid',
+        'auth: and that is the application the sign-in is sent to');
+      const saved0 = store[FCM.STORAGE_KEYS.auth].twitch;
+      eq(saved0.clientId, 'tw-cid',
+        'auth: stored with the token, because every later Helix call has to send it');
       eq(authUrl.searchParams.get('response_type'), 'token', 'auth: twitch uses the implicit grant');
       eq(authUrl.searchParams.get('redirect_uri'), 'https://abcd.chromiumapp.org/',
         'auth: the extension redirect is what gets registered');
@@ -3150,6 +3276,56 @@ suites.auth = function () {
       const summary = await FCM.auth.summary();
       eq(summary.twitch.connected, true, 'auth: the summary reports connected');
       eq(summary.twitch.token, undefined, 'auth: the summary never carries the token itself');
+    }
+
+    // ── An id set in the options is the one Twitch refused nothing about ──
+    //
+    // That box exists for somebody Twitch has told to register their own
+    // application. Asking the proxy would hand them straight back the id that
+    // was turned down, so theirs wins outright and the proxy is left alone.
+    {
+      const { FCM, calls } = build({
+        redirect: (url) => 'https://abcd.chromiumapp.org/#access_token=TW&state='
+          + new URL(url).searchParams.get('state'),
+      });
+      await FCM.auth.connect('twitch', { twitchClientId: 'my-own-app' });
+      const authUrl = new URL(calls.find((c) => c.authUrl).authUrl);
+      eq(authUrl.searchParams.get('client_id'), 'my-own-app',
+        'auth: a client id set in the options is the one used');
+      ok(!calls.some((c) => (c.url || '').includes('/twitch-config')),
+        'auth: and the proxy is not asked to contradict it');
+    }
+
+    // ── A proxy with no Twitch id says which secret is missing ──
+    //
+    // The failure is a deployment that was never finished, and the message has
+    // to name the thing to do about it — otherwise it surfaces as a sign-in
+    // that simply does not work.
+    {
+      const { FCM } = build({
+        twitchConfig: { client_id: '' },
+        redirect: 'https://abcd.chromiumapp.org/#access_token=TW',
+      });
+      let threw = '';
+      try { await FCM.auth.connect('twitch', {}); } catch (e) { threw = e.message; }
+      contains(threw, 'TWITCH_CLIENT_ID', 'auth: an unconfigured proxy names the secret to set');
+    }
+
+    // ── A proxy that cannot be reached is a different problem ──
+    //
+    // One is a URL to check and the other is a secret that was never set.
+    // Reporting either as the other sends somebody to fix the wrong thing.
+    {
+      const { FCM } = build({
+        twitchConfig: 'offline',
+        redirect: 'https://abcd.chromiumapp.org/#access_token=TW',
+      });
+      let threw = '';
+      try { await FCM.auth.connect('twitch', {}); } catch (e) { threw = e.message; }
+      contains(threw, 'Could not reach the proxy',
+        'auth: an unreachable proxy is reported as one, not as a missing secret');
+      missing(threw, 'TWITCH_CLIENT_ID',
+        'auth: and does not send anybody off to set a secret that may be there already');
     }
 
     // ── A mismatched state must be refused ──

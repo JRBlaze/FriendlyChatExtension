@@ -2541,10 +2541,13 @@
       },
 
       // The Cheermotes this channel accepts, including the broadcaster's own.
-      // Only used to tell a Cheer apart from a word ending in digits, so a list
-      // that never arrives costs nothing but the rarer custom prefixes.
-      setCheermotes(prefixes) {
+      // The prefixes tell a Cheer apart from a word ending in digits, which is
+      // what decides how a typed one is sent; the tiers are what a Cheer that
+      // arrives is drawn as. A list that never arrives costs the rarer custom
+      // prefixes and leaves a Cheer as the text it came in as.
+      setCheermotes(prefixes, tiers) {
         if (Array.isArray(prefixes) && prefixes.length) cheermotes = prefixes;
+        FCM.setCheermotes(tiers);
       },
 
       // The worker already writes the outcome into the feed; this surfaces a

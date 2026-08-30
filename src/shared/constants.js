@@ -25,15 +25,23 @@
   // OAuth 2.1 with PKCE, and its token exchange requires a client secret, so it
   // goes through the same Cloudflare Worker the desktop app uses — the secret
   // stays there and never reaches the browser.
-  // The "Friendly Chat Extension" Twitch application: a public client whose only
-  // registered redirect is this extension's chromiumapp.org URL. It is separate
-  // from the desktop app's client id, so neither can break the other's sign-in.
-  FCM.DEFAULT_TWITCH_CLIENT_ID = '4bfkouj78vsa1crhf7juucfkb273nv';
+  //
+  // The setting is still called kickProxyUrl because that is the key already in
+  // everybody's stored settings, and renaming it would silently discard a URL
+  // somebody had set. The worker itself is no longer Kick's alone: it answers
+  // for both platforms' client ids.
   FCM.DEFAULT_KICK_PROXY_URL = 'https://friendly-chat-kick-proxy.jrblaze.workers.dev';
-  // Kick's client id is deliberately not kept here. The proxy holds the client
-  // secret, so only the proxy knows which application that secret belongs to —
-  // it is asked at sign-in. A copy in this file could only ever go stale and
-  // send people to authorise against the wrong application.
+  // Neither platform's client id is kept here, and for the same reason in both
+  // cases: the proxy is the one place that knows which application this build
+  // signs in against, so it is asked at sign-in.
+  //
+  // For Kick the proxy holds the matching client secret, and an id in this file
+  // could only ever go stale and send people to authorise against the wrong
+  // application. For Twitch there is no secret to hold — a client id is public
+  // by design, and travels in the authorise URL and on every API call — but the
+  // same argument applies to changing it: an id written into this file is
+  // pinned until every install has taken an update, and one held by the worker
+  // can be rotated in a minute.
   // The redirect the Friendly Chat desktop app registers with that same Kick
   // application: its local server's origin plus page, per config.json's port.
   // Reusing it means Kick sign-in works with no registration at all.
@@ -158,9 +166,13 @@
     autoClaimBonus: true,
     // Composer
     sendTargets: ['twitch', 'kick'],  // which platforms a typed message goes to
-    // Credentials the OAuth flows use. Defaults are the desktop app's, and can
-    // be replaced with your own in the options page.
-    twitchClientId: FCM.DEFAULT_TWITCH_CLIENT_ID,
+    // Credentials the OAuth flows use. Both client ids come from the proxy, and
+    // either can be overridden here — the Twitch one from the options page, the
+    // Kick one by pointing at a proxy of your own.
+    // Empty means "ask the proxy", which is what an ordinary install does.
+    // Only somebody Twitch has told to register their own application fills
+    // this in, and theirs then wins over whatever the proxy would have said.
+    twitchClientId: '',
     kickProxyUrl: FCM.DEFAULT_KICK_PROXY_URL,
     // Which URL Kick is told to redirect back to after sign-in.
     //   'shared'    — the redirect the desktop app already registers with the
@@ -237,6 +249,23 @@
   ];
 
   /**
+   * A Cheer token: a Cheermote prefix with an amount stuck to the end of it.
+   *
+   * Anchored, so "notacheer100x" and a bare "100" are both left alone. The
+   * first character may be a digit: Twitch's own global list contains 4Head,
+   * and requiring a letter meant "4Head100" was never recognised as a Cheer at
+   * all — so it went out over the API as ordinary text, spent nothing, and the
+   * streamer received nothing. The known-prefix test each caller makes is what
+   * keeps this honest: "100" matches here with a prefix of "1", and "1" is not
+   * a Cheermote, so a bare number is still just a number.
+   *
+   * Shared by the composer, which routes a Cheer through the page's own chat
+   * box because no API can spend Bits, and by the renderer, which draws one
+   * that has arrived — so the two can never disagree about what a Cheer is.
+   */
+  FCM.CHEER_TOKEN = /^([A-Za-z0-9][A-Za-z0-9_]*?)([0-9]+)$/;
+
+  /**
    * The Cheer in a message, if there is one.
    *
    * Twitch has no API for spending Bits — the Helix endpoint the overlay sends
@@ -258,14 +287,7 @@
     let total = 0;
     let tokens = 0;
     String(text || '').split(/\s+/).forEach((word) => {
-      // Anchored, so "notacheer100x" and a bare "100" are both left alone.
-      // The first character may be a digit: Twitch's own global list contains
-    // 4Head, and requiring a letter meant "4Head100" was never recognised as a
-    // Cheer at all — so it went out over the API as ordinary text, spent
-    // nothing, and the streamer received nothing. The known-prefix test below
-    // is what keeps this honest: "100" now matches with a prefix of "1", and
-    // "1" is not a Cheermote, so a bare number is still just a number.
-    const m = /^([A-Za-z0-9][A-Za-z0-9_]*?)([0-9]+)$/.exec(word);
+      const m = FCM.CHEER_TOKEN.exec(word);
       if (!m) return;
       if (!known.has(m[1].toLowerCase())) return;
       const amount = Number(m[2]);

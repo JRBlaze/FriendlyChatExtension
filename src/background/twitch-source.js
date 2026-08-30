@@ -220,6 +220,11 @@
             // for as long as the panel has been open, and Twitch has seen it
             // since the channel existed.
             firstMessage: tags['first-msg'] === '1',
+            // What this message spent, which is the only thing that says a
+            // word like "Cheer100" in it is a Cheer rather than somebody
+            // typing the shape of one. Twitch leaves Cheermotes out of the
+            // emotes tag, so without this the renderer has nothing to go on.
+            bits: Number(tags.bits) || 0,
             color: tags.color || '',
             badgesRaw: badgesTag,
             badgeClass: FCM.twitchBadgeClass(badgesTag, tags),
@@ -300,6 +305,10 @@
             text,
             action: spoken.action,
             reply: FCM.twitchReplyContext(tags),
+            // A replayed Cheer is still a Cheer: the tag is in the replay, and
+            // a line that drew its Cheermote below the join and its text above
+            // it would be the same message twice over.
+            bits: Number(tags.bits) || 0,
             // Deliberately not carried into the replay, even though the tag
             // is there. The highlight is a prompt to do something — say hello,
             // keep an eye on them — and acting on it is meaningless for a

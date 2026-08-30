@@ -283,9 +283,50 @@
 
   // ── Twitch ──────────────────────────────────────────────────────────────────
 
+  // One value that changes when the Twitch application does, which is never in
+  // the course of a session — so it is fetched once and kept for as long as
+  // this worker lives. An eviction costs one request the next time somebody
+  // signs in.
+  let twitchClientIdCache = '';
+
+  /**
+   * The Twitch application to sign in against.
+   *
+   * From the proxy, the same way Kick's is, so the id is not written into the
+   * extension. A client id is public — it is in the authorise URL the browser
+   * is sent to and on every Helix call — so this is not about hiding it from
+   * the person running it. It is about there being one place to change it.
+   *
+   * An id set in the options wins outright: that box exists for somebody Twitch
+   * has told to register their own application, and asking the proxy would
+   * hand them back the one that was refused.
+   */
+  async function twitchClientId(settings) {
+    const configured = String((settings && settings.twitchClientId) || '').trim();
+    if (configured) return configured;
+    if (twitchClientIdCache) return twitchClientIdCache;
+    // getJsonResult rather than getJson, because the two failures need
+    // different words: a proxy nobody can reach is a URL to check, and a proxy
+    // that answers without an id is a secret that was never set. Flattening
+    // them sends people to fix whichever one happens to be named.
+    const { reachable, data } = await FCM.getJsonResult(proxy(settings, '/twitch-config'));
+    if (!reachable) {
+      throw new Error('Could not reach the proxy to find out which Twitch application to '
+        + 'sign in against — check its URL in the extension options.');
+    }
+    const id = String((data && data.client_id) || '').trim();
+    if (!id) {
+      throw new Error('The proxy is running but holds no Twitch client id. '
+        + 'Set one on the worker: wrangler secret put TWITCH_CLIENT_ID');
+    }
+    twitchClientIdCache = id;
+    return id;
+  }
+
+  FCM.auth.twitchClientId = twitchClientId;
+
   async function connectTwitch(settings) {
-    const clientId = (settings.twitchClientId || FCM.DEFAULT_TWITCH_CLIENT_ID).trim();
-    if (!clientId) throw new Error('No Twitch client id is configured.');
+    const clientId = await twitchClientId(settings);
 
     const state = base64url(crypto.getRandomValues(new Uint8Array(12)));
     const url = `${FCM.TWITCH_AUTH_URL}?client_id=${encodeURIComponent(clientId)}`

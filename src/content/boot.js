@@ -145,7 +145,7 @@
       case 'emotes': overlay.setEmotes(msg.platform, msg.kind, msg.store); break;
       case 'needKickEmotes': fetchKickEmotesFromPage(msg.channel); break;
       case 'badges': overlay.setBadges(msg.platform, msg.badges); break;
-      case 'cheermotes': overlay.setCheermotes(msg.prefixes); break;
+      case 'cheermotes': overlay.setCheermotes(msg.prefixes, msg.tiers); break;
       case 'profile': overlay.profileResult(msg.id, msg.platform, msg.username, msg.profile); break;
       case 'deleteMsg': overlay.deleteMessage(msg.platform, msg.messageId); break;
       case 'deleteUser': overlay.deleteUser(msg.platform, msg.username); break;
