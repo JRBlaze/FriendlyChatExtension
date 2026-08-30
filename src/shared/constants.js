@@ -127,7 +127,17 @@
     // What the last look at the releases page found. storage.local, because it
     // describes this installation rather than this person's preferences.
     update:   'fcm_update_v1',
+    // Where the panel was dragged to, per platform, and where each channel's
+    // messages were last sent. Both are written by the overlay and were named
+    // only inside it, which was fine until something else had to address them:
+    // a backup has to know what it is copying.
+    geometry: 'fcm_geometry_v1',
+    sendTargets: 'fcm_send_targets_v1',
   };
+
+  // How many channel pairings are kept. Shared with the importer, which has to
+  // apply the same ceiling to a file it did not write.
+  FCM.LINK_STORE_LIMIT = 400;
 
   FCM.DEFAULT_SETTINGS = {
     // Overlay behaviour

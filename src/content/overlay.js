@@ -3,7 +3,7 @@
 (function (FCM) {
   'use strict';
 
-  const GEOMETRY_KEY = 'fcm_geometry_v1';
+  const GEOMETRY_KEY = FCM.STORAGE_KEYS.geometry;
   // Which chats a typed message goes to, remembered per channel rather than
   // once for everything.
   //
@@ -13,7 +13,7 @@
   // "Kick only" on one stream re-pick it on every other stream already open.
   // And a choice made on one channel is about that channel, not something to
   // carry to another device.
-  const SEND_TARGETS_KEY = 'fcm_send_targets_v1';
+  const SEND_TARGETS_KEY = FCM.STORAGE_KEYS.sendTargets;
   // Channels remembered before the oldest is dropped. High enough that nobody
   // reaches it by watching, low enough that the entry stays a small one.
   const SEND_TARGETS_LIMIT = 200;

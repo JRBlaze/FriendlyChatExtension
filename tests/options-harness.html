@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Friendly Chat Extension — options harness</title>
+</head>
+<body>
+<!--
+  The options page, running offline.
+
+  It is the real page: this fetches src/options/options.html, stubs the handful
+  of chrome.* calls it makes over an in-memory store, and runs its scripts in
+  order. Nothing about the page is reimplemented here, so what is exercised is
+  what ships — which matters most for the backup section, where export builds a
+  file out of storage and import writes one back into it.
+
+  Serve the project root and open /tests/options-harness.html.
+
+    window.__store            the two storage areas, to read or seed by hand
+    window.__lastDownload     { name, text } of the most recent export
+    window.__importFile(text) hands the page a file, as choosing one would
+-->
+<script>
+(function () {
+  'use strict';
+
+  const areas = { local: {}, sync: {} };
+  window.__store = areas;
+  window.__lastDownload = null;
+
+  const clone = (v) => JSON.parse(JSON.stringify(v));
+
+  function area(name) {
+    return {
+      async get(key) {
+        if (key === null || key === undefined) return clone(areas[name]);
+        const keys = Array.isArray(key) ? key : [key];
+        const out = {};
+        keys.forEach((k) => { if (k in areas[name]) out[k] = clone(areas[name][k]); });
+        return out;
+      },
+      async set(obj) { Object.assign(areas[name], clone(obj)); },
+      async remove(key) {
+        (Array.isArray(key) ? key : [key]).forEach((k) => { delete areas[name][k]; });
+      },
+    };
+  }
+
+  window.chrome = {
+    storage: { local: area('local'), sync: area('sync'), onChanged: { addListener() {} } },
+    runtime: { getManifest: () => ({ version: '0.0.0-harness' }) },
+  };
+
+  // A download in this page is an anchor click, which a harness has nowhere to
+  // put. It is captured instead, so a test can read what would have been saved.
+  const realCreate = document.createElement.bind(document);
+  document.createElement = function (tag) {
+    const el = realCreate(tag);
+    if (String(tag).toLowerCase() === 'a') {
+      el.click = async function () {
+        let text = '';
+        try { text = await (await fetch(el.href)).text(); } catch (e) { text = ''; }
+        window.__lastDownload = { name: el.download, text };
+      };
+    }
+    return el;
+  };
+
+  // Choosing a file, without a file picker. The page reads .text() off whatever
+  // the input hands it, so that is all this has to be.
+  window.__importFile = function (text) {
+    const input = document.getElementById('import-file');
+    Object.defineProperty(input, 'files', {
+      configurable: true,
+      value: [{ name: 'backup.json', text: async () => text }],
+    });
+    input.dispatchEvent(new Event('change'));
+  };
+}());
+</script>
+
+<script>
+(async function () {
+  const page = await (await fetch('../src/options/options.html')).text();
+  const doc = new DOMParser().parseFromString(page, 'text/html');
+
+  const css = document.createElement('link');
+  css.rel = 'stylesheet';
+  css.href = '../src/options/options.css';
+  document.head.appendChild(css);
+
+  document.body.innerHTML = doc.querySelector('main').outerHTML;
+
+  // Appended one at a time and awaited, because they depend on each other in
+  // the order the page lists them.
+  for (const tag of doc.querySelectorAll('script[src]')) {
+    await new Promise((resolve) => {
+      const s = document.createElement('script');
+      s.src = `../src/options/${tag.getAttribute('src')}`.replace('/options/../', '/');
+      s.onload = resolve;
+      s.onerror = resolve;
+      document.head.appendChild(s);
+    });
+  }
+  window.__ready = true;
+}());
+</script>
+</body>
+</html>

@@ -313,7 +313,7 @@
 
   // Kept from growing forever across years of browsing. Mappings the user typed
   // in themselves are never evicted; automatic ones are dropped oldest first.
-  const LINK_STORE_LIMIT = 400;
+  const LINK_STORE_LIMIT = FCM.LINK_STORE_LIMIT;
 
   function pruneLinkStore(store) {
     const keys = Object.keys(store);

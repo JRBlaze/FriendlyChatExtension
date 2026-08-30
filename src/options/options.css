@@ -61,6 +61,14 @@ section h2 {
 .field-text label { font-size: 13.5px; display: block; cursor: pointer; }
 .field-text small { display: block; color: var(--dim); font-size: 12px; margin-top: 2px; }
 .field-actions { padding: 12px 0 4px; border-top: 1px solid var(--border); }
+.field-actions .btn + .btn { margin-left: 8px; }
+
+/* The one line that reports what a backup just did. It has to be readable as
+   text rather than as a colour — the words say "Exported" or "could not be
+   read" on their own — so the colour is confirmation and never the message. */
+#backup-note { display: inline-block; margin-left: 10px; padding: 0; }
+#backup-note[data-kind="ok"] { color: var(--kick); }
+#backup-note[data-kind="error"] { color: #ff8a8a; }
 
 input[type="checkbox"] { width: 17px; height: 17px; accent-color: var(--accent); cursor: pointer; flex-shrink: 0; }
 input[type="range"] { width: 150px; accent-color: var(--accent); cursor: pointer; }

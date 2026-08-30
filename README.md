@@ -23,6 +23,12 @@ feed. Open a Kick channel and it works the other way round.
 - **Your bits, Kicks and channel points**, read off the page and shown above the composer.
   Clicking a balance opens the site's own rewards or cheer menu, and the panel steps out of the
   way for as long as it is open.
+- **Settings can be backed up to a file, and put back.** Everything the extension remembers —
+  settings, favourite emotes, channel links, where each channel's messages go, where you dragged
+  the panel — exports to one file from the options page. Chrome deletes an extension's storage
+  when the extension is removed, which is one ordinary way to update one loaded unpacked, and
+  nothing an extension does can prevent that. Account tokens are deliberately not in the file. See
+  [Backing your settings up](#backing-your-settings-up).
 - **Your chat identity, on the same row.** The colour your name is drawn in and which of your
   badges show belong to the platform, and the overlay only draws them — so *Chat identity* opens
   the platform's own control for it, on Twitch and on Kick alike, and steps aside while it is
@@ -136,7 +142,7 @@ feed. Open a Kick channel and it works the other way round.
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.15.0.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.16.0.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and a folder named `FriendlyChatExtension-main`. The
@@ -520,6 +526,32 @@ page and it wins outright — the proxy is not asked at all.
 Tokens live in `chrome.storage.local`, never in `storage.sync`, so they are not replicated across
 your browsers. Kick tokens refresh silently; a Twitch implicit token cannot be refreshed, so when
 it expires the overlay says so and asks you to reconnect.
+
+## Backing your settings up
+
+The options page has an **Export to a file** button, and an **Import from a file** button beside
+it. The file holds every setting, your favourite emotes, the channel links, where each channel's
+messages go and where you dragged the panel.
+
+It exists because of how Chrome treats an unpacked extension. Storage belongs to the extension,
+and Chrome deletes it when the extension is removed — so "remove it and load it again", which is
+an ordinary way to update one, takes the favourites with it. Replacing the files in the folder and
+pressing reload does *not*, because the ID never changes and the storage is still there. The
+difference between those two is invisible while you are doing it and total afterwards, and nothing
+in an extension can prevent the first one. `storage.sync` covers some of it, but only for
+somebody signed into Chrome with sync switched on.
+
+**Account sign-ins are not in the file.** Tokens are per-device credentials — it is why they live
+in `storage.local` and never in `storage.sync` — and a file you might mail yourself is
+not where one belongs. Importing never signs you in anywhere.
+
+Importing asks first, and says what the file contains before it replaces anything. A section the
+file does not mention is left alone rather than emptied, so restoring a settings-only backup does
+not delete the channel links found since. Every value is checked against the type of its own
+default on the way in: a key this build does not recognise, or a boolean written as a word, is
+dropped rather than applied — the file is text, and anybody can edit it. Open overlays pick the
+new settings up without a reload, because an import writes through the same path a settings change
+does.
 
 ## Where the data comes from
 
@@ -921,6 +953,15 @@ rewards row; and clicking a balance opens a mock menu at the same `z-index` Twit
 panel can be watched standing aside for it. The mock column mirrors Twitch's real nesting,
 including keeping the chat header *outside* the chat-room section — that detail is why the header
 is not a sibling of the message list and so is never mistaken for a card.
+
+**The options page has a harness of its own**, at `tests/options-harness.html`. It is the
+real page — it fetches `src/options/options.html`, stubs the handful of `chrome.*`
+calls it makes over an in-memory store, and runs its own scripts in order, so nothing about the
+page is reimplemented. It exists for the backup section, where export builds a file out of storage
+and import writes one back into it: `window.__store` is the two storage areas,
+`window.__lastDownload` is what the last export would have saved, and
+`window.__importFile(text)` hands the page a file the way choosing one does. The round trip
+that matters — seed, export, wipe both areas, import — is a few lines in the console.
 
 **Contrast is checked from the harness too.** *check contrast* loads `tests/contrast.js` and
 reports anything below WCAG AA to the console, measured from the rendered page rather than the
