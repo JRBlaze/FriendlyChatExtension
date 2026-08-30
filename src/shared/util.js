@@ -167,10 +167,21 @@
     const [synced, local] = await Promise.all([readArea('sync'), readArea('local')]);
     // Whichever was written last is the one the viewer meant. A device that has
     // never saved has no local copy and simply uses what synced in.
+    //
+    // A tie goes to local, and that is the whole point rather than a detail.
+    // The stamp is a millisecond, and both areas are written from the same
+    // save — so an equal stamp means one of two things. Either the write
+    // reached both and they are identical, in which case it does not matter
+    // which is read; or one of the pair refused, and the one that refuses is
+    // sync, which has quotas local does not. Preferring sync on a tie handed
+    // back the copy that had just failed to take the change: the favourite was
+    // starred, local held it, and the next read answered from the older synced
+    // copy as though it had never happened. Rare in a browser and constant on a
+    // machine fast enough to do both saves inside one millisecond.
     const newest = (!local && !synced) ? null
       : !local ? synced
         : !synced ? local
-          : ((local.savedAt || 0) > (synced.savedAt || 0) ? local : synced);
+          : ((local.savedAt || 0) >= (synced.savedAt || 0) ? local : synced);
     return { ...FCM.DEFAULT_SETTINGS, ...(newest || {}) };
   };
 
