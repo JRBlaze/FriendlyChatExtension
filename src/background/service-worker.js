@@ -124,6 +124,7 @@ function makeSink(session, platform, generation) {
       if (changed && next && platform === 'twitch') {
         loadTwitchEmotes(session, platform, mine).catch(() => {});
         loadCheermotes(session, platform, mine).catch(() => {});
+        loadSubscription(session, platform, mine).catch(() => {});
         // The third-party providers key a channel's set by this id too, and on
         // Twitch it can arrive after the join has already asked without it.
         loadThirdPartyEmotes(session, platform, mine).catch(() => {});
@@ -144,6 +145,14 @@ function makeSink(session, platform, generation) {
       if (conn.canModerate === next) return;
       conn.canModerate = next;
       send(session, { type: 'moderator', platform, canModerate: next });
+    },
+    // This viewer's own subscription to the channel, as the badges on their
+    // USERSTATE describe it. Helix is asked separately once the room is known,
+    // and the two are merged before anything is told.
+    subscription: (fromBadges) => {
+      if (!current()) return;
+      conn.subBadges = fromBadges || null;
+      postSubscription(session, platform, mine);
     },
     authRejected: () => {
       if (!current()) return;
@@ -339,6 +348,87 @@ async function loadCheermotes(session, platform, generation) {
 }
 
 /**
+ * What is known about this viewer's subscription to the channel, from both
+ * the places Twitch says it, merged into one answer.
+ *
+ * The badges on USERSTATE say the tier for anyone wearing the subscriber
+ * badge, and the months for anyone at all. Helix says the tier outright —
+ * including for a founder, whose badge does not — but needs a scope the token
+ * may not carry. Whichever knows the tier wins, and Helix knows better.
+ *
+ * @returns {{tier: number, months: number, subscribed: boolean,
+ *   founder: boolean, isGift: boolean, source: string}|null} null while
+ *   nothing has been learnt yet
+ */
+function mergedSubscription(conn) {
+  const badges = conn.subBadges;
+  const api = conn.subApi;
+  if (badges === undefined && api === undefined) return null;
+  const subscribed = !!(badges || (api && api.tier));
+  return {
+    subscribed,
+    tier: (api && api.tier) || (badges && badges.tier) || 0,
+    months: (badges && badges.months) || 0,
+    founder: !!(badges && badges.founder),
+    isGift: !!(api && api.isGift),
+    source: api ? 'helix' : 'badges',
+  };
+}
+
+function postSubscription(session, platform, generation) {
+  const conn = session.conns[platform];
+  const sink = makeSink(session, platform, generation);
+  if (!sink.current()) return;
+  const merged = mergedSubscription(conn);
+  if (!merged) return;
+  const key = JSON.stringify(merged);
+  // Said once per change. USERSTATE arrives with every message this viewer
+  // sends, and repeating the same answer would repeat the feed line that
+  // announces it.
+  if (conn.subAnnounced === key) return;
+  conn.subAnnounced = key;
+  conn.subscription = merged;
+  send(session, { type: 'subscription', platform, subscription: merged });
+}
+
+/**
+ * Asks Helix whether this viewer subscribes to the channel, and at which tier.
+ *
+ * Only with a token carrying `user:read:subscriptions`, which is requested at
+ * sign-in; a token from before that scope existed simply leaves the badges to
+ * answer. A 404 is Twitch's way of saying "not subscribed", and is an answer.
+ */
+async function loadSubscription(session, platform, generation) {
+  const conn = session.conns[platform];
+  if (!conn || platform !== 'twitch' || !conn.roomId) return;
+  const sink = makeSink(session, platform, generation);
+  const record = await FCM.auth.get('twitch');
+  if (!record || !record.accessToken || !record.userId) return;
+  const scopes = record.scopes || [];
+  if (scopes.length && !scopes.includes('user:read:subscriptions')) return;
+  const roomId = conn.roomId;
+  const { reachable, data } = await FCM.getJsonResult(
+    `${FCM.TWITCH_HELIX}/subscriptions/user`
+    + `?broadcaster_id=${encodeURIComponent(roomId)}`
+    + `&user_id=${encodeURIComponent(record.userId)}`,
+    {
+      headers: {
+        Authorization: `Bearer ${record.accessToken}`,
+        'Client-Id': record.clientId,
+      },
+    }
+  );
+  // The channel may have changed while Twitch was answering, and nobody
+  // answering at all is not "not subscribed".
+  if (!sink.current() || conn.roomId !== roomId || !reachable) return;
+  const entry = data && Array.isArray(data.data) ? data.data[0] : null;
+  conn.subApi = entry
+    ? { tier: FCM.TWITCH_TIER_NAMES[entry.tier] || 0, isGift: !!entry.is_gift }
+    : { tier: 0, isGift: false };
+  postSubscription(session, platform, generation);
+}
+
+/**
  * Loads the Twitch emotes this viewer may use, and does it again whenever
  * something new is learnt.
  *
@@ -503,6 +593,12 @@ function leaveChannel(session, platform, { silent = false } = {}) {
     conn.canModerate = false;
     send(session, { type: 'moderator', platform, canModerate: false });
   }
+  // Whatever was learnt about this viewer's subscription was about the channel
+  // being left.
+  conn.subBadges = undefined;
+  conn.subApi = undefined;
+  conn.subAnnounced = '';
+  conn.subscription = null;
   if (had && !silent) {
     send(session, { type: 'sys', text: `Left ${FCM.PLATFORM_META[platform].name}: ${had}` });
     send(session, { type: 'status', platform, state: 'idle', channel: null });
@@ -688,6 +784,8 @@ chrome.runtime.onConnect.addListener((port) => {
               channel: session.conns[p].channel,
               state: session.conns[p].state,
               canModerate: session.conns[p].canModerate,
+              // A reloaded page has to be told again, the same as the badge.
+              subscription: session.conns[p].subscription || null,
             };
             return acc;
           }, {}),

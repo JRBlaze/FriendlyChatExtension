@@ -8,6 +8,7 @@
 // Token kinds: {type:'text',text} | {type:'emote',url,name,cls,source}
 //              {type:'link',url,text} | {type:'mention',text}
 //              {type:'cheer',url,name,amount,color}
+//              {type:'gif',url,id,name}
 (function (FCM) {
   'use strict';
 
@@ -600,36 +601,70 @@
     return out;
   }
 
-  function tokenizeTwitch(text, emoteMap) {
-    if (!emoteMap || !Object.keys(emoteMap).length) return [{ type: 'text', text }];
+  /**
+   * A GIF token, for the picture a Tier 2 or Tier 3 subscriber posted.
+   *
+   * Only ever built from the `gifs` tag Twitch attached, never from a link
+   * somebody typed: a pasted giphy address is a link like any other, and the
+   * tag is what says Twitch itself put the picture in the message.
+   */
+  function gifToken(gif, name) {
+    return { type: 'gif', url: gif.url, id: gif.id || '', name: name || '' };
+  }
+
+  function tokenizeTwitch(text, emoteMap, gifs) {
+    const gifAt = {};
+    const loose = [];
+    (Array.isArray(gifs) ? gifs : []).forEach((gif) => {
+      if (!gif || !FCM.isGifUrl(gif.url)) return;
+      if (gif.start >= 0 && gif.end >= gif.start) gifAt[gif.start] = gif;
+      else loose.push(gif);
+    });
+    const hasEmotes = !!(emoteMap && Object.keys(emoteMap).length);
+    const hasGifs = !!Object.keys(gifAt).length;
     const tokens = [];
-    // Twitch emote positions are Unicode codepoint indices, so the string has to
-    // be walked as codepoints or any emoji in the message shifts every position.
-    const chars = [...String(text)];
-    let run = '';
-    let i = 0;
-    while (i < chars.length) {
-      const hit = emoteMap[i];
-      // `end` must be at or past the cursor. A range that points backwards —
-      // malformed, or crafted — would otherwise send the cursor back to where
-      // it has already been and spin here forever, allocating a token each
-      // time until the tab dies.
-      if (hit && hit.end >= i) {
-        if (run) { tokens.push({ type: 'text', text: run }); run = ''; }
-        tokens.push({
-          type: 'emote',
-          url: `https://static-cdn.jtvnw.net/emoticons/v2/${hit.id}/default/dark/2.0`,
-          name: chars.slice(i, hit.end + 1).join(''),
-          cls: 'twitch-emote',
-          source: 'Twitch',
-        });
-        i = hit.end + 1;
-      } else {
-        run += chars[i];
-        i++;
+    if (!hasEmotes && !hasGifs) {
+      if (text) tokens.push({ type: 'text', text });
+    } else {
+      // Twitch emote positions are Unicode codepoint indices, so the string has
+      // to be walked as codepoints or any emoji in the message shifts every
+      // position. GIF positions are counted the same way.
+      const chars = [...String(text)];
+      let run = '';
+      let i = 0;
+      while (i < chars.length) {
+        const hit = hasEmotes ? emoteMap[i] : null;
+        const gif = gifAt[i];
+        // `end` must be at or past the cursor. A range that points backwards —
+        // malformed, or crafted — would otherwise send the cursor back to where
+        // it has already been and spin here forever, allocating a token each
+        // time until the tab dies.
+        if (gif && gif.end >= i) {
+          if (run) { tokens.push({ type: 'text', text: run }); run = ''; }
+          tokens.push(gifToken(gif, chars.slice(i, gif.end + 1).join('')));
+          i = gif.end + 1;
+        } else if (hit && hit.end >= i) {
+          if (run) { tokens.push({ type: 'text', text: run }); run = ''; }
+          tokens.push({
+            type: 'emote',
+            url: `https://static-cdn.jtvnw.net/emoticons/v2/${hit.id}/default/dark/2.0`,
+            name: chars.slice(i, hit.end + 1).join(''),
+            cls: 'twitch-emote',
+            source: 'Twitch',
+          });
+          i = hit.end + 1;
+        } else {
+          run += chars[i];
+          i++;
+        }
       }
+      if (run) tokens.push({ type: 'text', text: run });
     }
-    if (run) tokens.push({ type: 'text', text: run });
+    // A GIF whose positions were unusable still goes in, after the words.
+    loose.forEach((gif) => {
+      if (tokens.length) tokens.push({ type: 'text', text: ' ' });
+      tokens.push(gifToken(gif, ''));
+    });
     return tokens;
   }
 
@@ -725,6 +760,21 @@
         return `<img class="fcm-emote ${token.cls}" src="${FCM.escapeHtml(token.url)}"`
           + ` alt="${FCM.escapeHtml(token.name)}" loading="lazy">`;
       }
+      if (token.type === 'gif') {
+        // The picture, and behind it a link to the same address so it can be
+        // opened full size. The label is what shows when GIFs are switched off
+        // in the settings: the row still says a GIF was here, and the link
+        // still opens it, so nothing about the message is lost — only the
+        // motion. Both are always built and CSS picks, so the setting applies
+        // to the rows already on screen.
+        //
+        // The address has already been checked against GIPHY's hosts; it is
+        // escaped here the way every other attribute is.
+        return `<a class="fcm-gif" href="${FCM.escapeHtml(token.url)}" target="_blank"`
+          + ' rel="noopener noreferrer">'
+          + `<img class="fcm-gif-img" src="${FCM.escapeHtml(token.url)}" alt="GIF" loading="lazy">`
+          + '<span class="fcm-gif-label">GIF</span></a>';
+      }
       if (token.type === 'cheer') {
         // Drawn the way every Twitch chat draws one: the Cheermote with what
         // it cost written beside it, in the colour of the tier it reached.
@@ -776,7 +826,7 @@
 
   FCM.renderMessageBody = function (platform, text, opts = {}) {
     let tokens;
-    if (platform === 'twitch') tokens = tokenizeTwitch(text, opts.emoteMap);
+    if (platform === 'twitch') tokens = tokenizeTwitch(text, opts.emoteMap, opts.gifs);
     else if (platform === 'kick') tokens = tokenizeKick(text, opts.emotes);
     else tokens = [{ type: 'text', text }];
 
@@ -923,6 +973,9 @@
     // claim from "they have never spoken in this channel", and it is the second
     // one this row makes.
     if (msg.firstMessage) classes.push('fcm-first');
+    // A row carrying a GIF, so it can be found — a moderator deciding what to
+    // do about GIFs in their chat is looking for exactly these rows.
+    if (Array.isArray(msg.gifs) && msg.gifs.length) classes.push('fcm-has-gif');
 
     el.className = classes.join(' ');
     el.dataset.platform = platform;

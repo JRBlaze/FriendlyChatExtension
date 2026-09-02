@@ -59,6 +59,11 @@
     // is carried and the answer still withheld — that is Twitch's rule, not a
     // missing permission.
     'moderator:read:followers',
+    // Whether this viewer subscribes to the channel, and at which tier. Twitch
+    // says it in the badges on USERSTATE as well, but not for a founder, and
+    // GIFs in chat are a Tier 2 and Tier 3 perk — so the tier is worth asking
+    // for outright.
+    'user:read:subscriptions',
   ].join(' ');
 
   FCM.KICK_AUTH_URL = 'https://id.kick.com/oauth/authorize';
@@ -107,6 +112,13 @@
     { label: '1h', seconds: 3600 },
     { label: '24h', seconds: 86400 },
   ];
+  // The one timeout the hover strip on a message offers. Long enough to end
+  // whatever was happening, short enough that a wrong click costs little;
+  // the full ladder is a click further away, in the username menu.
+  FCM.QUICK_TIMEOUT_SECONDS = 600;
+
+  // Twitch's subscription tiers, as Helix spells them and as people say them.
+  FCM.TWITCH_TIER_NAMES = { 1000: 1, 2000: 2, 3000: 3 };
 
   FCM.LIVE_POLL_MS = 90 * 1000;
   // Counterpart lookups are cached this long so switching between channels does
@@ -156,6 +168,17 @@
     timestamps: true,
     showBadges: true,
     thirdPartyEmotes: true,
+    // GIFs posted to Twitch chat by Tier 2 and Tier 3 subscribers, drawn as the
+    // pictures they are. Off, and each one is a small "GIF" link instead.
+    showGifs: true,
+    // The prompts Twitch draws in its own chat for this viewer alone — share
+    // your watch streak, share your resub — which the panel would otherwise
+    // cover. Surfaced as a row with the site's own Share button behind it.
+    showShareReminders: true,
+    // The delete / timeout / ban strip that appears on a message under the
+    // pointer, for viewers who moderate that chat. Off, the username menu still
+    // has everything.
+    modHoverTools: true,
     highlightNames: '',
     // Emote names kept to hand, newest first. Names rather than urls, because
     // the same emote can arrive from a different provider tomorrow.

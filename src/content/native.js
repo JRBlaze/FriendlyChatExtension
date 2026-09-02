@@ -243,6 +243,14 @@
     return r.width > 0 && r.height > 0;
   }
 
+  // The same press, for the controls the overlay reaches on its own: the
+  // site's Share button on a prompt, the tab inside its emote picker.
+  FCM.pressNativeControl = function (el) {
+    if (!el) return false;
+    try { press(el); } catch (e) { return false; }
+    return true;
+  };
+
   /**
    * @param {object} site one of FCM.SITES
    * @returns the bridge the overlay uses to see and drive the page's own chat
@@ -426,7 +434,7 @@
         if (!c) {
           return {
             points: '', bits: '', hasPoints: false, hasBits: false,
-            canClaim: false, claimNamed: false, hasMenu: false,
+            canClaim: false, claimNamed: false, hasMenu: false, hasGifs: false,
           };
         }
         const hasPoints = onScreen(c.pointsValue) || onScreen(c.openBalances);
@@ -441,6 +449,8 @@
           // Only a named one is pressed without being asked.
           claimNamed: onScreen(c.claim) && c.claimNamed !== false,
           hasIdentity: onScreen(c.chatIdentity),
+          // The site's own emote picker, which is where its GIF keyboard lives.
+          hasGifs: onScreen(c.gifPicker),
           hasMenu: hasPoints || hasBits || onScreen(c.chatIdentity),
         };
       },

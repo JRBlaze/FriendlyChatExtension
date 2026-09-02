@@ -128,7 +128,19 @@ feed. Open a Kick channel and it works the other way round.
   remembered both ways, so arriving from either side merges the right chat.
 - **Moderation tools** in the username menu, for the channels you actually moderate — with the
   last few messages that person sent shown above the buttons, so a timeout is a judgement about
-  something you can still read.
+  something you can still read. And on the message itself: point at a row in a chat you moderate
+  and a strip of delete, a ten-minute timeout and ban appears on it, so the ordinary actions are
+  one click rather than three. Ban takes two presses on purpose. See [Moderating](#moderating).
+- **GIFs in Twitch chat.** A Tier 2 or Tier 3 subscriber's GIF is drawn as the picture it is,
+  from the tag Twitch attaches to the message, and a **GIF** button beside the emote button opens
+  Twitch's own GIF keyboard — the one place a GIF can be sent from, and the place Twitch applies
+  its own rules about who may. The overlay knows your tier here and says so. See
+  [GIFs in chat](#gifs-in-chat).
+- **Watch streaks, and the prompts Twitch draws for you alone.** Somebody's watch streak arrives
+  over IRC now and is shown as the event it is. The things Twitch asks *you* to do in its own chat
+  — share your watch streak, share your resub and how long you have subscribed — were drawn under
+  the panel where you could not see them. They now appear as a row in the feed with Twitch's own
+  Share button behind it. See [Share reminders](#share-reminders-read-off-the-page).
 - **Tells you when there is a new release.** The releases page is checked in the background and
   the toolbar icon gets a dot when there is something newer; the popup turns that into the file
   and the page to drop it on. Nothing installs itself — no extension outside the Web Store can —
@@ -142,7 +154,7 @@ feed. Open a Kick channel and it works the other way round.
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.16.1.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.17.0.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and a folder named `FriendlyChatExtension-main`. The
@@ -485,6 +497,13 @@ If you are a moderator or the broadcaster in a channel, clicking a name in the f
 **Moderate** section to the menu: a row of timeout presets, then delete this message, remove
 timeout / unban, and ban.
 
+Pointing at a message in a chat you moderate grows a small strip on the row itself — **✕** to
+delete that message, **10m** to time the sender out, and **Ban** — so the actions a busy chat
+needs most are a single click. Ban takes two presses: the first arms the button and it reads
+*Ban?*, the second bans, and it disarms itself after a few seconds if you do not. The strip can be
+turned off in the settings (*Moderation strip on messages*); the username menu carries everything
+either way, including the full timeout ladder and unban.
+
 - The tools appear **per platform**, and only where the platform itself says you hold the badge.
   Twitch reports it in `USERSTATE` on an authenticated connection; Kick reports it on the channel
   record. Moderating Twitch does not put Kick buttons in a Kick viewer's menu.
@@ -500,6 +519,35 @@ Connecting an account is what makes this possible, and the scopes are requested 
 (`moderator:manage:banned_users` and `moderator:manage:chat_messages` on Twitch,
 `moderation:ban` and `moderation:chat_message:manage` on Kick). If you connected an account
 before this existed, disconnect and reconnect it to pick the new scopes up.
+
+## GIFs in chat
+
+Twitch lets Tier 2 and Tier 3 subscribers post GIFs, from a GIPHY-powered keyboard inside its
+emote picker, on channels that have not switched the feature off, one every thirty seconds.
+
+**Seeing them.** A GIF arrives as an ordinary chat message carrying a `gifs` tag: the span of the
+message the picture stands in for, GIPHY's id, and the full address of the picture. The overlay
+draws it from that tag and nothing else — a giphy link somebody pastes is a link, not a GIF — and
+only ever from GIPHY's own hosts over https, because the address is what every viewer's panel
+points an `<img>` at and a replayed history line is one nobody watched Twitch write. The picture
+is a link to the full-size original. *GIFs in chat* in the settings turns the pictures off and
+leaves a small **GIF** link in their place, on the rows already on screen as well as the next
+ones. Rows carrying a GIF are marked `fcm-has-gif`, for a moderator looking for exactly those.
+
+**Sending one.** There is no endpoint for it: the Helix chat endpoint takes text, and a GIF sent
+through it would arrive as a bare address. Twitch's keyboard is also where Twitch decides who may
+send one at all. So the **GIF** button beside the emote button does what the Cheer route does —
+it opens Twitch's own emote picker on its GIFs tab, over Twitch's own chat, and the panel steps
+aside for as long as the picker is open. The button appears wherever Twitch is showing its
+picker; if the channel has turned GIFs off there is no tab to land on, and the button says so.
+
+**Your tier.** Twitch reports your own subscription on the channel in the badges it sends with
+`USERSTATE` — a Tier 2 badge is numbered 2000 plus the months, Tier 3 is 3000 plus — and, for a
+connected account carrying `user:read:subscriptions`, outright from Helix, which is the only
+source that knows a founder's tier. The feed says once, on join, how long you have subscribed and
+at which tier, the GIF button's tooltip repeats it, and the button lights up in Twitch's colour
+once it knows the keyboard will take you. Nothing here enforces the rule — Twitch's keyboard
+explains itself to a viewer it turns away — it only saves you a click to find out.
 
 ## Connecting accounts
 
@@ -646,6 +694,35 @@ So `src/content/native-events.js` reads it back, and is written to fail closed a
 The last of those is why nothing there tries to be clever about wording. If the site is not in
 English, or Twitch rewrites the line, this finds nothing and the feed is exactly as complete as it
 was before. It can go quiet; it cannot start inventing rows.
+
+Watch streaks themselves no longer need this: since mid-2026 Twitch sends them over IRC as a
+`USERNOTICE` of their own (`msg-id=viewermilestone`, `msg-param-category=watch-streak`, with the
+count in `msg-param-value` and the channel points paid in `msg-param-copoReward`), and the feed
+draws them from those fields. A modiversary arrives the same way. Any notice this has never heard
+of is drawn from Twitch's own `system-msg` rather than as "somebody triggered something".
+
+### Share reminders read off the page
+
+The other thing Twitch draws in its own chat that never reaches a socket is a prompt for *you*
+and nobody else: share your watch streak, share your resub — the card that says how long you
+have been subscribed and offers to tell chat. Those are private to the signed-in session, are
+sent to no one, and sat under the panel where they could not be seen.
+
+The same watcher reads them, on the same terms, with one extra rule: a block of text only counts
+as a prompt when it carries Twitch's own **Share** button. A chat line has none, a notice about
+somebody else's streak has none, and the button is the whole test. The row that appears in the
+feed says what Twitch asked, tagged *FOR YOU*, and offers three things:
+
+- **Share** presses Twitch's own button, and the panel steps aside in case that opens a box to
+  type a message into — a resub share does. Nothing is shared by the overlay itself.
+- **Show me** steps the panel aside for twenty seconds and scrolls Twitch's own prompt into
+  view, for anyone who would rather read it there.
+- **×** hides the reminder.
+
+The message list is watched for a prompt drawn as a row, and the rest of the chat column is
+looked over every couple of seconds for one drawn above the composer instead. The same prompt
+redrawn as the list scrolls is not a second reminder. *Twitch share reminders* in the settings
+turns all of it off.
 
 ### Why the sockets live in the service worker
 
@@ -1269,6 +1346,16 @@ was never going to see in a friendly test:
 - **Moderation needs a connected account** on the platform in question, with the scopes granted
   at sign-in. Without one the platform never tells us you hold the badge, so the tools stay
   hidden rather than appearing and then failing.
+- **GIFs can only be sent through Twitch's own keyboard.** Twitch offers no endpoint for it, so
+  the GIF button opens Twitch's picker rather than a picker of the overlay's own, and only on a
+  Twitch page. Kick has no GIFs in chat. Seeing GIFs needs nothing: the tag is on the message.
+- **Share reminders are found by their Share button, in English.** Twitch's prompts for you are
+  recognised by the button that answers them, and that button is matched on the word *Share*. On
+  a Twitch page in another language the prompt is left where it is, and the feed says nothing
+  rather than guessing. The prompt itself is still on Twitch's own chat, under the panel.
+- **Your tier is read off your badges unless the account carries `user:read:subscriptions`.**
+  The badge says it for anyone wearing the subscriber badge; a founder's does not, and a token
+  from before that scope was requested cannot ask Helix. Reconnecting picks the scope up.
 - **Site selectors move.** Twitch and Kick both reshuffle their DOM periodically. The overlay
   falls back to locating the message list and climbing to its column, so a renamed wrapper does
   not break sizing; only if that fails too does the panel dock to the right of the window.

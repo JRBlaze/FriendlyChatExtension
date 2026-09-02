@@ -668,7 +668,67 @@
           '.chat-input__badge-carousel button',
           'button[aria-label*="badgecarousel" i]',
         ]),
+        gifPicker: this.emotePickerButton(),
       };
+    },
+
+    /**
+     * Twitch's own emote picker button, at the foot of its chat.
+     *
+     * The GIF keyboard is a tab inside that picker — Twitch put GIFs there
+     * rather than giving them a button of their own — so opening the picker
+     * is the first half of sending a GIF. Named matches first, then the
+     * accessible name, and never the send button beside it.
+     */
+    emotePickerButton() {
+      // By name anywhere in the chat column first: Twitch has moved this
+      // button between wrappers before, and a name is a name wherever it sits.
+      const column = this.chatContainer();
+      const named = firstIn(column || document, [
+        'button[data-a-target="emote-picker-button"]',
+        'button[data-a-target*="emote-picker" i]',
+        'button[aria-label*="emote picker" i]',
+      ]);
+      if (named && named.getClientRects().length) return named;
+      // Then by what it says, but only in the row around the message box —
+      // the column as a whole has buttons that mention emotes and do other
+      // things, such as the picker's own tabs once it is open.
+      const scope = firstReal(['.chat-input', '[class*="chat-input"]']) || this.nativeFooter();
+      if (!scope) return null;
+      for (const btn of scope.querySelectorAll('button')) {
+        const label = `${btn.getAttribute('aria-label') || ''} ${btn.getAttribute('title') || ''}`
+          .replace(/\s+/g, ' ').trim();
+        if (label.length > 40 || !/\bemotes?\b/i.test(label)) continue;
+        if (/send/i.test(label)) continue;
+        if (!btn.getClientRects().length) continue;
+        return btn;
+      }
+      return null;
+    },
+
+    /**
+     * The GIFs tab inside Twitch's open emote picker, or null while the picker
+     * is closed or has no such tab — which is what a channel that has switched
+     * GIFs off looks like.
+     */
+    gifTab() {
+      const named = firstMatch([
+        '[data-a-target*="gif" i][role="tab"]',
+        'button[data-a-target*="gif-picker" i]',
+        'button[data-a-target*="gifs" i]',
+        '[role="tab"][aria-label*="gif" i]',
+      ]);
+      if (named && named.getClientRects().length) return named;
+      const tabs = document.querySelectorAll('[role="tab"],[role="tablist"] button');
+      for (const tab of tabs) {
+        const text = `${tab.textContent || ''} ${tab.getAttribute('aria-label') || ''}`
+          .replace(/\s+/g, ' ').trim();
+        if (!/^gifs?$/i.test(text) && !/\bgifs?\b/i.test(text)) continue;
+        if (text.length > 30) continue;
+        if (!tab.getClientRects().length) continue;
+        return tab;
+      }
+      return null;
     },
 
     hints() {
@@ -717,6 +777,11 @@
   const kick = {
     id: 'kick',
     matches: () => /(^|\.)kick\.com$/.test(location.hostname),
+
+    // Kick has no GIF keyboard, so there is nothing to open. Answered rather
+    // than left off, for the same reason watchNow is on Twitch.
+    emotePickerButton() { return null; },
+    gifTab() { return null; },
 
     channelFromUrl() {
       const parts = location.pathname.split('/').filter(Boolean);
@@ -991,6 +1056,68 @@
   };
 
   const tick = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  // How long to give the site to draw its picker before giving up on the tab
+  // inside it. React draws it inside a frame or two; this is generous.
+  const GIF_TAB_WAIT_MS = 1500;
+  const GIF_TAB_POLL_MS = 100;
+
+  /**
+   * Opens the site's own GIF keyboard: its emote picker, on the GIFs tab.
+   *
+   * Sending a GIF is the one thing the composer here cannot do itself. Twitch
+   * offers no public endpoint for it — the Helix chat endpoint takes text, and
+   * a GIF sent through it would arrive as a bare address — and the keyboard is
+   * where Twitch decides who may send one at all: Tier 2 and Tier 3
+   * subscribers, on channels that have not switched it off, one every thirty
+   * seconds. Those rules are Twitch's to apply, so the site's own keyboard is
+   * opened and the panel steps aside for it, exactly as it does for a Cheer.
+   *
+   * @returns {Promise<{ok: boolean, reason: string}>} `reason` is 'gifs' when
+   *   the GIFs tab was reached, 'picker' when only the picker opened (the tab
+   *   may be absent because the channel has turned GIFs off), or why not.
+   */
+  FCM.openNativeGifKeyboard = async function (site) {
+    if (!site || !site.emotePickerButton) return { ok: false, reason: 'unsupported' };
+    // Already on the tab: nothing to press, and pressing the picker button
+    // again would close it.
+    const already = site.gifTab && site.gifTab();
+    if (already) {
+      (FCM.pressNativeControl || ((el) => el.click()))(already);
+      return { ok: true, reason: 'gifs' };
+    }
+    const button = site.emotePickerButton();
+    if (!button) return { ok: false, reason: 'no-picker' };
+    // The picker is unusable while hidden, and the "hide the site's own chat"
+    // setting hides exactly the subtree it lives in. The caller stands the
+    // panel aside before this runs, which un-hides it; this is the backstop.
+    const unhidden = [];
+    for (let el = button; el && el !== document.body; el = el.parentElement) {
+      if (el.style && el.style.visibility === 'hidden') {
+        unhidden.push(el);
+        el.style.visibility = 'visible';
+      }
+    }
+    try {
+      if (!(FCM.pressNativeControl || ((el) => { el.click(); return true; }))(button)) {
+        return { ok: false, reason: 'no-picker' };
+      }
+      const until = Date.now() + GIF_TAB_WAIT_MS;
+      while (Date.now() < until) {
+        await tick(GIF_TAB_POLL_MS);
+        const tab = site.gifTab && site.gifTab();
+        if (tab) {
+          (FCM.pressNativeControl || ((el) => el.click()))(tab);
+          return { ok: true, reason: 'gifs' };
+        }
+      }
+      return { ok: true, reason: 'picker' };
+    } finally {
+      // Only what this un-hid, and only if the panel has not already been put
+      // back over the chat: the caller's peek owns the site's visibility now.
+      unhidden.forEach((el) => { if (el.style.visibility === 'visible') el.style.visibility = ''; });
+    }
+  };
 
   function readComposer(box) {
     if (box.tagName === 'TEXTAREA' || box.tagName === 'INPUT') return box.value || '';

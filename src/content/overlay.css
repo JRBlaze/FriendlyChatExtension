@@ -575,6 +575,29 @@
 
 .fcm-emote { max-height: 26px; vertical-align: middle; margin: -2px 1px; }
 
+/* A GIF a Tier 2 or Tier 3 subscriber posted. Drawn at a size that reads as a
+   picture in a narrow column rather than a wall, and never wider than the
+   row. The link behind it opens the full-size original. */
+.fcm-gif { display: inline-block; vertical-align: middle; margin: 2px 0; max-width: 100%; }
+.fcm-gif-img {
+  display: block; max-height: 140px; max-width: 100%;
+  border-radius: 6px; border: 1px solid var(--border);
+  background: var(--surface2);
+}
+.fcm-gif-label {
+  display: none; padding: 0 6px; border-radius: 4px;
+  border: 1px solid var(--border); background: var(--surface2);
+  font-family: var(--fcm-mono); font-size: 9.5px; font-weight: 700;
+  letter-spacing: 0.08em; color: var(--text-muted); text-decoration: none;
+}
+/* GIFs switched off: the label stands in, and still opens the original. */
+.fcm-root[data-gifs="false"] .fcm-gif-img { display: none; }
+.fcm-root[data-gifs="false"] .fcm-gif-label { display: inline-block; }
+/* Quoted back in a reply, or listed in a moderator's view of somebody's recent
+   messages, a GIF is context rather than the point. */
+.fcm-replyto .fcm-gif-img,
+.fcm-um-history .fcm-gif-img { max-height: 40px; }
+
 /* A Cheer: the Cheermote and the amount it was worth, drawn as the one thing
    they are so a line break can never strand the number away from its picture.
    The colour is the tier's own and arrives inline with the message, because it
@@ -723,6 +746,32 @@
 }
 .fcm-sys-error { border-left-color: var(--danger-edge); }
 .fcm-sys-event { border-left-color: var(--accent); }
+
+/* Something the site is asking this viewer, and nobody else, to do — share a
+   watch streak, share a resub. It carries buttons, which no other row does,
+   and the platform's own tint so it reads as the platform asking. */
+.fcm-sys-prompt { border-left-color: var(--twitch-border); }
+.fcm-prompt-actions {
+  display: inline-flex; gap: 5px; margin-left: 8px; vertical-align: middle;
+  flex-wrap: wrap;
+}
+.fcm-prompt-btn {
+  height: 20px; padding: 0 8px; border-radius: 999px;
+  border: 1px solid var(--border2); background: var(--surface2);
+  color: var(--text); font-family: var(--fcm-mono); font-size: 9.5px;
+  font-weight: 700; letter-spacing: 0.04em; cursor: pointer; white-space: nowrap;
+  transition: border-color .15s, background .15s, color .15s;
+}
+.fcm-prompt-btn:hover { background: var(--surface3); }
+.fcm-prompt-btn-share {
+  border-color: var(--twitch-border); background: var(--twitch-dim); color: var(--twitch-text);
+}
+.fcm-prompt-btn-share:hover { filter: brightness(1.12); }
+.fcm-prompt-done .fcm-prompt-actions { display: none; }
+.fcm-prompt-done .fcm-sys-body { color: var(--text-dim); }
+.fcm-prompt-done .fcm-sys-body::after {
+  content: ' \2014 done'; font-style: italic;
+}
 .fcm-sys-time {
   display: inline-block; color: var(--sys-text); min-width: 5ch;
   margin-right: 7px; vertical-align: middle;
@@ -890,6 +939,22 @@
   transition: border-color .15s, color .15s, background .15s;
 }
 .fcm-emote-btn:hover { border-color: var(--border2); color: var(--text); background: var(--surface3); }
+/* Opens the site's own GIF keyboard. Wider than the emote button because it
+   is a word rather than a glyph; the same shape otherwise. */
+.fcm-gif-btn {
+  height: 28px; padding: 0 7px; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 6px; border: 1px solid var(--border);
+  background: var(--surface2); color: var(--text-muted);
+  font-family: var(--fcm-mono); font-size: 9.5px; font-weight: 700;
+  letter-spacing: 0.08em; line-height: 1; cursor: pointer;
+  transition: border-color .15s, color .15s, background .15s;
+}
+.fcm-gif-btn:hover { border-color: var(--border2); color: var(--text); background: var(--surface3); }
+.fcm-gif-btn[data-tier="2"],
+.fcm-gif-btn[data-tier="3"] {
+  border-color: var(--twitch-border); background: var(--twitch-dim); color: var(--twitch-text);
+}
 /* A contenteditable rather than an input, so a typed emote can be drawn as the
    emote. `pre-wrap` matters: an editable box collapses the trailing space that
    has just completed a name, and the caret would jump back over it. */
@@ -1180,6 +1245,39 @@
 }
 .fcm-emote-cell:hover { background: var(--surface3); }
 .fcm-emote-cell img { max-width: 28px; max-height: 28px; object-fit: contain; }
+
+/* ── The moderation strip on a message ─────────────────────────────────────── */
+
+/* Appears on the row under the pointer, for a viewer who moderates that chat.
+   Absolutely placed at the row's top right so it never reflows the message,
+   and only rows that have grown one are made a positioning context. */
+.fcm-msg:has(.fcm-modbar) { position: relative; }
+.fcm-modbar {
+  position: absolute; top: 2px; right: 6px;
+  display: none; gap: 3px; align-items: center;
+  padding: 2px; border-radius: 6px;
+  border: 1px solid var(--border2); background: var(--surface);
+  box-shadow: var(--shadow);
+  z-index: 2;
+}
+.fcm-msg:hover .fcm-modbar,
+.fcm-modbar:focus-within { display: inline-flex; }
+.fcm-modbar-btn {
+  height: 20px; min-width: 24px; padding: 0 7px; border-radius: 4px;
+  border: 1px solid var(--border); background: var(--surface2);
+  color: var(--text-muted); font-family: var(--fcm-mono);
+  font-size: 10px; font-weight: 700; line-height: 1; cursor: pointer;
+  transition: border-color .15s, background .15s, color .15s;
+}
+.fcm-modbar-btn:hover { border-color: var(--border2); color: var(--text); background: var(--surface3); }
+.fcm-modbar-timeout:hover {
+  border-color: #ffb400; background: rgba(255, 180, 0, 0.14); color: #ffcc55;
+}
+.fcm-modbar-ban { color: var(--danger); }
+.fcm-modbar-ban:hover,
+.fcm-modbar-ban[data-armed="1"] {
+  border-color: var(--danger-edge); background: rgba(255, 107, 107, 0.14); color: var(--danger);
+}
 
 /* ── User menu ─────────────────────────────────────────────────────────────── */
 

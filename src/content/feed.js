@@ -197,6 +197,11 @@
         queue(FCM.buildEventEl(platform, text, activeFilter, meta));
       },
 
+      // A row the caller built itself — one carrying buttons with handlers,
+      // which innerHTML cannot carry. It goes through the same queue as
+      // everything else so it lands in order and under the same cap.
+      addRow(el) { if (el) queue(el); },
+
       // Dim every message from a user after a timeout or ban, the way the
       // platforms' own chats do, so the feed stays an accurate picture of the room.
       markUserDeleted(platform, username) {

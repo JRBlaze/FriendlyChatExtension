@@ -135,6 +135,104 @@
     return Object.keys(emoteMap).length ? emoteMap : null;
   };
 
+  /**
+   * Whether an address is one a GIF in chat may be drawn from.
+   *
+   * Twitch's GIFs come from GIPHY and the tag carries the full media address,
+   * which Twitch says to use as given. That is honoured — but only for GIPHY's
+   * own hosts. The address in the tag is what an `<img>` in every viewer's
+   * panel will be pointed at, and a tag on a replayed history line is a tag
+   * this extension did not watch Twitch write, so anything that is not GIPHY
+   * over https is left as the text it arrived in.
+   */
+  FCM.isGifUrl = function (url) {
+    const value = String(url || '');
+    if (!/^https:\/\//i.test(value)) return false;
+    let host = '';
+    try { host = new URL(value).hostname.toLowerCase(); } catch (e) { return false; }
+    return host === 'giphy.com' || host.endsWith('.giphy.com');
+  };
+
+  /**
+   * The GIFs a Twitch message carries, from its `gifs` tag.
+   *
+   * "0-33|joSNxeswxuc74Juo8X|https://media4.giphy.com/media/.../giphy.gif",
+   * comma separated, one per GIF. The positions are codepoint indices into the
+   * message the same way emote positions are, and the span they name is what
+   * the picture stands in for.
+   *
+   * A GIF whose positions are missing or nonsense is kept with a start of -1,
+   * so it is drawn after the text rather than lost: Twitch put it in the
+   * message, and a picture at the end beats no picture at all.
+   *
+   * @returns {Array<{start: number, end: number, id: string, url: string}>|null}
+   */
+  FCM.parseTwitchGifs = function (gifsTag) {
+    if (!gifsTag) return null;
+    const out = [];
+    String(gifsTag).split(',').forEach((entry) => {
+      const parts = entry.split('|');
+      if (parts.length < 3) return;
+      const range = parts[0];
+      const id = parts[1];
+      // The address is everything after the second bar, in case it grows one.
+      const url = parts.slice(2).join('|');
+      if (!FCM.isGifUrl(url)) return;
+      let start = -1;
+      let end = -1;
+      const dash = range.indexOf('-');
+      if (dash !== -1) {
+        start = parseInt(range.slice(0, dash), 10);
+        end = parseInt(range.slice(dash + 1), 10);
+      }
+      if (!(Number.isFinite(start) && Number.isFinite(end) && start >= 0 && end >= start)) {
+        start = -1;
+        end = -1;
+      }
+      out.push({ start, end, id: String(id || ''), url });
+    });
+    return out.length ? out : null;
+  };
+
+  /**
+   * This viewer's own subscription to the channel, as Twitch describes it in
+   * the badges on their USERSTATE.
+   *
+   * The subscriber badge's version encodes the tier: Tier 1 badges are
+   * numbered by months alone, Tier 2 badges are 2000 plus the months and Tier
+   * 3 badges 3000 plus the months. `badge-info` carries the actual month count
+   * for the same badge. A founder wears the founder badge instead, which says
+   * they subscribe but not at which tier, so the tier comes back unknown (0)
+   * for a founder unless the subscriber badge is there as well.
+   *
+   * @returns {{tier: number, months: number, founder: boolean}|null} null when
+   *   the badges do not say they subscribe here at all
+   */
+  FCM.twitchSubscriptionFromTags = function (tags = {}) {
+    const badges = String(tags.badges || '');
+    const info = String(tags['badge-info'] || '');
+    const pick = (list, set) => {
+      for (const entry of list.split(',')) {
+        const slash = entry.indexOf('/');
+        if (slash !== -1 && entry.slice(0, slash) === set) return entry.slice(slash + 1);
+      }
+      return '';
+    };
+    const subBadge = pick(badges, 'subscriber');
+    const founder = badges.split(',').some((b) => b.startsWith('founder/'));
+    const subscribed = !!subBadge || founder || tags.subscriber === '1';
+    if (!subscribed) return null;
+    const version = parseInt(subBadge, 10);
+    let tier = 0;
+    if (Number.isFinite(version)) tier = version >= 3000 ? 3 : version >= 2000 ? 2 : 1;
+    const months = parseInt(pick(info, 'subscriber') || pick(info, 'founder'), 10);
+    return {
+      tier,
+      months: Number.isFinite(months) && months > 0 ? months : 0,
+      founder,
+    };
+  };
+
   FCM.twitchBadgeClass = function (badgesTag = '', tags = {}) {
     if (badgesTag.includes('broadcaster') || badgesTag.includes('moderator') || tags.mod === '1') return 'mod';
     if (badgesTag.includes('vip')) return 'vip';
@@ -152,6 +250,19 @@
         : tags['msg-param-sub-plan'] === '3000' ? 'Tier 3'
           : '';
     const recipient = tags['msg-param-recipient-display-name'] || tags['msg-param-recipient-user-name'] || 'a viewer';
+    // Twitch's own sentence for the notice, which is what its chat draws. Used
+    // for the milestones whose fields are not all documented, and for anything
+    // this list has never heard of: "Someone triggered viewermilestone" is a
+    // worse row than the words Twitch already wrote.
+    const systemMsg = String(tags['system-msg'] || '').replace(/\s+/g, ' ').trim();
+    // A watch streak: the number of streams in a row, and the channel points
+    // Twitch paid out for it.
+    const milestoneValue = tags['msg-param-value'] || '';
+    const milestoneReward = tags['msg-param-copoReward'] || '';
+    const milestone = tags['msg-param-category'] === 'watch-streak'
+      ? `${name} watched ${milestoneValue || '?'} streams in a row and sparked a watch streak!`
+        + (milestoneReward ? ` (+${milestoneReward} channel points)` : '')
+      : (systemMsg || `${name} reached a ${String(tags['msg-param-category'] || 'viewer').replace(/-/g, ' ')} milestone.`);
 
     const summaryById = {
       sub: `${name} subscribed${tierLabel ? ` (${tierLabel})` : ''}.`,
@@ -170,9 +281,17 @@
       rewardgift: `${name} triggered a reward gift.`,
       communitypayforward: `${name} paid a sub forward.`,
       standardpayforward: `${name} paid a sub forward.`,
+      // Watch streaks. Until 2026 these were only ever drawn by Twitch's own
+      // page; they now arrive over IRC as a notice of their own.
+      viewermilestone: milestone,
+      // A moderator's anniversary in the role. Twitch's sentence is the whole
+      // of what is documented about it.
+      modiversary: systemMsg || `${name} is celebrating a modiversary!`,
     };
 
-    const summary = summaryById[msgId] || `${name} triggered ${msgId.replace(/_/g, ' ')}.`;
+    const summary = summaryById[msgId]
+      || systemMsg
+      || `${name} triggered ${msgId.replace(/_/g, ' ')}.`;
     return `${summary}${fallbackText ? ` ${fallbackText}` : ''}`.trim();
   };
 })(self.FCM);
