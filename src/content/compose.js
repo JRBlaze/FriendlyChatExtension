@@ -910,9 +910,126 @@
       keepMenuInPanel();
     }
 
+    // ── The strip on a message, for moderators ────────────────────────────────
+    //
+    // The menu holds everything, and everything is three clicks away: the
+    // name, then a section, then the button. A moderator dealing with a busy
+    // chat wants the ordinary actions on the message itself, the way the
+    // sites' own chats draw them — so a strip of delete, timeout and ban
+    // appears on whichever row the pointer is over, for the chats this viewer
+    // actually moderates.
+    //
+    // Built when a row is first hovered rather than when it is rendered. The
+    // feed holds hundreds of rows and most are never pointed at, and whether
+    // this viewer moderates can change after a row was drawn — the strip has
+    // to answer for the moment it is looked at, not the moment the message
+    // arrived.
+
+    // Whether the strip is wanted at all. Read each time, because it is a
+    // setting and settings change under an open panel.
+    const modTools = ctx.modHoverTools || (() => FCM.view.settings.modHoverTools !== false);
+    // How long the ban button stays armed after its first press. A permanent
+    // ban from a strip that appears under a moving pointer should take two
+    // deliberate presses, but not a dialog.
+    const BAN_ARM_MS = 3000;
+
+    function targetOf(row) {
+      const author = row.querySelector('.fcm-author');
+      return {
+        username: (author && author.dataset.name) || row.dataset.user || '',
+        userId: row.dataset.userId || '',
+        messageId: row.dataset.msgId || '',
+      };
+    }
+
+    function stripButton(label, title, run, extraClass) {
+      const btn = document.createElement('button');
+      btn.className = `fcm-modbar-btn${extraClass ? ` ${extraClass}` : ''}`;
+      btn.type = 'button';
+      btn.textContent = label;
+      btn.title = title;
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        run(btn);
+      });
+      return btn;
+    }
+
+    /**
+     * The strip for one row, or null when there is nothing to offer on it.
+     *
+     * @param {Element} row a `.fcm-msg` in the feed
+     */
+    function modBarFor(row) {
+      const platform = row.dataset.platform;
+      if (!FCM.PLATFORM_META[platform] || !canModerate(platform)) return null;
+      const target = targetOf(row);
+      if (!target.username) return null;
+      const meta = FCM.PLATFORM_META[platform];
+      const seconds = FCM.QUICK_TIMEOUT_SECONDS;
+      const pretty = seconds >= 3600 ? `${Math.round(seconds / 3600)}h`
+        : seconds >= 60 ? `${Math.round(seconds / 60)}m` : `${seconds}s`;
+
+      const bar = document.createElement('span');
+      bar.className = 'fcm-modbar';
+      bar.setAttribute('role', 'group');
+      bar.setAttribute('aria-label', `Moderate ${target.username} on ${meta.name}`);
+
+      if (target.messageId) {
+        bar.appendChild(stripButton('\u2715', `Delete this message (${meta.name})`, () => {
+          onModerate(platform, 'delete', Object.assign({}, target));
+        }, 'fcm-modbar-delete'));
+      }
+      bar.appendChild(stripButton(pretty, `Time ${target.username} out for ${pretty} (${meta.name})`, () => {
+        onModerate(platform, 'timeout', Object.assign({ seconds }, target));
+      }, 'fcm-modbar-timeout'));
+
+      // Two presses: the first arms it and says so, the second bans. A wrong
+      // first press costs nothing and expires on its own.
+      let armTimer = null;
+      bar.appendChild(stripButton('Ban', `Ban ${target.username} from ${meta.name} chat`, (btn) => {
+        if (btn.dataset.armed === '1') {
+          clearTimeout(armTimer);
+          btn.dataset.armed = '';
+          btn.textContent = 'Ban';
+          onModerate(platform, 'ban', Object.assign({}, target));
+          return;
+        }
+        btn.dataset.armed = '1';
+        btn.textContent = 'Ban?';
+        btn.title = `Press again to ban ${target.username}`;
+        clearTimeout(armTimer);
+        armTimer = setTimeout(() => {
+          btn.dataset.armed = '';
+          btn.textContent = 'Ban';
+          btn.title = `Ban ${target.username} from ${meta.name} chat`;
+        }, BAN_ARM_MS);
+      }, 'fcm-modbar-ban'));
+
+      return bar;
+    }
+
+    function ensureModBar(row) {
+      if (!row || row.querySelector('.fcm-modbar')) return;
+      if (!modTools()) return;
+      const bar = modBarFor(row);
+      if (bar) row.appendChild(bar);
+    }
+
+    // mouseover rather than mouseenter, because only the former bubbles — one
+    // listener on the feed, not one per row.
+    feedEl.addEventListener('mouseover', (e) => {
+      const row = e.target.closest ? e.target.closest('.fcm-msg') : null;
+      if (row) ensureModBar(row);
+    });
+
     // One delegated listener for every username in the feed, rather than a
     // handler on each of the hundreds of rendered rows.
     feedEl.addEventListener('click', (e) => {
+      // The strip's own buttons handle themselves and stop the event; this is
+      // for a click landing on the strip's padding.
+      if (e.target.closest && e.target.closest('.fcm-modbar')) return;
       const author = e.target.closest('.fcm-author');
       if (author) openMenu(e, author);
       else closeMenu();
@@ -937,6 +1054,9 @@
       isPopupOpen: isOpen,
       // Exposed so the suggestion list can be driven without a real input event.
       updateAutocomplete,
+      // The moderation strip for a row, for the tests and for anything that
+      // wants one without waiting for a pointer.
+      modBarFor,
     };
   };
 })(self.FCM);

@@ -168,6 +168,10 @@
         overlay.setModerator(msg.platform, msg.canModerate);
         break;
 
+      case 'subscription':
+        overlay.setSubscription(msg.platform, msg.subscription);
+        break;
+
       case 'modResult':
         overlay.modResult(msg.platform, msg.result, msg.text);
         break;
@@ -203,6 +207,7 @@
         activeJoins.set(platform, conn.channel);
         overlay.setStatus(platform, conn.state, conn.channel);
         if (conn.canModerate) overlay.setModerator(platform, true);
+        if (conn.subscription) overlay.setSubscription(platform, conn.subscription);
       }
     });
     if (settings.autoConnectHost && !activeJoins.get(site.id)) {

@@ -456,6 +456,10 @@ suites.twitchhistory = function () {
       + 'reply-parent-msg-body=what\sgame :a!a@a.tmi.twitch.tv PRIVMSG #c :Elden Ring',
     '@display-name=NewHere;id=h3;first-msg=1 :n!n@n.tmi.twitch.tv PRIVMSG #c :hello',
     '@display-name=Giver;id=h4;bits=100 :g!g@g.tmi.twitch.tv PRIVMSG #c :Cheer100',
+    '@display-name=Gifer;id=h5;gifs=0-9|abc|https://media.giphy.com/media/abc/giphy.gif '
+      + ':g!g@g.tmi.twitch.tv PRIVMSG #c :giphy gif!',
+    '@display-name=Silent;id=h6;gifs=0-0|def|https://media.giphy.com/media/def/giphy.gif '
+      + ':s!s@s.tmi.twitch.tv PRIVMSG #c :',
   ];
 
   const sandbox = makeSandbox({
@@ -467,7 +471,15 @@ suites.twitchhistory = function () {
     const batches = [];
     await FCM.twitchSource.fetchHistory('c', { sys() {}, batch: (rows) => batches.push(rows) }, 60);
     const rows = batches[0] || [];
-    eq(rows.length, 4, 'history: every replayed message becomes a row');
+    eq(rows.length, 6, 'history: every replayed message becomes a row');
+    // A replayed GIF is still a GIF, and one with no words beside it is still
+    // a message.
+    eq(rows[4].gifs[0].url, 'https://media.giphy.com/media/abc/giphy.gif',
+      'history: a replayed GIF keeps its picture');
+    eq(rows[4].gifs[0].end, 9, 'history: and its positions');
+    eq(rows[5].text, '', 'history: a GIF sent with no words has none');
+    eq(rows[5].gifs.length, 1, 'history: and is kept for the GIF');
+    eq(rows[1].gifs, null, 'history: a message with no GIF says so');
     eq(rows[0].text, 'waves', 'history: a replayed /me is unwrapped too');
     eq(rows[0].action, true, 'history: and still reads as an action');
     eq(rows[1].reply.name, 'Asker', 'history: a replayed reply still says what it answered');
@@ -3080,7 +3092,7 @@ suites.native = function () {
   const withClaim = controlPage();
   const cb = bridgeFor(page(content), withClaim.site).bridge;
   eq(cb.stats(), { points: '4,201', bits: '350', hasPoints: true, hasBits: true,
-    canClaim: true, claimNamed: true, hasIdentity: false, hasMenu: true },
+    canClaim: true, claimNamed: true, hasIdentity: false, hasGifs: false, hasMenu: true },
     'native: both balances and a waiting bonus are reported');
 
   ok(cb.activate('points'), 'native: the rewards control is there to click');
@@ -3127,7 +3139,7 @@ suites.native = function () {
 
   const bare = bridgeFor(page(content), { messageList: () => container }).bridge;
   eq(bare.stats(), { points: '', bits: '', hasPoints: false, hasBits: false,
-    canClaim: false, claimNamed: false, hasMenu: false },
+    canClaim: false, claimNamed: false, hasMenu: false, hasGifs: false },
     'native: a site with no controls of its own reports nothing');
   ok(!bare.activate('points'), 'native: and offers nothing to click');
 
@@ -3137,7 +3149,7 @@ suites.native = function () {
     nativeControls: () => { throw new Error('selectors moved'); },
   }).bridge;
   eq(angry.stats(), { points: '', bits: '', hasPoints: false, hasBits: false,
-    canClaim: false, claimNamed: false, hasMenu: false },
+    canClaim: false, claimNamed: false, hasMenu: false, hasGifs: false },
     'native: a throwing adapter reads as no controls');
 
   // Kick's Kicks button is labelled "Get KICKs" and shows no balance. A control
@@ -8299,6 +8311,594 @@ suites.chatidentity = function () {
       'identity: and it is that one, not the subscriber or verified badge beside it');
     ok(found && found.id !== 'send-message-button', 'identity: never the button that sends');
   }
+};
+
+// ── GIFs in Twitch chat ──────────────────────────────────────────────────────
+//
+// A Tier 2 or Tier 3 subscriber's GIF arrives as an ordinary PRIVMSG carrying a
+// `gifs` tag: positions, an id and the address of the picture. The positions
+// are what the picture stands in for, the way an emote's are; the address is
+// only ever honoured for GIPHY's own hosts, because it is what every viewer's
+// panel will point an <img> at.
+suites.gifs = function () {
+  const FCM = load(makeSandbox(), ...SHARED);
+  const url = 'https://media4.giphy.com/media/joSNxeswxuc74Juo8X/giphy.gif'
+    + '?cid=095d7a5dzizsiwgabonagkmigggv8v1spfai91ac3x0dsiy0&ep=v1_gifs_trending&rid=giphy.gif&ct=g';
+
+  // ── The tag, as Twitch documents it ──
+  const one = FCM.parseTwitchGifs(`0-33|joSNxeswxuc74Juo8X|${url}`);
+  eq(one.length, 1, 'gifs: one entry in the tag is one GIF');
+  eq(one[0].start, 0, 'gifs: the start position is read');
+  eq(one[0].end, 33, 'gifs: and the end');
+  eq(one[0].id, 'joSNxeswxuc74Juo8X', 'gifs: and the id');
+  eq(one[0].url, url, 'gifs: and the address, exactly as Twitch gave it');
+
+  const two = FCM.parseTwitchGifs(`0-5|a|https://media.giphy.com/media/a/giphy.gif,7-9|b|https://media.giphy.com/media/b/giphy.gif`);
+  eq(two.length, 2, 'gifs: several GIFs are several entries');
+  eq(two[1].start, 7, 'gifs: each with its own positions');
+
+  // A GIF whose positions are unusable is kept, loose, rather than dropped:
+  // Twitch put it in the message.
+  const loose = FCM.parseTwitchGifs('x|id|https://media.giphy.com/media/id/giphy.gif');
+  eq(loose[0].start, -1, 'gifs: nonsense positions make a loose GIF');
+  eq(FCM.parseTwitchGifs('9-3|id|https://media.giphy.com/media/id/giphy.gif')[0].start, -1,
+    'gifs: a range running backwards is loose too');
+
+  // Only GIPHY, only over https. The tag is the one place a picture address
+  // comes into the feed from, and a replayed line is one nobody watched arrive.
+  eq(FCM.parseTwitchGifs('0-3|id|https://evil.example/x.gif'), null,
+    'gifs: an address that is not GIPHY is refused');
+  eq(FCM.parseTwitchGifs('0-3|id|http://media.giphy.com/media/id/giphy.gif'), null,
+    'gifs: and so is plain http');
+  eq(FCM.parseTwitchGifs('0-3|id|https://giphy.com.evil.example/x.gif'), null,
+    'gifs: a host that merely starts with giphy.com is not GIPHY');
+  eq(FCM.parseTwitchGifs(''), null, 'gifs: no tag is no GIFs');
+  eq(FCM.parseTwitchGifs('garbage'), null, 'gifs: a tag with no bars in it is nothing');
+  ok(FCM.isGifUrl('https://giphy.com/gifs/abc'), 'gifs: giphy.com itself is allowed');
+  ok(FCM.isGifUrl('https://media1.giphy.com/media/abc/200.gif'), 'gifs: and any of its subdomains');
+  ok(!FCM.isGifUrl('javascript:alert(1)'), 'gifs: a script address is not a picture');
+
+  // Through the IRC parser, the way it arrives: the address carries = and &,
+  // neither of which may confuse the tag split.
+  const line = FCM.parseIrcLine(`@display-name=Gifer;gifs=0-33|joSNxeswxuc74Juo8X|${url};id=g1 `
+    + ':gifer!gifer@gifer.tmi.twitch.tv PRIVMSG #c :https://giphy.com/gifs/joSNxeswxuc74Juo8X');
+  eq(FCM.parseTwitchGifs(line.tags.gifs)[0].url, url,
+    'gifs: the address survives the tag parser with its query string intact');
+  eq(line.tags.id, 'g1', 'gifs: and the tags after it are still read');
+
+  // ── Watch streaks and other milestones, over IRC ──
+  const streak = FCM.twitchUserNoticeSummary({
+    'msg-id': 'viewermilestone', 'display-name': 'Regular',
+    'msg-param-category': 'watch-streak', 'msg-param-value': '10', 'msg-param-copoReward': '450',
+    'system-msg': 'Regular watched 10 consecutive streams and sparked a watch streak!',
+  });
+  contains(streak, 'Regular watched 10 streams in a row', 'streak: a watch streak names the count');
+  contains(streak, '+450 channel points', 'streak: and what Twitch paid for it');
+  eq(FCM.twitchUserNoticeSummary({
+    'msg-id': 'viewermilestone', 'display-name': 'Regular',
+    'msg-param-category': 'watch-streak', 'msg-param-value': '3',
+  }), 'Regular watched 3 streams in a row and sparked a watch streak!',
+  'streak: and says nothing about points when Twitch paid none');
+  // A milestone of a kind this has never heard of falls back to Twitch's own
+  // sentence, and then to a line that at least names the category.
+  eq(FCM.twitchUserNoticeSummary({
+    'msg-id': 'viewermilestone', 'display-name': 'Regular',
+    'msg-param-category': 'something-new', 'system-msg': 'Regular did a new thing!',
+  }), 'Regular did a new thing!', 'streak: an unknown milestone uses Twitch\'s own words');
+  eq(FCM.twitchUserNoticeSummary({
+    'msg-id': 'viewermilestone', 'display-name': 'Regular', 'msg-param-category': 'something-new',
+  }), 'Regular reached a something new milestone.', 'streak: or names the category');
+  eq(FCM.twitchUserNoticeSummary({
+    'msg-id': 'modiversary', 'display-name': 'Mod', 'system-msg': 'Mod has been a moderator for 2 years!',
+  }), 'Mod has been a moderator for 2 years!', 'streak: a modiversary is Twitch\'s own sentence');
+  eq(FCM.twitchUserNoticeSummary({ 'msg-id': 'brandnew', 'display-name': 'X', 'system-msg': 'X did it' }),
+    'X did it', 'streak: any unknown notice prefers Twitch\'s sentence to "triggered"');
+  eq(FCM.twitchUserNoticeSummary({ 'msg-id': 'brandnew', 'display-name': 'X' }),
+    'X triggered brandnew.', 'streak: and only says "triggered" when there is nothing else');
+  // The ones already handled keep their own wording.
+  eq(FCM.twitchUserNoticeSummary({
+    'msg-id': 'resub', 'display-name': 'Fan', 'msg-param-cumulative-months': '24',
+    'system-msg': 'Fan subscribed at Tier 1. They\'ve subscribed for 24 months!',
+  }), 'Fan resubscribed (24 months).', 'streak: a resub still reads the way it did');
+
+  // ── This viewer's own subscription, off the badges ──
+  const sub = (badges, info, extra) => FCM.twitchSubscriptionFromTags({
+    badges, 'badge-info': info || '', ...(extra || {}),
+  });
+  eq(sub('subscriber/2014,premium/1', 'subscriber/14'), { tier: 2, months: 14, founder: false },
+    'sub: a Tier 2 badge is 2000 plus the months, and badge-info carries the months');
+  eq(sub('subscriber/3006', 'subscriber/6').tier, 3, 'sub: Tier 3 badges are 3000 plus');
+  eq(sub('subscriber/6', 'subscriber/6').tier, 1, 'sub: a bare month count is Tier 1');
+  eq(sub('subscriber/0', 'subscriber/1').months, 1, 'sub: the first month is a month');
+  eq(sub('founder/0', 'founder/14'), { tier: 0, months: 14, founder: true },
+    'sub: a founder subscribes at a tier the badge does not say');
+  eq(sub('founder/0,subscriber/2003', 'subscriber/3').tier, 2,
+    'sub: unless the subscriber badge is there beside it');
+  eq(sub('premium/1'), null, 'sub: no subscriber badge is no subscription');
+  eq(sub(''), null, 'sub: and no badges at all is none');
+  eq(sub('', '', { subscriber: '1' }), { tier: 0, months: 0, founder: false },
+    'sub: the subscriber flag alone says they subscribe, at a tier unknown');
+  eq(sub('moderator/1,subscriber/2012', 'subscriber/12').tier, 2,
+    'sub: the badge is found wherever it sits in the list');
+
+  // ── Drawn as pictures ──
+  const rsandbox = makeSandbox({
+    chrome: { storage: { sync: { get: async () => ({}) } } },
+    document: stubDocument(),
+  });
+  const R = load(rsandbox, ...SHARED, 'src/content/render.js');
+  R.setViewSettings(R.DEFAULT_SETTINGS);
+  const gif = { start: 0, end: 41, id: 'joSNxeswxuc74Juo8X', url };
+  const drawn = R.renderMessageBody('twitch', 'https://giphy.com/gifs/joSNxeswxuc74Juo8X', { gifs: [gif] }).html;
+  contains(drawn, '<a class="fcm-gif" href="https://media4.giphy.com/media/joSNxeswxuc74Juo8X/giphy.gif?cid=',
+    'gifs: the GIF is drawn as a link to the picture');
+  contains(drawn, '<img class="fcm-gif-img" src="https://media4.giphy.com/', 'gifs: with the picture inside it');
+  contains(drawn, 'class="fcm-gif-label">GIF<', 'gifs: and a label for when pictures are off');
+  contains(drawn, '&amp;ep=v1_gifs_trending', 'gifs: the address is escaped, not rewritten');
+  missing(drawn, 'giphy.com/gifs/joSNxeswxuc74Juo8X<', 'gifs: the text the picture stands in for is gone');
+  missing(drawn, 'fcm-link', 'gifs: and is not also drawn as a link');
+
+  // Text around it, and an emote beside it: both are kept.
+  const mixed = R.renderMessageBody('twitch', 'Kappa look XXXX wow', {
+    emoteMap: { 0: { id: '25', end: 4 } },
+    gifs: [{ start: 11, end: 14, id: 'x', url: 'https://media.giphy.com/media/x/giphy.gif' }],
+  }).html;
+  contains(mixed, 'twitch-emote', 'gifs: an emote in the same message is still an emote');
+  contains(mixed, 'fcm-gif', 'gifs: and the GIF is still a GIF');
+  contains(mixed, ' look ', 'gifs: the words before it survive');
+  contains(mixed, ' wow', 'gifs: and the words after');
+  missing(mixed, 'XXXX', 'gifs: the span it replaced does not');
+
+  // A loose GIF goes after the words rather than nowhere.
+  const tail = R.renderMessageBody('twitch', 'hello', {
+    gifs: [{ start: -1, end: -1, id: 'x', url: 'https://media.giphy.com/media/x/giphy.gif' }],
+  }).html;
+  ok(tail.indexOf('hello') < tail.indexOf('fcm-gif'), 'gifs: a loose GIF follows the text');
+  contains(R.renderMessageBody('twitch', '', {
+    gifs: [{ start: -1, end: -1, id: 'x', url: 'https://media.giphy.com/media/x/giphy.gif' }],
+  }).html, 'fcm-gif', 'gifs: a message that is nothing but a GIF still draws it');
+
+  // The renderer checks the address again: nothing upstream is trusted to
+  // have done it, and a bad one leaves the words as they were.
+  const refused = R.renderMessageBody('twitch', 'abcd', {
+    gifs: [{ start: 0, end: 3, id: 'x', url: 'https://evil.example/x.gif' }],
+  }).html;
+  eq(refused, 'abcd', 'gifs: an address that is not GIPHY draws nothing and keeps the text');
+  const quoted = R.renderMessageBody('twitch', 'abcd', {
+    gifs: [{ start: 0, end: 3, id: 'x', url: 'https://media.giphy.com/media/x"onerror="alert(1)' }],
+  }).html;
+  missing(quoted, '"onerror', 'gifs: a quote in the address cannot break out of the attribute');
+  contains(quoted, '&quot;onerror', 'gifs: it is escaped like everything else');
+
+  // Only Twitch has these. A Kick message handed the same field ignores it.
+  missing(R.renderMessageBody('kick', 'hey', {
+    gifs: [{ start: 0, end: 2, id: 'x', url: 'https://media.giphy.com/media/x/giphy.gif' }],
+  }).html, 'fcm-gif', 'gifs: Kick messages carry no GIF tag and get no GIF');
+
+  // The row is marked, so a moderator can find the GIFs in their chat.
+  const row = R.buildMessageEl({
+    platform: 'twitch', author: 'Gifer', text: 'x', gifs: [gif], messageId: 'g1',
+  });
+  contains(row.className, 'fcm-has-gif', 'gifs: a row carrying a GIF is marked');
+  missing(R.buildMessageEl({ platform: 'twitch', author: 'Talker', text: 'x' }).className,
+    'fcm-has-gif', 'gifs: one without is not');
+};
+
+// ── The prompts Twitch draws for this viewer alone ────────────────────────────
+//
+// "Share your watch streak", "share your resub": a block of words with a Share
+// button in it, drawn on the site's own chat where the panel covers it. The
+// button is the whole test, and everything about reading it fails closed.
+suites.prompts = function () {
+  const observers = [];
+  const polls = [];
+  const sandbox = makeSandbox({
+    document: { ...stubDocument(), body: {} },
+    MutationObserver: function (cb) {
+      observers.push(cb);
+      this.observe = () => {};
+      this.disconnect = () => { this.gone = true; };
+    },
+    setInterval: (fn) => { polls.push(fn); return polls.length; },
+    clearInterval: (id) => { polls[id - 1] = null; },
+  });
+  const FCM = load(sandbox, ...SHARED, 'src/content/native-events.js');
+
+  const button = (text, aria) => ({
+    nodeType: 1, textContent: text,
+    getAttribute: (k) => (k === 'aria-label' ? (aria || null) : null),
+    getBoundingClientRect: () => ({ width: 40, height: 20 }),
+  });
+  const block = (text, buttons) => ({
+    nodeType: 1, innerText: text,
+    querySelectorAll: (sel) => (sel === 'button' ? buttons : []),
+    querySelector: () => null,
+    matches: () => false,
+  });
+
+  const share = button('Share');
+  const streak = FCM.readNativePrompt(block(
+    'You\'ve watched 3 streams in a row!\nShare your streak with chat to earn 450 channel points\nShare\nNot now',
+    [share, button('Not now')]
+  ));
+  ok(streak, 'prompts: a watch streak prompt is read');
+  eq(streak.kind, 'streak', 'prompts: and known for what it is');
+  eq(streak.text, 'You\'ve watched 3 streams in a row! Share your streak with chat to earn 450 channel points',
+    'prompts: the words are kept and the buttons\' labels are not');
+  ok(streak.share === share, 'prompts: the site\'s own Share button comes back to be pressed');
+
+  const resub = FCM.readNativePrompt(block(
+    'Your 12-month resub is ready to share\nShare\nDismiss', [button('Share'), button('Dismiss')]
+  ));
+  eq(resub.kind, 'resub', 'prompts: a resub prompt is a resub');
+  eq(FCM.readNativePrompt(block('Tell chat something\nShare', [button('Share')])).kind, 'share',
+    'prompts: anything else with a Share button is a plain share');
+  eq(FCM.readNativePrompt(block('Resub ready', [button('', 'Share your resub')])).kind, 'resub',
+    'prompts: a button labelled only for a screen reader still counts');
+
+  // On a real row the buttons sit inline with the words, and innerText runs
+  // them together — "...channel pointsShareNot now" — so the words are walked
+  // out of the tree instead, skipping the buttons.
+  {
+    const text = (value) => ({ nodeType: 3, nodeValue: value });
+    const el = (tag, kids, extra) => ({
+      nodeType: 1, tagName: tag, childNodes: kids, ...(extra || {}),
+    });
+    const inlineShare = { ...button('Share'), tagName: 'BUTTON', childNodes: [text('Share')] };
+    const later = { ...button('Not now'), tagName: 'BUTTON', childNodes: [text('Not now')] };
+    const row = el('DIV', [
+      el('SPAN', [text('You\u2019ve watched 3 streams in a row!')]),
+      el('SPAN', [text('Share your streak with chat')]),
+      inlineShare, later,
+    ], {
+      innerText: 'You\u2019ve watched 3 streams in a row!Share your streak with chatShareNot now',
+      querySelectorAll: (sel) => (sel === 'button' ? [inlineShare, later] : []),
+    });
+    const walked = FCM.readNativePrompt(row);
+    eq(walked && walked.text, 'You\u2019ve watched 3 streams in a row! Share your streak with chat',
+      'prompts: on a real row the buttons\u2019 labels are walked around, not run into the words');
+    eq(walked && walked.kind, 'streak', 'prompts: and the kind is still read off the words');
+  }
+
+  // Fails closed, every way.
+  eq(FCM.readNativePrompt(block('someone: hello there', [button('Reply')])), null,
+    'prompts: a chat line with a button that is not Share is not a prompt');
+  eq(FCM.readNativePrompt(block('Regular watched 10 consecutive streams!', [])), null,
+    'prompts: somebody else\'s streak has no button, so it is not a prompt');
+  eq(FCM.readNativePrompt(block('Something', [button(`${'share '.repeat(20)}`)])), null,
+    'prompts: a paragraph that happens to contain the word is not a button label');
+  eq(FCM.readNativePrompt(block(`Share ${'x'.repeat(500)}`, [button('Share')])), null,
+    'prompts: a block far too long to be a prompt is refused');
+  eq(FCM.readNativePrompt(block('Share', [button('Share')])), null,
+    'prompts: a Share button with no words around it is nothing to say');
+  eq(FCM.readNativePrompt(null), null, 'prompts: no element is no prompt');
+  eq(FCM.readNativePrompt({ nodeType: 3 }), null, 'prompts: a text node is no prompt');
+
+  // ── The watcher, on Twitch ──
+  const events = [];
+  const prompts = [];
+  const list = { contains: () => false };
+  const column = { querySelectorAll: () => [] };
+  const watcher = FCM.createNativeEventWatcher(
+    { id: 'twitch', messageList: () => list, chatContainer: () => column },
+    (text) => events.push(text),
+    (prompt) => prompts.push(prompt),
+  );
+  watcher.start();
+  eq(observers.length, 1, 'prompts: the list is observed');
+  ok(polls.some(Boolean), 'prompts: and the column is polled for prompts drawn elsewhere');
+  const added = (nodes) => observers[0]([{ addedNodes: nodes }]);
+
+  const promptRow = block('Your 12-month resub is ready to share\nShare', [button('Share')]);
+  added([promptRow]);
+  eq(prompts.length, 1, 'prompts: a prompt added to the list is reported');
+  eq(prompts[0].kind, 'resub', 'prompts: as what it is');
+  ok(prompts[0].el === promptRow, 'prompts: with the element it was read from');
+  added([promptRow]);
+  eq(prompts.length, 1, 'prompts: the same prompt redrawn is not reported twice');
+  added([block('viewer: nothing to share here', [])]);
+  eq(prompts.length, 1, 'prompts: an ordinary row is not a prompt');
+
+  // Redemptions still come through the same watcher, as before.
+  const notice = {
+    nodeType: 1, innerText: 'JRBlaze redeemed Feed your hedgehog\n50',
+    matches: (sel) => sel.includes('user-notice-line'),
+    querySelector: () => null,
+    querySelectorAll: () => [],
+  };
+  added([notice]);
+  eq(events, ['JRBlaze redeemed Feed your hedgehog (50 points).'],
+    'prompts: a redemption row is still read as an event');
+  eq(prompts.length, 1, 'prompts: and is not mistaken for a prompt');
+
+  // A prompt drawn outside the list — above the composer — is found by the
+  // poll, climbing from its Share button to the words around it.
+  const outsideShare = button('Share');
+  const wrapper = block('Your 24-month resub is ready to share\nShare', [outsideShare]);
+  wrapper.parentElement = column;
+  outsideShare.parentElement = wrapper;
+  column.querySelectorAll = (sel) => (sel === 'button' ? [outsideShare] : []);
+  polls.filter(Boolean).forEach((fn) => fn());
+  eq(prompts.length, 2, 'prompts: a prompt outside the list is found by the poll');
+  eq(prompts[1].text, 'Your 24-month resub is ready to share', 'prompts: read from the block around its button');
+  polls.filter(Boolean).forEach((fn) => fn());
+  eq(prompts.length, 2, 'prompts: and once only');
+
+  watcher.stop();
+  ok(!polls.some(Boolean), 'prompts: stopping the watcher stops the poll');
+};
+
+// ── The moderation strip on a message ─────────────────────────────────────────
+//
+// Delete, one timeout and ban, on the row itself, for the chats this viewer
+// moderates. Ban takes two presses on purpose.
+suites.modstrip = function () {
+  function fakeEl(tag = 'div') {
+    const classes = new Set();
+    const handlers = {};
+    const attrs = {};
+    const node = {
+      tagName: tag.toUpperCase(),
+      children: [], parentElement: null,
+      dataset: {}, style: {}, textContent: '', title: '', type: '', innerHTML: '',
+      value: '', selectionStart: 0, placeholder: '',
+      clientHeight: 400, offsetHeight: 40,
+      appendChild(c) { this.children.push(c); c.parentElement = this; return c; },
+      addEventListener(t, fn) { (handlers[t] = handlers[t] || []).push(fn); },
+      removeEventListener() {},
+      setAttribute(k, v) { attrs[k] = String(v); },
+      getAttribute(k) { return k in attrs ? attrs[k] : null; },
+      focus() {}, remove() {},
+      closest(sel) {
+        for (let n = this; n; n = n.parentElement) if (n.matchesClass(sel)) return n;
+        return null;
+      },
+      matchesClass(sel) { return sel.startsWith('.') && classes.has(sel.slice(1)); },
+      querySelector(sel) {
+        for (const c of this.children) {
+          if (c.matchesClass(sel)) return c;
+          const deeper = c.querySelector(sel);
+          if (deeper) return deeper;
+        }
+        return null;
+      },
+      querySelectorAll(sel) {
+        const out = [];
+        this.children.forEach((c) => { if (c.matchesClass(sel)) out.push(c); out.push(...c.querySelectorAll(sel)); });
+        return out;
+      },
+      click() {
+        (handlers.click || []).forEach((fn) => fn({
+          target: this, preventDefault() {}, stopPropagation() {},
+        }));
+      },
+      fire(type, event) { (handlers[type] || []).forEach((fn) => fn(event)); },
+      setSelectionRange(a) { this.selectionStart = a; },
+      getBoundingClientRect() { return { left: 0, top: 0, width: 240, height: 120 }; },
+    };
+    node.classList = {
+      add: (c) => classes.add(c),
+      remove: (c) => classes.delete(c),
+      contains: (c) => classes.has(c),
+      toggle: (c, f) => (f ? classes.add(c) : classes.delete(c)),
+    };
+    Object.defineProperty(node, 'className', {
+      get: () => [...classes].join(' '),
+      set: (v) => { classes.clear(); String(v).split(/\s+/).filter(Boolean).forEach((c) => classes.add(c)); },
+    });
+    return node;
+  }
+
+  const timers = [];
+  const sandbox = makeSandbox({
+    chrome: { storage: { sync: { get: async () => ({}) } } },
+    document: { createElement: (t) => fakeEl(t) },
+    window: { getSelection: () => null },
+    setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
+    clearTimeout: (id) => { if (timers[id - 1]) timers[id - 1].fn = null; },
+  });
+  const FCM = load(sandbox, ...SHARED, 'src/content/render.js', 'src/content/compose.js');
+  FCM.setViewSettings(FCM.DEFAULT_SETTINGS);
+
+  const actions = [];
+  const feedEl = fakeEl();
+  const compose = FCM.createCompose({
+    panel: fakeEl(), inputEl: fakeEl('input'), feedEl, emoteBtn: fakeEl('button'),
+    toast: () => {},
+    canModerate: (platform) => platform === 'twitch',
+    onModerate: (platform, action, opts) => actions.push({ platform, action, opts }),
+  });
+
+  function row(platform, { messageId = 'm1' } = {}) {
+    const el = fakeEl();
+    el.className = 'fcm-msg';
+    el.dataset.platform = platform;
+    el.dataset.user = 'someone';
+    el.dataset.userId = 'u1';
+    if (messageId) el.dataset.msgId = messageId;
+    const author = fakeEl('span');
+    author.className = 'fcm-author';
+    author.dataset.name = 'Someone';
+    author.dataset.platform = platform;
+    el.appendChild(author);
+    feedEl.appendChild(el);
+    return el;
+  }
+
+  const twitchRow = row('twitch');
+  const bar = compose.modBarFor(twitchRow);
+  ok(bar, 'modstrip: a moderator gets a strip on a row from the chat they moderate');
+  const labels = bar.children.map((b) => b.textContent);
+  eq(labels, ['\u2715', '10m', 'Ban'], 'modstrip: delete, one timeout and ban, in that order');
+
+  bar.children[0].click();
+  eq(actions.pop(), {
+    platform: 'twitch', action: 'delete', opts: { username: 'Someone', userId: 'u1', messageId: 'm1' },
+  }, 'modstrip: delete acts on the message the strip is on');
+
+  bar.children[1].click();
+  eq(actions.pop(), {
+    platform: 'twitch', action: 'timeout',
+    opts: { seconds: 600, username: 'Someone', userId: 'u1', messageId: 'm1' },
+  }, 'modstrip: the timeout is ten minutes, on that person');
+
+  // Ban takes two presses: the first arms it and says so.
+  const ban = bar.children[2];
+  ban.click();
+  eq(actions.length, 0, 'modstrip: one press does not ban');
+  eq(ban.textContent, 'Ban?', 'modstrip: it asks instead');
+  ban.click();
+  eq(actions.pop(), {
+    platform: 'twitch', action: 'ban', opts: { username: 'Someone', userId: 'u1', messageId: 'm1' },
+  }, 'modstrip: the second press bans');
+  eq(ban.textContent, 'Ban', 'modstrip: and the button is back to its word');
+
+  // Left armed, it disarms itself.
+  ban.click();
+  eq(ban.textContent, 'Ban?', 'modstrip: armed again');
+  const disarm = timers.filter((t) => t.fn).pop();
+  ok(disarm && disarm.ms === 3000, 'modstrip: with a short fuse');
+  disarm.fn();
+  eq(ban.textContent, 'Ban', 'modstrip: that puts it back on its own');
+  eq(actions.length, 0, 'modstrip: without banning anyone');
+
+  // No message id — a replayed line, say — and there is nothing to delete.
+  const noId = compose.modBarFor(row('twitch', { messageId: '' }));
+  eq(noId.children.map((b) => b.textContent), ['10m', 'Ban'],
+    'modstrip: a row with no message id offers no delete');
+
+  // The other chat, which this viewer does not moderate, gets nothing.
+  eq(compose.modBarFor(row('kick')), null, 'modstrip: no strip where the viewer is not a moderator');
+
+  // Hovering is what grows the strip, once, and only while the setting is on.
+  const hovered = row('twitch');
+  const author = hovered.querySelector('.fcm-author');
+  feedEl.fire('mouseover', { target: author });
+  ok(hovered.querySelector('.fcm-modbar'), 'modstrip: pointing at a row grows its strip');
+  feedEl.fire('mouseover', { target: author });
+  eq(hovered.querySelectorAll('.fcm-modbar').length, 1, 'modstrip: and only one');
+
+  FCM.setViewSettings({ ...FCM.DEFAULT_SETTINGS, modHoverTools: false });
+  const quiet = row('twitch');
+  feedEl.fire('mouseover', { target: quiet.querySelector('.fcm-author') });
+  eq(quiet.querySelector('.fcm-modbar'), null, 'modstrip: switched off, nothing grows');
+  ok(compose.modBarFor(quiet), 'modstrip: though the strip itself can still be asked for');
+};
+
+// ── This viewer's own subscription, as the worker learns it ───────────────────
+//
+// Twitch says it twice: in the badges on USERSTATE, and — for a token carrying
+// the scope — outright from Helix, which is the only one that knows a
+// founder's tier. Both are merged and told to the tab once per change.
+suites.subscription = function () {
+  const { bootWorker, wait } = require('./background.js');
+
+  return (async () => {
+    const asked = [];
+    const w = bootWorker({
+      fetchImpl: async (url) => {
+        asked.push(String(url));
+        if (String(url).includes('/subscriptions/user')) {
+          return { ok: true, json: async () => ({ data: [{ tier: '3000', is_gift: true }] }) };
+        }
+        return { ok: false, status: 404, json: async () => ({}) };
+      },
+    });
+    try {
+      w.storage.local.fcm_auth_v1 = {
+        twitch: {
+          accessToken: 't', clientId: 'c', userId: '42', login: 'me',
+          scopes: ['chat:read', 'user:read:subscriptions'], expiresAt: 0,
+        },
+      };
+      w.connect();
+      w.send({ cmd: 'hello', site: 'twitch', channel: 'somechannel', hints: [] });
+      await wait(40);
+      w.send({ cmd: 'join', platform: 'twitch', channel: 'somechannel' });
+      await wait(40);
+      const irc = w.socketFor('irc-ws.chat.twitch.tv');
+      ok(irc, 'sub: a Twitch socket is opened');
+
+      // The badges say Tier 2, fourteen months.
+      irc.push('@badge-info=subscriber/14;badges=subscriber/2014,premium/1;mod=0;emote-sets=0 '
+        + ':tmi.twitch.tv USERSTATE #somechannel\r\n');
+      const first = w.last('subscription');
+      ok(first, 'sub: USERSTATE tells the tab about the subscription');
+      eq(first.platform, 'twitch', 'sub: on Twitch');
+      eq(first.subscription, {
+        subscribed: true, tier: 2, months: 14, founder: false, isGift: false, source: 'badges',
+      }, 'sub: the tier and the months come off the badges');
+
+      // The same USERSTATE again — it arrives with every message this viewer
+      // sends — says nothing new.
+      irc.push('@badge-info=subscriber/14;badges=subscriber/2014,premium/1;mod=0 '
+        + ':tmi.twitch.tv USERSTATE #somechannel\r\n');
+      eq(w.of('subscription').length, 1, 'sub: an unchanged answer is not repeated');
+
+      // ROOMSTATE names the room, and Helix is asked. It knows better.
+      irc.push('@room-id=4242 :tmi.twitch.tv ROOMSTATE #somechannel\r\n');
+      await wait(40);
+      const helix = w.last('subscription');
+      eq(helix.subscription.tier, 3, 'sub: Helix\'s tier wins over the badge');
+      eq(helix.subscription.isGift, true, 'sub: and says whether it was a gift');
+      eq(helix.subscription.months, 14, 'sub: the months still come from the badges');
+      eq(helix.subscription.source, 'helix', 'sub: and the answer says where it came from');
+      ok(asked.some((u) => /subscriptions\/user\?broadcaster_id=4242&user_id=42/.test(u)),
+        'sub: Helix was asked about this viewer in this room');
+
+      // A reloaded page is told again, with the ready.
+      w.clear();
+      w.send({ cmd: 'hello', site: 'twitch', channel: 'somechannel', hints: [] });
+      await wait(40);
+      eq(w.last('ready').connections.twitch.subscription.tier, 3,
+        'sub: the ready carries what was learnt, for a page that reloaded');
+
+      // Leaving forgets it: the next channel is a different question.
+      w.send({ cmd: 'leave', platform: 'twitch' });
+      await wait(20);
+      w.send({ cmd: 'hello', site: 'twitch', channel: 'somechannel', hints: [] });
+      await wait(40);
+      eq(w.last('ready').connections.twitch.subscription, null,
+        'sub: nothing is claimed about a channel that has been left');
+    } finally {
+      w.teardown();
+    }
+  })();
+};
+
+// Without the scope, Helix is left alone and the badges answer on their own.
+suites.subscriptionscope = function () {
+  const { bootWorker, wait } = require('./background.js');
+
+  return (async () => {
+    const w = bootWorker();
+    try {
+      w.storage.local.fcm_auth_v1 = {
+        twitch: { accessToken: 't', clientId: 'c', userId: '42', login: 'me', scopes: ['chat:read'], expiresAt: 0 },
+      };
+      w.connect();
+      w.send({ cmd: 'hello', site: 'twitch', channel: 'somechannel', hints: [] });
+      await wait(40);
+      w.send({ cmd: 'join', platform: 'twitch', channel: 'somechannel' });
+      await wait(40);
+      const irc = w.socketFor('irc-ws.chat.twitch.tv');
+      irc.push('@badge-info=founder/9;badges=founder/0;mod=0 :tmi.twitch.tv USERSTATE #somechannel\r\n');
+      irc.push('@room-id=4242 :tmi.twitch.tv ROOMSTATE #somechannel\r\n');
+      await wait(40);
+      const told = w.last('subscription');
+      eq(told.subscription, {
+        subscribed: true, tier: 0, months: 9, founder: true, isGift: false, source: 'badges',
+      }, 'sub: a founder is known to subscribe, at a tier the badges cannot say');
+      ok(!w.fetchCalls.some((c) => c.url.includes('/subscriptions/user')),
+        'sub: Helix is not asked with a token that lacks the scope');
+
+      // A sub that lapses is reported as gone.
+      irc.push('@badge-info=;badges=premium/1;mod=0 :tmi.twitch.tv USERSTATE #somechannel\r\n');
+      eq(w.last('subscription').subscription.subscribed, false, 'sub: a lapsed sub is reported as one');
+    } finally {
+      w.teardown();
+    }
+  })();
 };
 
 // ── Runner ────────────────────────────────────────────────────────────────────

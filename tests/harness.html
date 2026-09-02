@@ -28,6 +28,12 @@
   .chatcol > section { flex: 1; display: flex; flex-direction: column; min-height: 0; }
   .chatcol header { height: 44px; border-bottom: 1px solid #2a2a2d; display: flex; align-items: center; justify-content: center; font-size: 12px; color: #adadb8; }
   .chatcol .msgs { flex: 1; padding: 10px; font-size: 12px; color: #6a6a75; }
+  /* The mock picker is drawn the size Twitch draws its own, over the chat
+     column, which is what makes the overlay stand aside for it. */
+  #native-picker { position: absolute; right: 12px; bottom: 70px; width: 300px; height: 320px;
+    background: #1b1b22; border: 1px solid #444; z-index: 5; padding: 8px; font-size: 12px; color: #aaa; }
+  #native-picker [role=tab].on { outline: 2px solid #9146ff; }
+  .chatcol section { position: relative; }
   /* Stands in for the stack Twitch draws above the message list: hype train,
      poll, prediction, pinned message, leaderboard. */
   .chatcol .cards:empty { display: none; }
@@ -134,6 +140,18 @@
             </div>
           </div>
           <div id="native-composer" contenteditable="true" role="textbox" data-a-target="chat-input"></div>
+          <!-- Twitch's emote picker button, which is where its GIF keyboard
+               lives: a GIFs tab inside the picker rather than a button of its
+               own. The mock picker below opens on it, so the overlay's GIF
+               button can be seen handing off to the site's own control. -->
+          <button id="native-emotes" data-a-target="emote-picker-button" aria-label="Emote Picker">&#9786;</button>
+          <div id="native-picker" role="dialog" hidden>
+            <div role="tablist">
+              <button role="tab" data-a-target="emote-picker-tab-emotes">Emotes</button>
+              <button role="tab" data-a-target="emote-picker-tab-gifs">GIFs</button>
+            </div>
+            <div class="picker-body">the site's own picker (mock)</div>
+          </div>
           <button id="native-send" data-a-target="chat-send-button" disabled>Chat</button>
           <div class="sentlog">last sent: <span id="sent-log">(none)</span></div>
           <div class="rewards" data-test-selector="community-points-summary">
@@ -230,6 +248,12 @@
     <button data-act="long">+ long message</button>
     <button data-act="toggle-badges">toggle badges</button>
     <button data-act="toggle-times">toggle timestamps</button>
+    <button data-act="gif">+ gif message</button>
+    <button data-act="toggle-gifs">toggle gifs</button>
+    <button data-act="sub-tier2">fake: tier 2 sub</button>
+    <button data-act="mods">fake: moderator</button>
+    <button data-act="share-streak">twitch: streak prompt</button>
+    <button data-act="share-resub">twitch: resub prompt</button>
   </div>
 
 <script>
@@ -300,6 +324,19 @@ function mockComposer(box, send) {
 }
 // Both sites get one, so the send path can be driven on either.
 mockComposer(document.getElementById('native-composer'), document.getElementById('native-send'));
+(function mockPicker() {
+  const button = document.getElementById('native-emotes');
+  const picker = document.getElementById('native-picker');
+  button.addEventListener('click', () => { picker.hidden = !picker.hidden; });
+  picker.querySelectorAll('[role="tab"]').forEach((tab) => {
+    tab.addEventListener('click', () => {
+      picker.querySelectorAll('[role="tab"]').forEach((t) => t.classList.toggle('on', t === tab));
+      picker.querySelector('.picker-body').textContent = /gif/i.test(tab.textContent)
+        ? 'the site\u2019s own GIF keyboard (mock)'
+        : 'the site\u2019s own picker (mock)';
+    });
+  });
+})();
 mockComposer(document.querySelector('.kickcol .editor-input'), document.getElementById('send-message-button'));
 </script>
 
@@ -548,12 +585,39 @@ function loadSources(bust) {
     // without it renders as the text it is, which is what Twitch does too.
     ['BitsGiver', 'that clutch deserved this Cheer1000', { color: '#FFAA00', bits: 1000 }],
   ];
+  // A GIF, the way a Tier 2 subscriber's arrives: the tag names the span of
+  // the message the picture stands in for and the address to draw it from.
+  const GIF_URL = 'https://media.giphy.com/media/joSNxeswxuc74Juo8X/giphy.gif';
+  const GIF_LINE = ['GifSender', 'https://giphy.com/gifs/joSNxeswxuc74Juo8X', {
+    badgesRaw: 'subscriber/2012', badgeClass: 'sub', color: '#9146FF',
+    gifs: [{ start: 0, end: 41, id: 'joSNxeswxuc74Juo8X', url: GIF_URL }],
+  }];
   const KICK_LINES = [
     ['kickviewer',   'first time here, this is sick [emote:37226:emojiKEK]', { badgesRaw: [{ type: 'subscriber' }], badgeClass: 'sub' }],
     ['greenmod',     'keep it civil in here please', { badgesRaw: [{ type: 'moderator' }, { type: 'og' }], badgeClass: 'mod' }],
     ['kekwenjoyer',  'KEKW that was rough', { badgesRaw: [] }],
     ['vipperson',    'love the new layout', { badgesRaw: [{ type: 'vip' }], badgeClass: 'vip' }],
   ];
+
+  function nativePrompt(text) {
+    const row = document.createElement('div');
+    row.className = 'native-row native-prompt';
+    const words = document.createElement('div');
+    words.textContent = text;
+    const share = document.createElement('button');
+    share.textContent = 'Share';
+    share.addEventListener('click', () => {
+      row.textContent = `(shared: ${text})`;
+      document.getElementById('sent-log').textContent = `share pressed: ${text}`;
+    });
+    const later = document.createElement('button');
+    later.textContent = 'Not now';
+    later.addEventListener('click', () => row.remove());
+    row.appendChild(words);
+    row.appendChild(share);
+    row.appendChild(later);
+    document.querySelector('.msgs').appendChild(row);
+  }
 
   let n = 0;
   function push(platform) {
@@ -633,6 +697,29 @@ function loadSources(bust) {
       url: 'https://kick.com/examplestreamer-kick',
     }, false),
     'connect-kick': () => overlay.setStatus('kick', 'connected', 'examplestreamer-kick'),
+    gif: () => {
+      const [author, text, opts] = GIF_LINE;
+      overlay.chat({
+        platform: 'twitch', author, text,
+        messageId: `gif-${Date.now()}`, timestamp: Date.now(), ...opts,
+      });
+    },
+    'toggle-gifs': async () => {
+      const cur = await FCM.loadSettings();
+      overlay.applyStoredSettings(await FCM.saveSettings({ showGifs: !cur.showGifs }));
+    },
+    // What the worker sends once USERSTATE and Helix have said who this
+    // viewer is here.
+    'sub-tier2': () => overlay.setSubscription('twitch', {
+      subscribed: true, tier: 2, months: 14, founder: false, isGift: false, source: 'badges',
+    }),
+    mods: () => { overlay.setModerator('twitch', true); overlay.setModerator('kick', true); },
+    // The prompts Twitch draws in its own chat for this viewer alone, with the
+    // site's own Share button on them. Drawn into the mock message list, which
+    // is what the overlay watches.
+    'share-streak': () => nativePrompt(
+      'You\u2019ve watched 3 streams in a row! Share your streak with chat to earn 450 channel points'),
+    'share-resub': () => nativePrompt('Your 12-month resub is ready to share'),
     narrow: () => { document.querySelector('.chatcol').style.width = '260px'; },
     wide:   () => { document.querySelector('.chatcol').style.width = '460px'; },
     short:  () => { document.querySelector('.layout').style.height = '60%'; },

@@ -88,6 +88,12 @@
     // Whether this viewer holds a moderator (or broadcaster) badge in each
     // connected channel. The platforms tell us; we never assume.
     const canModerate = { twitch: false, kick: false };
+    // This viewer's own subscription to each connected channel, as the platform
+    // reports it. Twitch is the one that says anything: the tier decides
+    // whether its GIF keyboard will let them send, and the months are what a
+    // resub reminder is about.
+    const subscription = { twitch: null, kick: null };
+    let subAnnounced = false;
     // The Cheermote prefixes this channel accepts, sent by the worker after the
     // Twitch join. Empty until then, which falls back to the global list — the
     // ones people actually type are all in it, so a Cheer typed in the first
@@ -122,7 +128,7 @@
     const nativeEvents = FCM.createNativeEventWatcher(site, (text) => {
       if (!settings.showEvents) return;
       feed.addEvent(hostPlatform, text, filter);
-    });
+    }, (prompt) => showSharePrompt(prompt));
     // Set while one of the site's own menus is open where the panel would cover
     // it — the rewards panel, the cheer menu. The panel steps aside until it
     // closes rather than painting over a menu the user just opened.
@@ -201,6 +207,8 @@
           <div class="fcm-targets"><span class="fcm-targets-label">Send to</span></div>
           <div class="fcm-composer-row">
             <button class="fcm-emote-btn" title="Emotes (or type : in the box)">&#9786;</button>
+            <button class="fcm-gif-btn fcm-hidden" type="button"
+              title="Send a GIF through Twitch's own GIF keyboard">GIF</button>
             <div class="fcm-input" contenteditable="true" role="textbox"
               aria-multiline="false" spellcheck="false"></div>
             <button class="fcm-send">Send</button>
@@ -231,6 +239,7 @@
     const inputEl = $('.fcm-input');
     const sendEl = $('.fcm-send');
     const emoteBtn = $('.fcm-emote-btn');
+    const gifBtn = $('.fcm-gif-btn');
     const targetsEl = $('.fcm-targets');
     const replyEl = $('.fcm-reply');
     const countEl = $('.fcm-count');
@@ -865,13 +874,22 @@
       // the panel comes back a changed balance rebuilds it on the next tick and
       // an unchanged one correctly does nothing.
       if (!visible || collapsed) return;
-      const stats = settings.showNativeStats === false ? null : native.stats();
-      const signature = stats
+      // Read whether or not the balances are wanted: the GIF button follows
+      // the site's emote picker, which is not a balance and not that setting.
+      const read = native.stats();
+      const stats = settings.showNativeStats === false ? null : read;
+      const signature = (stats
         ? `${stats.points}|${stats.bits}|${stats.hasPoints}|${stats.hasBits}`
           + `|${stats.canClaim}|${stats.hasMenu}|${stats.hasIdentity}`
-        : 'off';
+        : 'off') + `|gif:${read.hasGifs}`;
       if (signature === statsSignature) return;
       statsSignature = signature;
+
+      // Only where the site is showing its own picker to open. The button is
+      // offered to everyone on that page: Twitch's keyboard is where the tier
+      // rule is applied, and it explains itself to a viewer it turns away.
+      gifBtn.classList.toggle('fcm-hidden', !read.hasGifs);
+      updateGifButton();
 
       const show = !!stats
         && !!(stats.hasPoints || stats.hasBits || stats.canClaim || stats.hasIdentity);
@@ -996,6 +1014,169 @@
         return;
       }
       schedulePeekCheck();
+    }
+
+    // ── GIFs, through the site's own keyboard ─────────────────────────────────
+
+    /**
+     * What the GIF button says about this viewer's standing here.
+     *
+     * The tier is Twitch's rule, not ours — Tier 2 and Tier 3 subscribers may
+     * send GIFs — so the button says where the viewer stands rather than
+     * hiding itself, and lights up in the platform's colour once it knows the
+     * keyboard will accept them.
+     */
+    function updateGifButton() {
+      const sub = subscription.twitch;
+      const tier = sub && sub.subscribed ? sub.tier : 0;
+      gifBtn.dataset.tier = String(tier || '');
+      if (tier >= 2) {
+        gifBtn.title = `Send a GIF — you are a Tier ${tier} subscriber here`
+          + (sub.months ? ` (${sub.months} month${sub.months === 1 ? '' : 's'})` : '');
+      } else if (sub && sub.subscribed) {
+        gifBtn.title = 'Send a GIF — Twitch offers GIFs in chat to Tier 2 and Tier 3 '
+          + `subscribers, and you are ${tier === 1 ? 'Tier 1' : 'subscribed at a tier it has not said'}`;
+      } else {
+        gifBtn.title = "Send a GIF through Twitch's own GIF keyboard "
+          + '(a Tier 2 and Tier 3 subscriber perk)';
+      }
+    }
+
+    /**
+     * Opens Twitch's own GIF keyboard, and stands aside for it.
+     *
+     * There is no endpoint for sending a GIF, and Twitch's keyboard is where
+     * Twitch applies its own rules — the subscriber tier, the channel's
+     * setting, the thirty-second cooldown, the content rating. So the site's
+     * picker is opened on its GIFs tab, over the site's own chat, exactly the
+     * way a Cheer goes through the site's own chat box.
+     */
+    let openingGifs = false;
+
+    async function openGifKeyboard() {
+      if (destroyed || openingGifs || hostPlatform !== 'twitch') return;
+      const sub = subscription.twitch;
+      if (sub && sub.subscribed && sub.tier === 1) {
+        toast('GIFs in chat are a Tier 2 and Tier 3 perk — Twitch will offer the upgrade');
+      } else if (sub && !sub.subscribed) {
+        toast('GIFs in chat are for Tier 2 and Tier 3 subscribers of this channel');
+      }
+      openingGifs = true;
+      // The site's own chat has to be on screen before its picker will draw,
+      // so the panel steps aside first and the press follows.
+      peekHoldUntil = Date.now() + PEEK_HOLD_MS;
+      native.expectMenu();
+      setPeek(true);
+      let result;
+      try {
+        result = await FCM.openNativeGifKeyboard(site);
+      } catch (e) {
+        result = { ok: false, reason: 'error' };
+      } finally {
+        openingGifs = false;
+      }
+      if (destroyed) return;
+      if (!result.ok) {
+        peekHoldUntil = 0;
+        setPeek(false);
+        toast('Twitch is not showing its emote picker on this page');
+        return;
+      }
+      if (result.reason === 'picker') {
+        toast("Opened Twitch's emote picker — the GIFs tab is where GIFs are, when the channel allows them");
+      }
+      schedulePeekCheck();
+    }
+
+    // ── The prompts Twitch draws for this viewer ──────────────────────────────
+
+    // How long the panel stands aside when asked to show one of the site's
+    // own prompts. Long enough to read it and press it; the panel comes back
+    // on its own afterwards.
+    const PROMPT_PEEK_MS = 20 * 1000;
+
+    function promptStillThere(prompt) {
+      const btn = prompt && prompt.share;
+      if (!btn || btn.isConnected === false) return false;
+      if (!btn.getBoundingClientRect) return true;
+      const r = btn.getBoundingClientRect();
+      return r.width > 0 || r.height > 0;
+    }
+
+    /**
+     * Something Twitch is asking this viewer to share — a watch streak, a
+     * resub — drawn as a row with the site's own Share button behind it.
+     *
+     * The prompt only exists on the site's own chat, which the panel covers,
+     * so without this it was simply never seen. Nothing here shares anything
+     * on its own: Share presses Twitch's button, which is Twitch's to decide
+     * what to do with, and the panel steps aside in case that opens a box to
+     * type into.
+     */
+    function showSharePrompt(prompt) {
+      if (destroyed || settings.showShareReminders === false || !prompt) return;
+      const kindLabel = { streak: 'Watch streak', resub: 'Resub' }[prompt.kind] || 'Share';
+      const el = document.createElement('div');
+      el.className = 'fcm-sys fcm-sys-prompt';
+      el.dataset.platform = hostPlatform;
+      el.innerHTML = `<span class="fcm-sys-time">${FCM.ftime()}</span>`
+        + '<span class="fcm-sys-tag">FOR YOU</span>'
+        + `<span class="fcm-sys-label fcm-sys-${hostPlatform}">${FCM.escapeHtml(kindLabel)}</span>`
+        + '<span class="fcm-sys-body"></span>';
+      // Set as text: every word of it came off the page.
+      el.querySelector('.fcm-sys-body').textContent = prompt.text;
+
+      const actions = document.createElement('span');
+      actions.className = 'fcm-prompt-actions';
+      const action = (label, cls, title, run) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = `fcm-prompt-btn${cls ? ` ${cls}` : ''}`;
+        btn.textContent = label;
+        btn.title = title;
+        btn.addEventListener('click', (e) => { e.stopPropagation(); run(); });
+        actions.appendChild(btn);
+      };
+
+      action('Share', 'fcm-prompt-btn-share', "Press Twitch's own Share button", () => {
+        if (!promptStillThere(prompt)) {
+          el.classList.add('fcm-prompt-done');
+          toast('That prompt is no longer on the page');
+          return;
+        }
+        // Sharing a resub opens a box to type a message into, on the site's
+        // own chat, so the panel steps aside for whatever follows the press.
+        peekHoldUntil = Date.now() + PEEK_HOLD_MS;
+        native.expectMenu();
+        setPeek(true);
+        if (!FCM.pressNativeControl(prompt.share)) {
+          peekHoldUntil = 0;
+          setPeek(false);
+          toast("Could not press Twitch's Share button");
+          return;
+        }
+        el.classList.add('fcm-prompt-done');
+        schedulePeekCheck();
+        toast(`Sharing your ${kindLabel.toLowerCase()} on Twitch`);
+      });
+      action('Show me', '', "Step aside so Twitch's own prompt is visible", () => {
+        if (!promptStillThere(prompt)) {
+          el.classList.add('fcm-prompt-done');
+          toast('That prompt is no longer on the page');
+          return;
+        }
+        peekHoldUntil = Date.now() + PROMPT_PEEK_MS;
+        setPeek(true);
+        try {
+          if (prompt.el && prompt.el.scrollIntoView) prompt.el.scrollIntoView({ block: 'nearest' });
+        } catch (e) { /* not essential */ }
+        schedulePeekCheck();
+      });
+      action('\u00d7', '', 'Hide this reminder', () => el.remove());
+      el.appendChild(actions);
+
+      feed.addRow(el);
+      toast(`Twitch is asking you to share your ${kindLabel.toLowerCase()} — see the feed`);
     }
 
     // ── Popped out into a window of its own ───────────────────────────────────
@@ -1706,6 +1887,24 @@
             <input type="checkbox" data-set="showEvents">
           </div>
           <div class="fcm-field">
+            <label>GIFs in chat<small>Tier 2 and Tier 3 subscribers' GIFs, drawn as pictures</small></label>
+            <input type="checkbox" data-set="showGifs">
+          </div>
+          ${hostPlatform === 'twitch' ? `
+          <div class="fcm-field">
+            <label>Share reminders
+              <small>When Twitch asks you to share a watch streak or a resub, say so here — the
+                panel covers the prompt otherwise</small>
+            </label>
+            <input type="checkbox" data-set="showShareReminders">
+          </div>` : ''}
+          <div class="fcm-field">
+            <label>Moderation strip on messages
+              <small>Delete, timeout and ban on the row under the pointer, in chats you moderate</small>
+            </label>
+            <input type="checkbox" data-set="modHoverTools">
+          </div>
+          <div class="fcm-field">
             <label>Third-party emotes<small>7TV, BTTV, FrankerFaceZ</small></label>
             <input type="checkbox" data-set="thirdPartyEmotes">
           </div>
@@ -1830,6 +2029,7 @@
       root.dataset.animate = String(!!settings.animations);
       root.dataset.timestamps = String(settings.timestamps !== false);
       root.dataset.badges = String(settings.showBadges !== false);
+      root.dataset.gifs = String(settings.showGifs !== false);
       root.style.setProperty('--fcm-size', `${FCM.clampNumber(settings.fontSize, 10, 22, FCM.DEFAULT_SETTINGS.fontSize)}px`);
       panel.style.opacity = String(FCM.clampNumber(settings.opacity, 50, 100, 96) / 100);
       applyNativeChatVisibility();
@@ -2306,6 +2506,7 @@
 
     launcher.addEventListener('click', () => setVisible(true));
     sendEl.addEventListener('click', doSend);
+    gifBtn.addEventListener('click', () => { openGifKeyboard(); });
     inputEl.addEventListener('input', () => {
       // Clearing the box abandons the reply, so the targets go back to normal.
       if (!inputEl.value.trim()) clearReplyTo();
@@ -2530,6 +2731,25 @@
         if (can) {
           feed.addSys(`[Merged] Moderation tools enabled for ${FCM.PLATFORM_META[platform].name}`);
         }
+      },
+
+      /**
+       * This viewer's own subscription to a connected channel, as the platform
+       * reported it. Said once in the feed, because how long you have been
+       * subscribed is the one fact the site's own resub reminder is about, and
+       * whether GIFs are unlocked is the one thing the GIF button turns on.
+       */
+      setSubscription(platform, info) {
+        subscription[platform] = info || null;
+        updateGifButton();
+        if (platform !== 'twitch' || !info || !info.subscribed || subAnnounced) return;
+        subAnnounced = true;
+        const where = status.twitch.channel || channel;
+        const standing = info.tier ? `Tier ${info.tier}` : (info.founder ? 'Founder' : 'subscriber');
+        const months = info.months
+          ? ` for ${info.months} month${info.months === 1 ? '' : 's'}` : '';
+        feed.addSys(`[Twitch] You are subscribed to ${where}${months} (${standing})`
+          + (info.tier >= 2 ? ' — GIFs in chat are unlocked for you here' : ''));
       },
 
       // Answers a profile lookup the user menu is waiting on.

@@ -116,6 +116,11 @@
                 || badgeTag.includes('broadcaster/')
                 || badgeTag.includes('moderator/')
               );
+              // The same line says whether this viewer subscribes here, and at
+              // which tier — the badge version spells it out. Reported every
+              // time, including as "not subscribed", because a sub that lapsed
+              // is worth knowing about as much as one that started.
+              if (sink.subscription) sink.subscription(FCM.twitchSubscriptionFromTags(tags));
             }
             // Twitch lists the emote sets this account may use here, and it is
             // the one place it says so without a special scope. It arrives
@@ -195,7 +200,11 @@
           // above and another below in the same feed. Emptiness is judged on a
           // trimmed copy, which is the only thing the trim was ever for.
           const text = spoken.text;
-          if (!text.trim()) return;
+          // The GIFs the message carries, from the tag Twitch adds for a Tier 2
+          // or Tier 3 subscriber's GIF. Parsed before the emptiness check: a
+          // message that is nothing but a GIF is still a message.
+          const gifs = FCM.parseTwitchGifs(tags.gifs);
+          if (!text.trim() && !gifs) return;
 
           if (tags.bits && Number(tags.bits) > 0) {
             sink.event(`${displayName} cheered ${tags.bits} bits!`);
@@ -231,6 +240,7 @@
             messageId: tags.id || null,
             userId: tags['user-id'] || null,
             emoteMap: FCM.parseTwitchEmoteMap(tags.emotes),
+            gifs,
             timestamp: Number(tags['tmi-sent-ts']) || null,
           });
         });
@@ -294,7 +304,9 @@
           if (command !== 'PRIVMSG') return;
           const spoken = FCM.parseIrcAction(params[1] || '');
           const text = spoken.text;
-          if (!text) return;
+          // A replayed GIF is still a GIF: the tag is in the replay.
+          const gifs = FCM.parseTwitchGifs(tags.gifs);
+          if (!text && !gifs) return;
           const badgesTag = tags.badges || '';
           rows.push({
             platform: 'twitch',
@@ -321,6 +333,7 @@
             messageId: tags.id || null,
             userId: tags['user-id'] || null,
             emoteMap: FCM.parseTwitchEmoteMap(tags.emotes),
+            gifs,
             // robotty replays the original send time; without it every history
             // line would be stamped with the moment the overlay opened.
             timestamp: Number(tags['rm-received-ts']) || Number(tags['tmi-sent-ts']) || null,
