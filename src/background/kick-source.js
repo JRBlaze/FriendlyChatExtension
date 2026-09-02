@@ -86,17 +86,29 @@
 
       sink.roomId(String(info.user_id || channelId || ''));
 
-      // Kick marks the viewer's own standing on the channel record, and the
-      // broadcaster always moderates their own room.
+      // The one thing this record can settle: the broadcaster always moderates
+      // their own room, and their name is the channel's name.
+      //
+      // It cannot settle anything about an ordinary moderator. This record
+      // describes the channel rather than the person reading it, and Kick will
+      // only say who *you* are in a room to the browser session that asks — so
+      // an ordinary moderator is answered by `loadKickStanding` in the worker,
+      // which asks through the tab. Kick has been known to mark these flags on
+      // a channel record all the same, so they are still read here.
+      //
+      // Raised only, never lowered. The flag starts false on every join, and a
+      // `false` from here would arrive after a reconnect and undo the answer
+      // the page had already given — taking a moderator's tools away mid-stream
+      // and putting the "tools enabled" line in the feed a second time when
+      // they came back.
       const me = FCM.normalizeChannel(conn.auth ? conn.auth.login : '');
-      sink.moderator(!!conn.auth && (
-        (me && me === FCM.normalizeChannel(info.slug || channel))
-        || info.is_moderator === true
+      const ownRoom = !!(me && me === FCM.normalizeChannel(info.slug || channel));
+      const marked = info.is_moderator === true
         || (info.chatroom && (
           info.chatroom.is_moderator === true
           || info.chatroom.is_current_user_moderator === true
-        ))
-      ));
+        ));
+      if (conn.auth && (ownRoom || marked)) sink.moderator(true);
 
       let ws;
       try {

@@ -144,6 +144,7 @@
       case 'batch': overlay.batch(msg.rows || []); break;
       case 'emotes': overlay.setEmotes(msg.platform, msg.kind, msg.store); break;
       case 'needKickEmotes': fetchKickEmotesFromPage(msg.channel); break;
+      case 'needKickModerator': reportKickStandingFromPage(msg.channel); break;
       case 'badges': overlay.setBadges(msg.platform, msg.badges); break;
       case 'cheermotes': overlay.setCheermotes(msg.prefixes, msg.tiers); break;
       case 'profile': overlay.profileResult(msg.id, msg.platform, msg.username, msg.profile); break;
@@ -316,6 +317,46 @@
    * request, and a content script does not carry the extension's permission to
    * make one.
    */
+  /**
+   * Asks Kick whether this viewer moderates the channel, from the page's own
+   * origin — the only place Kick will answer it.
+   *
+   * The worker cannot: Kick reads the browser session for this, not the OAuth
+   * token the extension holds, and Chrome withholds a SameSite cookie from an
+   * extension's cross-site request. A fetch from here is same-origin and
+   * carries the session the viewer is actually signed in with.
+   *
+   * Nothing is posted back unless Kick actually answered. Not signed in, a
+   * challenge page, or a body that is not JSON all leave the worker exactly
+   * where it was rather than claiming the viewer moderates nothing.
+   */
+  async function reportKickStandingFromPage(channel) {
+    if (site.id !== 'kick') return;
+    const slug = FCM.normalizeChannel(channel || '');
+    if (!slug) return;
+    const epoch = navEpoch;
+    let standing = null;
+    try {
+      const res = await fetch(
+        `https://kick.com/api/v2/channels/${encodeURIComponent(slug)}/me`,
+        { headers: { Accept: 'application/json' }, credentials: 'include' }
+      );
+      if (!res.ok) return;
+      standing = FCM.readKickStanding(await res.json());
+    } catch (e) {
+      return;
+    }
+    // The channel can change inside that fetch, and this answer is about the
+    // one it was asked for.
+    if (!standing || !standing.known || epoch !== navEpoch) return;
+    post({
+      cmd: 'kickModerator',
+      channel: slug,
+      canModerate: standing.canModerate,
+      username: standing.username,
+    });
+  }
+
   async function fetchKickEmotesFromPage(channel) {
     if (site.id !== 'kick' || !overlay) return;
     const slug = FCM.normalizeChannel(channel || '');

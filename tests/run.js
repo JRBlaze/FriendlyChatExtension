@@ -8770,6 +8770,43 @@ suites.modstrip = function () {
   // The other chat, which this viewer does not moderate, gets nothing.
   eq(compose.modBarFor(row('kick')), null, 'modstrip: no strip where the viewer is not a moderator');
 
+  // And when they do moderate it, the strip is Kick's: the same three actions,
+  // named for the platform the row came from, acting on Kick's own ids.
+  {
+    const both = [];
+    const feed2 = fakeEl();
+    const c2 = FCM.createCompose({
+      panel: fakeEl(), inputEl: fakeEl('input'), feedEl: feed2, emoteBtn: fakeEl('button'),
+      toast: () => {},
+      canModerate: () => true,
+      onModerate: (platform, action, opts) => both.push({ platform, action, opts }),
+    });
+    const kickRow = fakeEl();
+    kickRow.className = 'fcm-msg';
+    kickRow.dataset.platform = 'kick';
+    kickRow.dataset.user = 'kickviewer';
+    kickRow.dataset.userId = 'k9';
+    kickRow.dataset.msgId = 'km1';
+    const kickAuthor = fakeEl('span');
+    kickAuthor.className = 'fcm-author';
+    kickAuthor.dataset.name = 'KickViewer';
+    kickAuthor.dataset.platform = 'kick';
+    kickRow.appendChild(kickAuthor);
+    feed2.appendChild(kickRow);
+
+    const kickBar = c2.modBarFor(kickRow);
+    ok(kickBar, 'modstrip: a Kick moderator gets the strip on a Kick row');
+    eq(kickBar.children.map((b) => b.textContent), ['✕', '10m', 'Ban'],
+      'modstrip: with the same three actions');
+    contains(kickBar.children[1].title, 'Kick',
+      'modstrip: named for the platform the row is from');
+    kickBar.children[1].click();
+    eq(both.pop(), {
+      platform: 'kick', action: 'timeout',
+      opts: { seconds: 600, username: 'KickViewer', userId: 'k9', messageId: 'km1' },
+    }, 'modstrip: and the action goes to Kick with Kick’s own ids');
+  }
+
   // Hovering is what grows the strip, once, and only while the setting is on.
   const hovered = row('twitch');
   const author = hovered.querySelector('.fcm-author');
@@ -8897,6 +8934,231 @@ suites.subscriptionscope = function () {
       eq(w.last('subscription').subscription.subscribed, false, 'sub: a lapsed sub is reported as one');
     } finally {
       w.teardown();
+    }
+  })();
+};
+
+// ── Moderating a Kick channel ────────────────────────────────────────────────
+//
+// Kick will only say who *you* are in a room to the browser session that asks.
+// The channel record the worker fetches describes the channel, not the person
+// reading it, so it can only ever settle the broadcaster — which is why an
+// ordinary moderator saw no tools at all. The page is asked instead.
+suites.kickmod = function () {
+  const FCM = load(makeSandbox(), ...SHARED);
+  const read = FCM.readKickStanding;
+
+  // ── Reading Kick's answer ──
+  //
+  // None of these field names are documented, so every plausible spelling is
+  // accepted. Being generous is safe in one direction only, which is why the
+  // worker never takes tools away on the strength of it.
+  eq(read({ id: 7, username: 'ModPerson', is_moderator: true }),
+    { known: true, canModerate: true, username: 'ModPerson' },
+    'kickmod: a moderator is read, and named');
+  eq(read({ id: 7, username: 'Streamer', is_broadcaster: true }).canModerate, true,
+    'kickmod: so is the broadcaster of the room');
+  eq(read({ id: 7, username: 'A', is_channel_owner: true }).canModerate, true,
+    'kickmod: and the owner, however it is spelled');
+  eq(read({ id: 7, username: 'A', is_super_admin: true }).canModerate, true,
+    'kickmod: a super admin can moderate anywhere');
+  eq(read({ id: 7, username: 'A', is_moderator: 'true' }).canModerate, true,
+    'kickmod: a flag sent as a string still reads as one');
+  eq(read({ id: 7, username: 'A', role: 'moderator' }).canModerate, true,
+    'kickmod: a role named as a word');
+  eq(read({ id: 7, username: 'A', roles: ['subscriber', 'Moderator'] }).canModerate, true,
+    'kickmod: one among several, whatever its case');
+  eq(read({ id: 7, username: 'A', badges: [{ type: 'moderator' }] }).canModerate, true,
+    'kickmod: or carried as a badge, the way Kick draws one in chat');
+  eq(read({ id: 7, username: 'A', chatroom: { is_moderator: true } }).canModerate, true,
+    'kickmod: nested under the chatroom, as the channel record spells it');
+
+  eq(read({ id: 7, username: 'Viewer', is_moderator: false }),
+    { known: true, canModerate: false, username: 'Viewer' },
+    'kickmod: an ordinary viewer is an answer, and the answer is no');
+  eq(read({ id: 7, username: 'A', badges: [{ type: 'subscriber' }], roles: ['vip'] }).canModerate,
+    false, 'kickmod: a badge that is not a moderator badge is not one');
+
+  // Anything that is not an answer about somebody leaves the worker where it
+  // was, rather than saying they moderate nothing.
+  eq(read({ message: 'Unauthenticated.' }).known, false,
+    'kickmod: no session is Kick refusing to say, not saying no');
+  eq(read(null).known, false, 'kickmod: nothing is not an answer');
+  eq(read('<html>').known, false, 'kickmod: nor a page that is not JSON');
+  eq(read([]).known, false, 'kickmod: nor a list');
+  eq(read({}).known, true, 'kickmod: an empty record is an answer about a viewer with no roles');
+  eq(read({}).canModerate, false, 'kickmod: and it is no');
+
+  // The name matters: the session that answered is not always the account the
+  // extension holds a token for.
+  eq(read({ id: 1, user: { username: 'Nested' }, is_moderator: true }).username, 'Nested',
+    'kickmod: the name is found wherever Kick puts it');
+  eq(read({ id: 1, slug: 'by-slug' }).username, 'by-slug', 'kickmod: or from the slug');
+};
+
+// The same, driven through the worker exactly as the tab drives it.
+suites.kickmodworker = function () {
+  const { bootWorker, wait } = require('./background.js');
+
+  // Joins Kick and gets as far as the worker asking about this viewer.
+  async function joined(w, { login = 'me' } = {}) {
+    if (login) {
+      w.storage.local.fcm_auth_v1 = {
+        kick: { accessToken: 'k', refreshToken: 'r', login, userId: '5', expiresAt: 0 },
+      };
+    }
+    w.connect();
+    w.send({ cmd: 'hello', site: 'kick', channel: 'somechannel', hints: [] });
+    await wait(60);
+    w.send({ cmd: 'join', platform: 'kick', channel: 'somechannel' });
+    await wait(80);
+    const pusher = w.socketFor('pusher.com');
+    ok(pusher, 'kickmod: a Kick socket is opened');
+    pusher.push(JSON.stringify({ event: 'pusher:connection_established', data: '{}' }));
+    await wait(80);
+    return pusher;
+  }
+
+  return (async () => {
+    // ── The ordinary case: the worker cannot find out, so the tab is asked ──
+    {
+      const w = bootWorker();
+      try {
+        await joined(w);
+        const ask = w.last('needKickModerator');
+        ok(ask, 'kickmod: the worker asks the tab, which is where the session is');
+        eq(ask.channel, 'somechannel', 'kickmod: about the channel it just joined');
+        eq(w.of('moderator').filter((m) => m.canModerate).length, 0,
+          'kickmod: and claims nothing until the tab answers');
+
+        // The tab answers, the way boot.js does.
+        w.send({ cmd: 'kickModerator', channel: 'somechannel', canModerate: true, username: 'me' });
+        await wait(30);
+        const told = w.last('moderator');
+        eq(told, { type: 'moderator', platform: 'kick', canModerate: true },
+          'kickmod: and the tools are turned on for Kick when it says yes');
+      } finally { w.teardown(); }
+    }
+
+    // ── An answer about a channel this tab has left ──
+    {
+      const w = bootWorker();
+      try {
+        await joined(w);
+        w.clear();
+        w.send({ cmd: 'kickModerator', channel: 'somewhere-else', canModerate: true, username: 'me' });
+        await wait(30);
+        eq(w.of('moderator').length, 0,
+          'kickmod: an answer about another channel is not applied to this one');
+      } finally { w.teardown(); }
+    }
+
+    // ── Signed in to kick.com as somebody else ──
+    {
+      const w = bootWorker();
+      try {
+        await joined(w, { login: 'me' });
+        w.clear();
+        w.send({
+          cmd: 'kickModerator', channel: 'somechannel', canModerate: true, username: 'SomebodyElse',
+        });
+        await wait(30);
+        eq(w.of('moderator').length, 0,
+          'kickmod: a moderator who is not the connected account gets no tools');
+        ok(w.of('sys').some((s) => /signed in as SomebodyElse/i.test(s.text)),
+          'kickmod: and the feed says which two accounts disagree');
+        // Said once, not on every answer.
+        w.clear();
+        w.send({
+          cmd: 'kickModerator', channel: 'somechannel', canModerate: true, username: 'SomebodyElse',
+        });
+        await wait(30);
+        eq(w.of('sys').length, 0, 'kickmod: and says it once, not on every answer');
+      } finally { w.teardown(); }
+    }
+
+    // ── Moderating with no Kick account connected ──
+    //
+    // The tools act through the connected account's token, so there is nothing
+    // to offer — but this is exactly the person who would wonder why.
+    {
+      const w = bootWorker();
+      try {
+        await joined(w, { login: '' });
+        w.clear();
+        w.send({ cmd: 'kickModerator', channel: 'somechannel', canModerate: true, username: 'me' });
+        await wait(30);
+        eq(w.of('moderator').length, 0, 'kickmod: no account connected means no tools');
+        ok(w.of('sys').some((s) => /connect a Kick account/i.test(s.text)),
+          'kickmod: and the feed says that is why');
+      } finally { w.teardown(); }
+    }
+
+    // ── The worker's own try, which is the only route on a Twitch tab ──
+    {
+      const w = bootWorker({
+        fetchImpl: async (url, init) => {
+          const u = String(url);
+          if (u.includes('/channels/somechannel/me')) {
+            // Only worth answering when the session actually travelled.
+            eq(init && init.credentials, 'include',
+              'kickmod: the worker sends the session it may have');
+            return { ok: true, json: async () => ({ id: 7, username: 'me', is_moderator: true }) };
+          }
+          if (/kick\.com\/api\/v\d\/channels\/([^/?]+)$/.test(u)) {
+            return {
+              ok: true,
+              json: async () => ({
+                id: 9, user_id: 77, slug: 'somechannel', chatroom: { id: 55 },
+                user: { username: 'somechannel' },
+              }),
+            };
+          }
+          return { ok: false, status: 404, json: async () => ({}) };
+        },
+      });
+      try {
+        await joined(w);
+        eq(w.last('moderator'), { type: 'moderator', platform: 'kick', canModerate: true },
+          'kickmod: an answer the worker got itself is enough');
+        eq(w.of('needKickModerator').length, 0,
+          'kickmod: and the tab is not asked for something already known');
+      } finally { w.teardown(); }
+    }
+
+    // ── Never taken away ──
+    //
+    // The field names are undocumented guesses. A "no" built on a guess must
+    // not be able to take the broadcaster's own tools off them.
+    {
+      const w = bootWorker();
+      try {
+        // The connected account is the channel: the broadcaster of the room.
+        await joined(w, { login: 'somechannel' });
+        eq(w.last('moderator').canModerate, true,
+          'kickmod: the broadcaster is known from the channel record alone');
+        w.clear();
+        w.send({ cmd: 'kickModerator', channel: 'somechannel', canModerate: false, username: 'somechannel' });
+        await wait(30);
+        eq(w.of('moderator').length, 0,
+          'kickmod: and a later "no" never takes the tools away again');
+      } finally { w.teardown(); }
+    }
+
+    // ── Leaving forgets it ──
+    {
+      const w = bootWorker();
+      try {
+        await joined(w);
+        w.send({ cmd: 'kickModerator', channel: 'somechannel', canModerate: true, username: 'me' });
+        await wait(30);
+        eq(w.last('moderator').canModerate, true, 'kickmod: moderating, then');
+        w.clear();
+        w.send({ cmd: 'leave', platform: 'kick' });
+        await wait(30);
+        eq(w.last('moderator'), { type: 'moderator', platform: 'kick', canModerate: false },
+          'kickmod: leaving the channel takes the tools with it');
+      } finally { w.teardown(); }
     }
   })();
 };
