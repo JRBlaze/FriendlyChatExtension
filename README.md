@@ -154,7 +154,7 @@ feed. Open a Kick channel and it works the other way round.
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.17.0.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.17.1.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and a folder named `FriendlyChatExtension-main`. The
@@ -505,8 +505,8 @@ turned off in the settings (*Moderation strip on messages*); the username menu c
 either way, including the full timeout ladder and unban.
 
 - The tools appear **per platform**, and only where the platform itself says you hold the badge.
-  Twitch reports it in `USERSTATE` on an authenticated connection; Kick reports it on the channel
-  record. Moderating Twitch does not put Kick buttons in a Kick viewer's menu.
+  Moderating Twitch does not put Kick buttons in a Kick viewer's menu. How each platform is asked
+  is below, because the two are not alike.
 - Actions apply to **the message you clicked**, so deleting removes that line rather than
   guessing at "their last one".
 - Timeout presets are 1s, 1m, 10m, 1h and 24h on Twitch. Kick counts timeouts in whole minutes,
@@ -519,6 +519,35 @@ Connecting an account is what makes this possible, and the scopes are requested 
 (`moderator:manage:banned_users` and `moderator:manage:chat_messages` on Twitch,
 `moderation:ban` and `moderation:chat_message:manage` on Kick). If you connected an account
 before this existed, disconnect and reconnect it to pick the new scopes up.
+
+### How each platform is asked whether you moderate
+
+**Twitch says so unprompted.** `USERSTATE` arrives after the join on an authenticated connection
+and carries your badges for that room, so the answer is already in the chat socket.
+
+**Kick will only tell the browser session that asks.** Its channel record — the thing the
+extension fetches to find the chatroom — describes the *channel*, not the person reading it, so
+it can settle exactly one case: the broadcaster, whose name is the channel's name. That is why an
+ordinary moderator saw no tools at all. The answer lives at `channels/<slug>/me`, which reads the
+kick.com session cookie and answers `Unauthenticated` to anything else — including a valid OAuth
+token for Kick's public API, which is a different thing entirely, and including the extension's
+own background requests, because Chrome withholds a `SameSite` cookie from an extension's
+cross-site fetch.
+
+So the page is asked. The content script is already running on kick.com, its fetches carry the
+session you are actually signed in with, and it reports the answer back to the worker — the same
+arrangement the Kick emote list already uses when Cloudflare refuses the background request.
+
+Three things follow, and each one says so in the feed rather than leaving you guessing:
+
+- **Kick answers only about the account signed in to kick.com in this browser.** If that is not
+  the account you connected to the extension, the tools stay off — a ban sent as somebody else is
+  not a thing to get subtly wrong — and the feed names both accounts.
+- **If you moderate but have no Kick account connected,** the feed says so and points at settings.
+  The buttons act through that account's token, so there is nothing to offer until there is one.
+- **The answer only ever turns the tools on.** Kick documents none of these field names, so they
+  are read generously and a "no" is never acted on. A spelling that moves can cost you tools you
+  would have had; it can never take away tools you have.
 
 ## GIFs in chat
 
@@ -1344,8 +1373,14 @@ was never going to see in a friendly test:
   endpoint can answer this one without a token, the way the live-state lookup already does; that
   is the route out if it matters.
 - **Moderation needs a connected account** on the platform in question, with the scopes granted
-  at sign-in. Without one the platform never tells us you hold the badge, so the tools stay
-  hidden rather than appearing and then failing.
+  at sign-in. Without one there is no token to act with, so the tools stay hidden rather than
+  appearing and then failing — on Kick the feed says so, because Kick will still tell the page
+  that you moderate.
+- **Moderating Kick from a Twitch tab usually will not work.** Kick answers "do you moderate
+  here" to a browser session, and on a twitch.tv page there is no kick.com page to ask. The
+  background request is still made and Chrome usually withholds the cookie from it, so the Kick
+  half of a merged feed generally offers no moderation tools unless you are the broadcaster. Open
+  the channel on kick.com and merge Twitch into it instead, and both halves work.
 - **GIFs can only be sent through Twitch's own keyboard.** Twitch offers no endpoint for it, so
   the GIF button opens Twitch's picker rather than a picker of the overlay's own, and only on a
   Twitch page. Kick has no GIFs in chat. Seeing GIFs needs nothing: the tag is on the message.

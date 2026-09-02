@@ -214,6 +214,7 @@ async function onJoined(session, platform, chatroomId, generation) {
       // asked to fetch the same list from its own origin.
       send(session, { type: 'needKickEmotes', channel });
     });
+    loadKickStanding(session, sink.generation).catch(() => {});
   }
 
   // Last visit's lists, sent before anything is fetched. The view merges rather
@@ -302,6 +303,98 @@ async function sendCachedEmotes(session, platform, generation) {
     total += count;
   });
   if (total) sink.sys(`${total} emotes ready from last time — checking for new ones`);
+}
+
+// Where Kick says who this viewer is in a room. Only ever answered to the
+// browser session that asks, which is what makes the tab the one that can.
+function kickStandingUrl(channel) {
+  return `https://kick.com/api/v2/channels/${encodeURIComponent(channel)}/me`;
+}
+
+/**
+ * Acts on Kick's answer about this viewer's standing in the channel.
+ *
+ * Only ever turns the tools **on**. Kick documents none of the field names
+ * this is read out of, so a spelling that has moved would otherwise take a
+ * broadcaster's own tools away — and being wrong in the direction of "we did
+ * not manage to work it out" is the only acceptable way to be wrong here.
+ * Every join starts from false and leaving clears it, so nothing stale
+ * survives a channel change.
+ *
+ * @param {object} standing from FCM.readKickStanding
+ * @param {object|null} record the connected Kick account, if there is one
+ */
+function applyKickStanding(session, sink, standing, record) {
+  const conn = session.conns.kick;
+  if (!conn || !sink.current() || !standing || !standing.known) return;
+  const connected = !!(record && record.accessToken);
+  const mine = FCM.normalizeChannel((record && record.login) || '');
+  const theirs = FCM.normalizeChannel(standing.username || '');
+
+  // Said at most once per channel: these are explanations, not status.
+  const explain = (text) => {
+    if (conn.saidStanding) return;
+    conn.saidStanding = true;
+    sink.sys(text);
+  };
+
+  // The answer describes whoever is signed in to kick.com in this browser, and
+  // the moderation calls go out as whichever account the extension holds a
+  // token for. When those are two different people, acting on this would offer
+  // tools that act as somebody else — and quietly fail.
+  if (connected && mine && theirs && mine !== theirs) {
+    explain(`Kick: this browser is signed in as ${standing.username}, but the connected `
+      + `account is ${record.login} — moderation would act as the connected one, so the `
+      + 'tools are left off here');
+    return;
+  }
+
+  if (!standing.canModerate) return;
+
+  // Kick says they moderate here, and the tools act through the connected
+  // account's token. Without one there is nothing to offer — and saying so is
+  // worth a line, because a moderator with no account connected is exactly the
+  // person who would otherwise wonder where the buttons went.
+  if (!connected) {
+    explain('Kick: you moderate this channel — connect a Kick account in settings to '
+      + 'moderate from here');
+    return;
+  }
+  sink.moderator(true);
+}
+
+/**
+ * Whether this viewer moderates the Kick channel that has just been joined.
+ *
+ * Kick answers this only to a signed-in browser session. The extension's own
+ * token is an OAuth token for Kick's public API, which that endpoint does not
+ * read, so the worker can rarely find out by itself — Chrome withholds a
+ * SameSite cookie from an extension's cross-site request. The tab is on
+ * kick.com and its fetches carry the session, so the tab is asked.
+ *
+ * The worker still tries first. It costs one request, and it is the only route
+ * that can work when Kick is merged into a Twitch tab, where there is no
+ * kick.com page to ask.
+ */
+async function loadKickStanding(session, generation) {
+  const conn = session.conns.kick;
+  if (!conn || !conn.channel) return;
+  const channel = conn.channel;
+  const sink = makeSink(session, 'kick', generation);
+  const record = await FCM.auth.get('kick');
+  if (!sink.current() || conn.channel !== channel) return;
+
+  if (record && record.accessToken) {
+    const data = await FCM.getJson(kickStandingUrl(channel), {
+      headers: { Accept: 'application/json' },
+      credentials: 'include',
+    });
+    if (!sink.current() || conn.channel !== channel) return;
+    const standing = FCM.readKickStanding(data);
+    if (standing.known) { applyKickStanding(session, sink, standing, record); return; }
+  }
+
+  send(session, { type: 'needKickModerator', channel });
 }
 
 /**
@@ -593,6 +686,9 @@ function leaveChannel(session, platform, { silent = false } = {}) {
     conn.canModerate = false;
     send(session, { type: 'moderator', platform, canModerate: false });
   }
+  // The same for whether they moderate the channel being left, and for
+  // anything already explained about it.
+  conn.saidStanding = false;
   // Whatever was learnt about this viewer's subscription was about the channel
   // being left.
   conn.subBadges = undefined;
@@ -976,6 +1072,26 @@ chrome.runtime.onConnect.addListener((port) => {
         if (conn.channel && conn.channel !== target) leaveChannel(session, other);
 
         await refreshCounterpart(session, { announce: true });
+        break;
+      }
+
+      case 'kickModerator': {
+        // The tab asked Kick, from the page's own origin, whether this viewer
+        // moderates the channel — the one place Kick will answer it.
+        //
+        // This is a claim from the page, so it only ever turns the tools on,
+        // and turning them on is not the same as being allowed to use them:
+        // every action still goes to Kick with the connected account's token
+        // and is refused there if it is not true.
+        const conn = session.conns.kick;
+        const want = FCM.normalizeChannel(msg.channel || '');
+        if (!conn || !conn.channel || !want) break;
+        if (FCM.normalizeChannel(conn.channel) !== want) break;
+        applyKickStanding(session, makeSink(session, 'kick'), {
+          known: true,
+          canModerate: !!msg.canModerate,
+          username: String(msg.username || ''),
+        }, await FCM.auth.get('kick'));
         break;
       }
 

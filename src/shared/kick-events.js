@@ -15,6 +15,66 @@
     return String(eventName || '').replace(/^App\\Events\\/, '').replace(/Event$/, '');
   }
 
+  /**
+   * What Kick says about this viewer's own standing in a channel, out of the
+   * `channels/<slug>/me` record.
+   *
+   * Kick will only answer that question to the browser session that asks it —
+   * an OAuth token from its public API is not what that endpoint reads, and a
+   * request carrying no session cookie is answered "Unauthenticated". Which is
+   * why the channel record the worker already fetches cannot say it: that
+   * record describes the channel, not the person looking at it. See
+   * `loadKickStanding` in the worker for who asks, and from where.
+   *
+   * Kick documents none of these field names, so every plausible spelling is
+   * checked — and the answer is only ever used to *offer* the moderation
+   * tools, never to take them away. Guessing a name wrong then costs a viewer
+   * nothing they already had, which is the right way round for a guess.
+   *
+   * @returns {{known: boolean, canModerate: boolean, username: string}}
+   *   `known` is false for anything that is not an answer about somebody: no
+   *   session, a challenge page, a body that was not JSON.
+   */
+  FCM.readKickStanding = function (payload) {
+    const data = (payload && typeof payload === 'object' && !Array.isArray(payload))
+      ? payload : null;
+    const none = { known: false, canModerate: false, username: '' };
+    if (!data) return none;
+    // A message and nothing else — "Unauthenticated." — is Kick refusing to
+    // say rather than saying no.
+    if (data.message !== undefined && data.id === undefined
+      && data.username === undefined && data.slug === undefined) return none;
+
+    const yes = (v) => v === true || v === 1 || v === '1' || v === 'true';
+    // Every spelling of "this viewer runs this room". Staff is deliberately
+    // not among them: it is a Kick-wide role rather than a claim about this
+    // channel, and the row this turns on says the channel.
+    const FLAGS = ['is_moderator', 'is_broadcaster', 'is_channel_owner', 'is_owner',
+      'is_super_admin'];
+    const ROLE_WORDS = /^(moderator|mod|broadcaster|owner|channel[_-]?owner|super[_-]?admin)$/i;
+    // The shapes Kick has used for a nested answer, alongside the flat one.
+    const scopes = [data, data.chatroom, data.channel, data.user, data.identity]
+      .filter((v) => v && typeof v === 'object');
+
+    let canModerate = false;
+    scopes.forEach((scope) => {
+      FLAGS.forEach((flag) => { if (yes(scope[flag])) canModerate = true; });
+      // A role, one or many, spelled as a word or as an object naming one.
+      [].concat(scope.role || [], scope.roles || [], scope.badges || []).forEach((entry) => {
+        const word = typeof entry === 'string'
+          ? entry
+          : (entry && (entry.type || entry.name || entry.slug || entry.role)) || '';
+        if (ROLE_WORDS.test(String(word).trim())) canModerate = true;
+      });
+    });
+
+    return {
+      known: true,
+      canModerate,
+      username: String(FCM.usernameFrom(data) || FCM.usernameFrom(data.user) || ''),
+    };
+  };
+
   FCM.kickBadgeClass = function (badges = []) {
     if (!Array.isArray(badges) || !badges.length) return null;
     const types = badges.map((b) => String((b && b.type) || '').toLowerCase());
