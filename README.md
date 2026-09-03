@@ -10,6 +10,34 @@ feed. Open a Kick channel and it works the other way round.
 ![Platform](https://img.shields.io/badge/Chrome-MV3-blue)
 [![Version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FJRBlaze%2FFriendlyChatExtension%2Fmain%2Fmanifest.json&query=%24.version&label=version&color=green)](../../releases/latest)
 
+## Install
+
+There is nothing to build and nothing to install first — Chrome loads the folder as it is.
+
+**[⬇ Download the latest release](../../releases/latest)** — grab
+`FriendlyChatExtension-v1.18.1.zip` from the Assets list, then follow the steps below.
+
+(You can also use the green **Code → Download ZIP** button, but that gives you the whole
+repository — tests, the Cloudflare worker, and a folder named `FriendlyChatExtension-main`. The
+release zip is just the extension.)
+
+1. **Unzip it.** You get a folder called `FriendlyChatExtension` with `manifest.json` sitting
+   directly inside it, next to `src` and `icons`. Put it somewhere it can stay — Chrome loads it
+   from that location every time, so it must not be deleted or moved into the recycle bin.
+2. **Open Chrome and go to `chrome://extensions`.** Type that into the address bar and press
+   Enter. (It is also under ⋮ menu → Extensions → Manage Extensions.)
+3. **Turn on Developer mode** using the switch in the top-right corner of that page.
+4. **Click "Load unpacked"** — the button appears on the top left once Developer mode is on.
+5. **Choose the `FriendlyChatExtension` folder** and click Select Folder. Pick the folder
+   *itself* — the one containing `manifest.json` — not the file, and not a folder above it.
+6. **Check it loaded.** A card titled *Friendly Chat Extension* appears with no red error text.
+
+That is the whole install. Now open any channel — for example `twitch.tv/somechannel` or
+`kick.com/somechannel` — and the merged chat overlay appears over that site's own chat.
+
+**Worth doing:** click the jigsaw-piece icon in Chrome's toolbar and pin *Friendly Chat Extension*,
+so its button is always visible for quick settings.
+
 ## What it does
 
 - **Exactly covers the site's own chat.** The panel takes the chat column's own width, height
@@ -154,34 +182,6 @@ feed. Open a Kick channel and it works the other way round.
 - **Follows the site's own theme.** Twitch or Kick in dark mode gets a dark overlay, light mode
   gets a light one, and it switches the moment you change it on the site.
 - **Several streams at once.** Each tab keeps its own sockets, channels and feed.
-
-## Install
-
-There is nothing to build and nothing to install first — Chrome loads the folder as it is.
-
-**[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.18.1.zip` from the Assets list, then follow the steps below.
-
-(You can also use the green **Code → Download ZIP** button, but that gives you the whole
-repository — tests, the Cloudflare worker, and a folder named `FriendlyChatExtension-main`. The
-release zip is just the extension.)
-
-1. **Unzip it.** You get a folder called `FriendlyChatExtension` with `manifest.json` sitting
-   directly inside it, next to `src` and `icons`. Put it somewhere it can stay — Chrome loads it
-   from that location every time, so it must not be deleted or moved into the recycle bin.
-2. **Open Chrome and go to `chrome://extensions`.** Type that into the address bar and press
-   Enter. (It is also under ⋮ menu → Extensions → Manage Extensions.)
-3. **Turn on Developer mode** using the switch in the top-right corner of that page.
-4. **Click "Load unpacked"** — the button appears on the top left once Developer mode is on.
-5. **Choose the `FriendlyChatExtension` folder** and click Select Folder. Pick the folder
-   *itself* — the one containing `manifest.json` — not the file, and not a folder above it.
-6. **Check it loaded.** A card titled *Friendly Chat Extension* appears with no red error text.
-
-That is the whole install. Now open any channel — for example `twitch.tv/somechannel` or
-`kick.com/somechannel` — and the merged chat overlay appears over that site's own chat.
-
-**Worth doing:** click the jigsaw-piece icon in Chrome's toolbar and pin *Friendly Chat Extension*,
-so its button is always visible for quick settings.
 
 ### If something looks wrong
 
