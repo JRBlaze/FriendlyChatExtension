@@ -65,8 +65,10 @@ feed. Open a Kick channel and it works the other way round.
 - **Every emote you can actually use.** Twitch global, channel, subscriber, follower, bits-tier,
   hype-train, rewards and Prime emotes; Kick's channel, global and emoji sets; and 7TV, BetterTTV
   and FrankerFaceZ on both platforms. They are grouped by where they came from in the picker, and
-  the Twitch list is the one Twitch itself says your account may send. Twitch badge images and
-  Kick badge labels render inline.
+  the Twitch list is the one Twitch itself says your account may send. Badges render inline on
+  both platforms: Twitch's from its badge images, Kick's from the channel's own subscriber
+  badges, the pictures Kick sends (the level badge), and drawn icons for the roles Kick sends
+  only as a word — moderator, VIP, OG, founder, verified, gifter and the rest.
 - **Recent history on join,** with the original timestamps, so you are not staring at an empty
   panel when you arrive mid-stream.
 - **Events**: subs, resubs, gifted subs, raids, cheers, hype trains, redemptions, timeouts and
@@ -136,6 +138,10 @@ feed. Open a Kick channel and it works the other way round.
   Twitch's own GIF keyboard — the one place a GIF can be sent from, and the place Twitch applies
   its own rules about who may. The overlay knows your tier here and says so. See
   [GIFs in chat](#gifs-in-chat).
+- **Clip previews.** When somebody links a Twitch or Kick clip, the clip's thumbnail, title,
+  channel and length appear as a card under the message, the whole card a link to the clip. A
+  slug is four random words and a Kick id is a string of letters, so the address alone says
+  nothing about what is behind it. *Clip previews* in the settings turns the cards off.
 - **Watch streaks, and the prompts Twitch draws for you alone.** Somebody's watch streak arrives
   over IRC now and is shown as the event it is. The things Twitch asks *you* to do in its own chat
   — share your watch streak, share your resub and how long you have subscribed — were drawn under
@@ -154,7 +160,7 @@ feed. Open a Kick channel and it works the other way round.
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.17.1.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.18.0.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and a folder named `FriendlyChatExtension-main`. The
@@ -192,9 +198,12 @@ so its button is always visible for quick settings.
 
 Chrome only updates extensions it installed itself, and it did not install this one. So the
 extension watches for you: it asks GitHub for the latest release every six hours, and when there
-is one newer than the version running, the toolbar icon gets a dot. Open the popup and it names
-the version, offers the zip and offers `chrome://extensions` to drop it on. Dismissing it hides
-that one version, not every future one. *Check for updates* in the popup's footer asks now.
+is one newer than the version running, the toolbar icon gets a dot and a one-line strip appears
+at the top of the overlay — the icon is only there for people who pinned it, and the overlay is
+where everyone else is looking. The strip names the version and links the zip; the popup names
+it too, offers the zip and offers `chrome://extensions` to drop it on. Dismissing it in either
+place hides that one version, not every future one. *Check for updates* in the popup's footer
+asks now.
 
 Nothing here can install the update. An extension cannot replace itself, and no permission
 changes that — what this removes is having to remember to go and look.
@@ -528,15 +537,19 @@ and carries your badges for that room, so the answer is already in the chat sock
 **Kick will only tell the browser session that asks.** Its channel record — the thing the
 extension fetches to find the chatroom — describes the *channel*, not the person reading it, so
 it can settle exactly one case: the broadcaster, whose name is the channel's name. That is why an
-ordinary moderator saw no tools at all. The answer lives at `channels/<slug>/me`, which reads the
-kick.com session cookie and answers `Unauthenticated` to anything else — including a valid OAuth
-token for Kick's public API, which is a different thing entirely, and including the extension's
-own background requests, because Chrome withholds a `SameSite` cookie from an extension's
-cross-site fetch.
+ordinary moderator saw no tools at all. The answer lives at `channels/<slug>/me`, and it is
+answered only to the signed-in web session — and only when that session arrives as a bearer
+token, the way Kick's own site sends it. A valid OAuth token for Kick's public API is a different
+thing entirely and gets `Unauthenticated`; so does the session cookie on its own, which is all a
+plain fetch carries, and which is why the answer stayed `401` even when the page was the one
+asking.
 
-So the page is asked. The content script is already running on kick.com, its fetches carry the
-session you are actually signed in with, and it reports the answer back to the worker — the same
-arrangement the Kick emote list already uses when Cloudflare refuses the background request.
+The session lives in kick.com's `session_token` cookie, which is not HttpOnly. The extension
+holds the `cookies` permission so the background worker can read it and send it as the
+`Authorization` header Kick reads — one request, and it works from a Twitch tab with Kick merged
+in, where there is no kick.com page to ask. The cookie goes to kick.com and nowhere else. When
+the worker cannot find out — no cookie, or Kick declining — the content script on kick.com asks
+instead, reading the same cookie from the page, which needs no permission at all.
 
 Three things follow, and each one says so in the feed rather than leaving you guessing:
 

@@ -254,6 +254,8 @@
     <button data-act="mods">fake: moderator</button>
     <button data-act="share-streak">twitch: streak prompt</button>
     <button data-act="share-resub">twitch: resub prompt</button>
+    <button data-act="clips">+ clip links</button>
+    <button data-act="update">show update strip</button>
   </div>
 
 <script>
@@ -469,6 +471,13 @@ window.chrome = {
     connect: () => ({ postMessage() {}, onMessage: { addListener() {} }, onDisconnect: { addListener() {} } }),
     getManifest: () => ({ version: '1.0.0' }),
     onMessage: { addListener() {} },
+    // What the popup and the overlay ask the worker directly, outside the
+    // port. An update is only ever advertised when `window.fakeUpdate` says so.
+    sendMessage: (msg, reply) => {
+      if (msg && msg.cmd === 'updateStatus') setTimeout(() => reply && reply(window.fakeUpdate || null), 20);
+      else if (msg && msg.cmd === 'updateDismiss') { console.log('dismissed update', msg.version); reply && reply({ ok: true }); }
+      else if (reply) reply(null);
+    },
   },
   storage: { sync: area('sync'), local: area('local'), onChanged: { addListener() {} } },
   identity: { getRedirectURL: () => 'https://abcdefghijklmnop.chromiumapp.org/' },
@@ -486,6 +495,7 @@ const SOURCES = [
   '/src/shared/irc.js',
   '/src/shared/emote-parsers.js',
   '/src/shared/kick-events.js',
+  '/src/shared/clips.js',
   '/src/content/render.js',
   '/src/content/feed.js',
   '/src/content/emote-input.js',
@@ -521,6 +531,20 @@ function loadSources(bust) {
       (window.commands = window.commands || []).push(c);
       if (c.cmd === 'send' && window.autoSendResult) {
         setTimeout(() => overlay.sendResult(c.id, window.autoSendResult), 40);
+      }
+      // A clip lookup, answered with a real clip from each platform so the
+      // card can be seen with a real thumbnail behind it.
+      if (c.cmd === 'clip') {
+        const canned = c.platform === 'kick' ? {
+          platform: 'kick', id: c.clipId, url: `https://kick.com/bwana/clips/${c.clipId}`,
+          title: 'Helicopter Fly Under Bridge', duration: 15, channel: 'Bwana', views: 12,
+          thumbnail: 'https://clips.kick.com/clips/f6/clip_01M1JENNKD1ASJQXVNMSYCGC86/thumbnail.webp',
+        } : {
+          platform: 'twitch', id: c.clipId, url: `https://clips.twitch.tv/${c.clipId}`,
+          title: 'Actually... it was more', duration: 59, channel: 'Bwana', views: 241,
+          thumbnail: 'https://static-cdn.jtvnw.net/twitch-video-assets/twitch-vap-video-assets-prod-us-west-2/266ea44c-a225-43ea-836a-f9f573df4677/landscape/thumb/thumb-0000000000-1920x1080.jpg',
+        };
+        setTimeout(() => overlay.clipResult(c.id, window.autoClip === null ? null : (window.autoClip || canned)), 80);
       }
       // The worker's profile lookup, answered from a canned record so the user
       // menu's account-age line can be seen without a network or a token.
@@ -559,6 +583,14 @@ function loadSources(bust) {
       subscriber: { 12: { image_url_1x: 'https://static-cdn.jtvnw.net/badges/v1/5d9f2208-5dd8-11e7-8513-2ff4adfae661/1' } },
     },
   });
+  // A Kick channel's own subscriber badges, by months, as the worker reads
+  // them off the channel record.
+  overlay.setBadges('kick', {
+    subscriber: [
+      { months: 6, url: 'https://files.kick.com/channel_subscriber_badges/532061/original' },
+      { months: 1, url: 'https://files.kick.com/channel_subscriber_badges/532058/original' },
+    ],
+  });
 
   // The Cheermotes the worker fetches on join. A Cheer arrives as the plain
   // word the viewer typed, so without these the feed can only show it as one.
@@ -592,11 +624,16 @@ function loadSources(bust) {
     badgesRaw: 'subscriber/2012', badgeClass: 'sub', color: '#9146FF',
     gifs: [{ start: 0, end: 41, id: 'joSNxeswxuc74Juo8X', url: GIF_URL }],
   }];
+  // The badge shapes Kick actually sends: a type and a caption, months on a
+  // subscriber, a count on a gifter, and a picture only on the newer list.
   const KICK_LINES = [
-    ['kickviewer',   'first time here, this is sick [emote:37226:emojiKEK]', { badgesRaw: [{ type: 'subscriber' }], badgeClass: 'sub' }],
-    ['greenmod',     'keep it civil in here please', { badgesRaw: [{ type: 'moderator' }, { type: 'og' }], badgeClass: 'mod' }],
+    ['kickviewer',   'first time here, this is sick [emote:37226:emojiKEK]', { badgesRaw: [{ type: 'subscriber', text: 'Subscriber', count: 6 }, { type: 'level', text: 'Level 30', image_url: 'https://ext.cdn.kick.com/chat/badges/30_019f35ce-4729-789b-8883-af0ad1702318.png' }], badgeClass: 'sub' }],
+    ['greenmod',     'keep it civil in here please', { badgesRaw: [{ type: 'moderator', text: 'Moderator' }, { type: 'og', text: 'OG' }], badgeClass: 'mod' }],
     ['kekwenjoyer',  'KEKW that was rough', { badgesRaw: [] }],
-    ['vipperson',    'love the new layout', { badgesRaw: [{ type: 'vip' }], badgeClass: 'vip' }],
+    ['vipperson',    'love the new layout', { badgesRaw: [{ type: 'vip', text: 'VIP' }, { type: 'subscriber', text: 'Subscriber', count: 1 }], badgeClass: 'vip' }],
+    ['giftking',     'gifted 50 more, enjoy', { badgesRaw: [{ type: 'sub_gifter', text: 'Sub Gifter', count: 60 }, { type: 'founder', text: 'Founder' }], badgeClass: 'sub' }],
+    ['bwana',        'welcome in everyone', { badgesRaw: [{ type: 'broadcaster', text: 'Broadcaster' }, { type: 'verified', text: 'Verified' }], badgeClass: 'mod' }],
+    ['kickstaff',    'checking in', { badgesRaw: [{ type: 'staff', text: 'Staff' }, { type: 'sidekick', text: 'Sidekick' }, { type: 'trainwreckstv', text: 'Trainwreck' }] }],
   ];
 
   function nativePrompt(text) {
@@ -742,6 +779,24 @@ function loadSources(bust) {
         + 'back underneath the username instead of being squeezed into a narrow column '
         + 'beside it, which is what the flex layout used to do',
       badgesRaw: '', messageId: 'long-' + Date.now(), timestamp: Date.now(),
+    }),
+    clips: () => {
+      overlay.chat({
+        platform: 'twitch', author: 'ClipFan', color: '#1E90FF',
+        text: 'look at this https://clips.twitch.tv/CloudySpicyPastaOneHand-p_jTKUjmLlPywWk_ lmao',
+        badgesRaw: '', messageId: 'clip-t-' + Date.now(), timestamp: Date.now(),
+      });
+      overlay.chat({
+        platform: 'kick', author: 'clipper',
+        text: 'kick.com/bwana/clips/clip_01M1JENNKD1ASJQXVNMSYCGC86 insane',
+        badgesRaw: [{ type: 'moderator', text: 'Moderator' }], badgeClass: 'mod',
+        messageId: 'clip-k-' + Date.now(), timestamp: Date.now(),
+      });
+    },
+    update: () => overlay.updateNotice({
+      available: true, version: '1.18.0', installed: '1.17.2',
+      url: 'https://github.com/JRBlaze/FriendlyChatExtension/releases/latest',
+      downloadUrl: 'https://github.com/JRBlaze/FriendlyChatExtension/releases/download/v1.18.0/FriendlyChatExtension-v1.18.0.zip',
     }),
     'toggle-badges': async () => {
       const cur = await FCM.loadSettings();

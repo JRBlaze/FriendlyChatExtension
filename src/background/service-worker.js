@@ -11,6 +11,7 @@ importScripts(
   '/src/shared/irc.js',
   '/src/shared/emote-parsers.js',
   '/src/shared/kick-events.js',
+  '/src/shared/clips.js',
   '/src/background/discovery.js',
   '/src/background/emotes.js',
   '/src/background/twitch-source.js',
@@ -20,6 +21,7 @@ importScripts(
   '/src/background/moderation.js',
   '/src/background/profile.js',
   '/src/background/emote-cache.js',
+  '/src/background/clips.js',
   '/src/background/updates.js'
 );
 
@@ -38,6 +40,8 @@ function newConn(platform) {
     retryTimer: null,
     pingTimer: null,
     chatroomId: null,
+    channelId: null,
+    subscriberBadges: null,
     roomId: null,
     auth: null,
     canModerate: false,
@@ -163,18 +167,18 @@ function makeSink(session, platform, generation) {
     },
     joined: (chatroomId) => {
       if (!current()) return;
-      // Kept, not just passed on: it is what a later replay needs to ask Kick
-      // for this channel's history again, and there is no second chance to
-      // learn it without reopening the socket.
+      // Kept rather than only passed on: a later replay — a tab reloading onto
+      // a chat that is already connected — has no second chance to learn it
+      // without reopening the socket.
       if (chatroomId) conn.chatroomId = chatroomId;
-      onJoined(session, platform, chatroomId, mine);
+      onJoined(session, platform, mine);
     },
   };
 }
 
 // Everything that should happen once, after a channel is actually joined:
 // history replay and the emote sets the renderer needs.
-async function onJoined(session, platform, chatroomId, generation) {
+async function onJoined(session, platform, generation) {
   const conn = session.conns[platform];
   const channel = conn.channel;
   if (!channel) return;
@@ -188,7 +192,9 @@ async function onJoined(session, platform, chatroomId, generation) {
     if (platform === 'twitch') {
       FCM.twitchSource.fetchHistory(channel, sink, FCM.TWITCH_HISTORY_LIMIT);
     } else {
-      FCM.kickSource.fetchHistory(chatroomId || conn.chatroomId, sink, FCM.KICK_HISTORY_LIMIT);
+      // The channel's id, not the chatroom's — they are different numbers and
+      // the history endpoint only answers to the first.
+      FCM.kickSource.fetchHistory(conn.channelId, sink, FCM.KICK_HISTORY_LIMIT);
     }
   }
 
@@ -201,6 +207,11 @@ async function onJoined(session, platform, chatroomId, generation) {
     });
     loadTwitchEmotes(session, platform, sink.generation).catch(() => {});
   } else {
+    // The channel's own subscriber badges, read off its record on connect. A
+    // straight swap in the view, like Twitch's, so only this channel's.
+    send(session, {
+      type: 'badges', platform: 'kick', badges: { subscriber: conn.subscriberBadges || [] },
+    });
     FCM.emoteLoader.kickNative(channel).then(async (store) => {
       if (!sink.current()) return;
       if (Object.keys(store).length) {
@@ -366,35 +377,68 @@ function applyKickStanding(session, sink, standing, record) {
 /**
  * Whether this viewer moderates the Kick channel that has just been joined.
  *
- * Kick answers this only to a signed-in browser session. The extension's own
- * token is an OAuth token for Kick's public API, which that endpoint does not
- * read, so the worker can rarely find out by itself — Chrome withholds a
- * SameSite cookie from an extension's cross-site request. The tab is on
- * kick.com and its fetches carry the session, so the tab is asked.
+ * Kick answers this only to the signed-in web session, and only when that
+ * session arrives as a bearer token. The extension's own token is an OAuth
+ * token for Kick's public API, which that endpoint does not read. What it does
+ * read is the `session_token` cookie kick.com sets, sent back as an
+ * Authorization header — which is what Kick's own site does. The cookie is
+ * not HttpOnly, and the `cookies` permission lets the worker read it, so the
+ * worker can ask for itself: one request, and the answer is the same one the
+ * tab would get.
  *
- * The worker still tries first. It costs one request, and it is the only route
- * that can work when Kick is merged into a Twitch tab, where there is no
- * kick.com page to ask.
+ * This is the route that works when Kick is merged into a Twitch tab, where
+ * there is no kick.com page to ask. The tab is still asked when the worker
+ * cannot find out — no cookie, or Kick declining — because a content script
+ * on kick.com reads the same cookie without needing any permission at all.
  */
 async function loadKickStanding(session, generation) {
   const conn = session.conns.kick;
   if (!conn || !conn.channel) return;
   const channel = conn.channel;
   const sink = makeSink(session, 'kick', generation);
-  const record = await FCM.auth.get('kick');
+  const [record, headers] = await Promise.all([FCM.auth.get('kick'), kickSessionHeaders()]);
   if (!sink.current() || conn.channel !== channel) return;
 
-  if (record && record.accessToken) {
-    const data = await FCM.getJson(kickStandingUrl(channel), {
-      headers: { Accept: 'application/json' },
-      credentials: 'include',
-    });
-    if (!sink.current() || conn.channel !== channel) return;
-    const standing = FCM.readKickStanding(data);
-    if (standing.known) { applyKickStanding(session, sink, standing, record); return; }
+  const data = await FCM.getJson(kickStandingUrl(channel), { headers, credentials: 'include' });
+  if (!sink.current() || conn.channel !== channel) return;
+  const standing = FCM.readKickStanding(data);
+  if (standing.known) {
+    // `/me` never says whose standing it is, and the guard against acting as
+    // somebody else needs the name. Only worth a request when there are tools
+    // to guard; a failure leaves the name unknown, which is where it was.
+    if (!standing.username && standing.canModerate && headers.Authorization) {
+      const who = await FCM.getJson('https://kick.com/api/v1/user', { headers, credentials: 'include' });
+      if (!sink.current() || conn.channel !== channel) return;
+      standing.username = String(FCM.usernameFrom(who) || '');
+    }
+    applyKickStanding(session, sink, standing, record);
+    return;
   }
 
   send(session, { type: 'needKickModerator', channel });
+}
+
+/**
+ * The headers a request to kick.com's own API needs to be answered as the
+ * signed-in viewer: the session cookie, as the bearer token Kick reads it as.
+ * Just the Accept header when there is no session to send.
+ */
+async function kickSessionHeaders() {
+  const headers = { Accept: 'application/json' };
+  try {
+    if (!chrome.cookies || !chrome.cookies.get) return headers;
+    const cookie = await chrome.cookies.get({ url: 'https://kick.com/', name: 'session_token' });
+    const value = cookie && cookie.value ? String(cookie.value) : '';
+    if (value) headers.Authorization = `Bearer ${decodeURIComponentSafe(value)}`;
+  } catch (e) {
+    // No cookie access, or no cookie: the tab is asked instead.
+  }
+  return headers;
+}
+
+// A cookie value that was not percent-encoded is still a cookie value.
+function decodeURIComponentSafe(value) {
+  try { return decodeURIComponent(value); } catch (e) { return value; }
 }
 
 /**
@@ -671,6 +715,8 @@ function leaveChannel(session, platform, { silent = false } = {}) {
   const had = conn.channel;
   conn.channel = null;
   conn.chatroomId = null;
+  conn.channelId = null;
+  conn.subscriberBadges = null;
   conn.roomId = null;
   conn.auth = null;
   conn.state = 'idle';
@@ -849,6 +895,11 @@ chrome.runtime.onConnect.addListener((port) => {
         break;
 
       case 'hello': {
+        // What the last update check found, so a panel opening on a new page
+        // shows the strip at once. The popup reads the same stored answer.
+        FCM.updateStatus().then((status) => {
+          if (status && status.available) post(session, { type: 'update', status });
+        }).catch(() => {});
         const site = msg.site;
         const channel = FCM.normalizeChannel(msg.channel);
         const changedChannel = session.hostChannel !== channel || session.site !== site;
@@ -903,7 +954,7 @@ chrome.runtime.onConnect.addListener((port) => {
             const live = session.conns[p];
             if (!live.channel || live.state !== 'connected') return;
             live.announcedEmotes = false;
-            Promise.resolve(onJoined(session, p, live.chatroomId)).catch(() => {});
+            Promise.resolve(onJoined(session, p)).catch(() => {});
           });
         }
 
@@ -967,6 +1018,15 @@ chrome.runtime.onConnect.addListener((port) => {
           username: msg.username,
           profile,
         });
+        break;
+      }
+
+      case 'clip': {
+        // What a clip somebody linked actually is, for the card under the
+        // row. Answered with null when the platform has nothing to say, and
+        // the row simply stays a link.
+        const clip = await FCM.lookupClip(msg.platform, msg.clipId);
+        send(session, { type: 'clip', id: msg.id, clip });
         break;
       }
 
@@ -1213,7 +1273,16 @@ function syncHeartbeat() {
 // Registered at the top level either way, so a wake from an alarm that is
 // already scheduled always finds a handler.
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (FCM.isUpdateAlarm(alarm.name)) { FCM.checkForUpdate().catch(() => {}); return; }
+  if (FCM.isUpdateAlarm(alarm.name)) {
+    // Told to every open overlay as well as painted on the toolbar icon: the
+    // icon is only there for people who pinned it, and the overlay is where
+    // everyone else is looking.
+    FCM.checkForUpdate().then((status) => {
+      if (!status || !status.available) return;
+      sessions.forEach((session) => post(session, { type: 'update', status }));
+    }).catch(() => {});
+    return;
+  }
   if (alarm.name !== 'fcm-heartbeat') return;
   sessions.forEach((session) => {
     FCM.PLATFORMS.forEach((p) => {

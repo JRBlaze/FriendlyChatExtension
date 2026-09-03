@@ -76,6 +76,7 @@ const SHARED = [
   'src/shared/irc.js',
   'src/shared/emote-parsers.js',
   'src/shared/kick-events.js',
+  'src/shared/clips.js',
 ];
 
 // ── Suites ────────────────────────────────────────────────────────────────────
@@ -642,8 +643,10 @@ suites.render = function () {
     'render: a role badge with no image falls back to a short label');
 
   const kickBadges = FCM.renderBadges('kick', [{ type: 'moderator' }, { type: 'og' }]);
-  contains(kickBadges, 'MOD', 'render: kick moderator label');
-  contains(kickBadges, 'OG', 'render: kick unknown-type label is derived');
+  contains(kickBadges, 'fcm-kbadge-icon-moderator', 'render: kick moderator is drawn');
+  contains(kickBadges, 'fcm-kbadge-icon-og', 'render: and so is OG');
+  contains(FCM.renderBadges('kick', [{ type: 'trainwreckstv' }]), 'TRAINWRECKSTV',
+    'render: a kick badge with no icon still gets its label');
 
   // System rows get a platform label out of the text.
   eq(FCM.formatSystemMessage('Kick: disconnected').type, 'error', 'render: disconnect is an error row');
@@ -685,7 +688,10 @@ suites.render = function () {
     platform: 'kick', author: 'someone', text: 'hi',
     badgesRaw: [{ type: 'subscriber' }], badgeClass: 'sub',
   }, new Set(['kick']));
-  eq((kickRow.innerHTML.match(/SUB/g) || []).length, 1, 'render: role is labelled exactly once');
+  contains(kickRow.innerHTML, 'fcm-kbadge-icon-subscriber', 'render: the badge is drawn');
+  missing(kickRow.innerHTML, 'fcm-chip', 'render: and the chip stays away once a badge said it');
+  contains(kickRow.innerHTML, '<title>Subscriber</title>',
+    'render: a badge that arrived without a caption is captioned from its type');
   contains(kickRow.innerHTML, 'data-name="someone"', 'render: author carries its own name for the menu');
 
   // `/me`: no colon, and the body wears the sender's colour.
@@ -8938,6 +8944,293 @@ suites.subscriptionscope = function () {
   })();
 };
 
+// ── Kick badges, drawn ───────────────────────────────────────────────────────
+//
+// Kick sends a role badge as a type and a caption and no picture — its own
+// chat draws these from icons built into the site — so the feed here spelled
+// them out. Now they are drawn: a picture where Kick sends one, the channel's
+// own badge for a subscriber, an icon for a role, and the label only for a
+// type none of those cover.
+suites.kickbadges = function () {
+  const FCM = load(makeSandbox({ document: stubDocument() }), ...SHARED, 'src/content/render.js');
+
+  // ── Both of Kick's lists, read together ──
+  const identity = {
+    badges: [
+      { type: 'moderator', text: 'Moderator', sort_order: 12 },
+      { type: 'subscriber', text: 'Subscriber', count: 6, sort_order: 9 },
+    ],
+    badges_v2: [
+      {
+        name: 'level', badge_type: 'global', metadata: { level: 30 },
+        image_url: 'https://ext.cdn.kick.com/chat/badges/30.png', selected: true,
+      },
+      { name: 'nothing', badge_type: 'global' },
+    ],
+  };
+  const list = FCM.kickBadgeList(identity);
+  eq(list.length, 3, 'kickbadges: role badges and pictured badges are one list');
+  eq(list[0].type, 'moderator', 'kickbadges: roles first, as Kick draws them');
+  eq(list[2], { type: 'level', text: 'Level 30', image_url: 'https://ext.cdn.kick.com/chat/badges/30.png' },
+    'kickbadges: a pictured badge carries its picture and a caption with the level');
+  eq(FCM.kickBadgeList(null), [], 'kickbadges: no identity is no badges');
+  eq(FCM.kickBadgeList({ badges: 'nope', badges_v2: [null] }), [],
+    'kickbadges: a malformed identity is no badges rather than a throw');
+
+  // ── The channel's subscriber badges ──
+  const subs = FCM.kickSubscriberBadges({
+    subscriber_badges: [
+      { months: 1, badge_image: { src: 'https://files.kick.com/channel_subscriber_badges/1/original' } },
+      { months: 6, badge_image: { src: 'https://files.kick.com/channel_subscriber_badges/6/original' } },
+      { months: 3, badge_image: { src: 'http://insecure.example/3' } },
+      { months: 'x', badge_image: { src: 'https://files.kick.com/9' } },
+    ],
+  });
+  eq(subs, [
+    { months: 6, url: 'https://files.kick.com/channel_subscriber_badges/6/original' },
+    { months: 1, url: 'https://files.kick.com/channel_subscriber_badges/1/original' },
+  ], 'kickbadges: largest months first, only https, only numbers');
+  eq(FCM.kickSubscriberBadges({}), [], 'kickbadges: a channel with none has none');
+
+  // ── Drawing them ──
+  const mod = FCM.renderBadges('kick', [{ type: 'moderator', text: 'Moderator' }]);
+  contains(mod, '<svg', 'kickbadges: a moderator is an icon');
+  contains(mod, 'fcm-kbadge-icon-moderator', 'kickbadges: coloured by role');
+  contains(mod, '<title>Moderator</title>', 'kickbadges: captioned with what Kick said');
+  missing(mod, 'fcm-kbadge-moderator"', 'kickbadges: and no longer the MOD label');
+
+  FCM.setBadges('kick', { subscriber: subs });
+  const seven = FCM.renderBadges('kick', [{ type: 'subscriber', text: 'Subscriber', count: 7 }]);
+  contains(seven, 'channel_subscriber_badges/6/original',
+    'kickbadges: a seven-month subscriber wears the six-month badge');
+  contains(seven, 'title="Subscriber (7 months)"', 'kickbadges: with the months in the tooltip');
+  contains(FCM.renderBadges('kick', [{ type: 'subscriber', count: 2 }]),
+    'channel_subscriber_badges/1/original', 'kickbadges: two months wears the one-month badge');
+  contains(FCM.renderBadges('kick', [{ type: 'subscriber', count: 1 }]), '(1 month)',
+    'kickbadges: one month, singular');
+
+  FCM.resetPlatformView('kick');
+  contains(FCM.renderBadges('kick', [{ type: 'subscriber', count: 2 }]), 'fcm-kbadge-icon-subscriber',
+    'kickbadges: a channel with no badges of its own gets the star');
+  eq(FCM.renderBadges('kick', [{ type: 'subscriber', count: 2 }]).includes('channel_subscriber_badges'),
+    false, 'kickbadges: and nothing from the last channel');
+
+  contains(FCM.renderBadges('kick', [{ type: 'sub_gifter', text: 'Sub Gifter', count: 60 }]),
+    'data-tier="50"', 'kickbadges: a gifter is tiered by how many they gave');
+  contains(FCM.renderBadges('kick', [{ type: 'sub_gifter', count: 3 }]),
+    'data-tier="1"', 'kickbadges: from the first one');
+  contains(FCM.renderBadges('kick', list), 'ext.cdn.kick.com/chat/badges/30.png',
+    'kickbadges: a badge Kick sent a picture for is drawn from it');
+  contains(FCM.renderBadges('kick', list), 'title="Level 30"', 'kickbadges: captioned with the level');
+  ['broadcaster', 'vip', 'og', 'founder', 'verified', 'staff', 'sidekick'].forEach((type) => {
+    contains(FCM.renderBadges('kick', [{ type }]), `fcm-kbadge-icon-${type}`,
+      `kickbadges: ${type} has an icon`);
+  });
+  contains(FCM.renderBadges('kick', [{ type: 'trainwreckstv', text: 'Trainwreck' }]), 'TRAINWRECKSTV',
+    'kickbadges: a type with no icon is still a label');
+
+  // A caption is text Kick relays from somewhere; it reaches nothing but text.
+  const hostile = FCM.renderBadges('kick', [{ type: 'moderator', text: '"><img src=x onerror=alert(1)>' }]);
+  missing(hostile, '<img', 'kickbadges: a hostile caption cannot put an element in the row');
+  contains(hostile, '&lt;img', 'kickbadges: it is escaped');
+};
+
+// ── Clips linked in chat ─────────────────────────────────────────────────────
+//
+// A Twitch slug is four random words and a Kick id is a string of letters, so
+// a bare clip address says nothing about what is behind it. The feed finds
+// them, the worker asks the platform, and a card lands under the row.
+suites.clips = function () {
+  const FCM = load(makeSandbox({ document: stubDocument() }), ...SHARED, 'src/content/render.js');
+  const find = FCM.findClipLinks;
+  const { bootWorker, wait } = require('./background.js');
+
+  // ── Finding them ──
+  eq(find('look at this https://clips.twitch.tv/CloudySpicyPastaOneHand-p_jTKUjmLlPywWk_ lol'), [{
+    platform: 'twitch',
+    id: 'CloudySpicyPastaOneHand-p_jTKUjmLlPywWk_',
+    url: 'https://clips.twitch.tv/CloudySpicyPastaOneHand-p_jTKUjmLlPywWk_',
+  }], 'clips: a Twitch clip by its own address');
+  eq(find('www.twitch.tv/bwana/clip/AbcDef-123?featured=false&filter=clips')[0].id, 'AbcDef-123',
+    'clips: or under the channel, with the tracking left off');
+  eq(find('https://clips.twitch.tv/embed?parent=x&clip=AbcDef-123')[0].id, 'AbcDef-123',
+    'clips: or as an embed, which is not a clip called "embed"');
+  eq(find('https://m.twitch.tv/bwana/clip/AbcDef-123')[0].id, 'AbcDef-123', 'clips: mobile too');
+  eq(find('(kick.com/Bwana/clips/clip_01M1JENNKD1ASJQXVNMSYCGC86).'), [{
+    platform: 'kick',
+    id: 'clip_01M1JENNKD1ASJQXVNMSYCGC86',
+    url: 'https://kick.com/bwana/clips/clip_01M1JENNKD1ASJQXVNMSYCGC86',
+  }], 'clips: a Kick clip, with the sentence’s punctuation left off and the channel lowercased');
+  eq(find('https://kick.com/bwana?clip=clip_01ABC&x=1')[0].id, 'clip_01ABC',
+    'clips: or the channel page with the clip opened over it, as Kick’s share button copies');
+  eq(find('https://www.twitch.tv/bwana kick.com/bwana clips.twitch.tv https://kick.com/bwana/videos/1'), [],
+    'clips: a channel, a host and a video are not clips');
+  eq(find('clips.twitch.tv/A clips.twitch.tv/A clips.twitch.tv/B clips.twitch.tv/C clips.twitch.tv/D').length, 3,
+    'clips: each once, and no more than three in one message');
+  eq(find(''), [], 'clips: nothing in nothing');
+  eq(find(null), [], 'clips: nor in null');
+
+  // ── The card ──
+  const card = FCM.buildClipCardEl({
+    platform: 'kick', url: 'https://kick.com/bwana/clips/clip_1', title: 'Helicopter <b>Fly</b>',
+    thumbnail: 'https://clips.kick.com/clips/f6/clip_1/thumbnail.webp', duration: 75, channel: 'Bwana',
+  });
+  eq(card.href, 'https://kick.com/bwana/clips/clip_1', 'clips: the card opens the clip');
+  eq(card.target, '_blank', 'clips: in a new tab');
+  contains(card.className, 'fcm-clip-kick', 'clips: marked with its platform');
+  contains(card.innerHTML, 'clips/f6/clip_1/thumbnail.webp', 'clips: the thumbnail');
+  contains(card.innerHTML, 'Helicopter &lt;b&gt;Fly&lt;/b&gt;', 'clips: the title, escaped');
+  contains(card.innerHTML, 'Kick clip · Bwana · 1:15', 'clips: whose, and how long');
+  eq(FCM.buildClipCardEl({ platform: 'twitch', url: 'javascript:alert(1)', title: 'x' }), null,
+    'clips: a card only ever opens an https address');
+  contains(FCM.buildClipCardEl({ platform: 'twitch', url: 'https://clips.twitch.tv/x', thumbnail: 'http://evil/x.png' }).innerHTML,
+    'fcm-clip-thumb-none', 'clips: a thumbnail that is not https is not drawn');
+  contains(FCM.buildClipCardEl({ platform: 'twitch', url: 'https://clips.twitch.tv/x' }).innerHTML,
+    '>Clip<', 'clips: a clip with no title is still called something');
+  eq(FCM.buildClipCardEl(null), null, 'clips: nothing is no card');
+
+  // ── The worker asking the platforms ──
+  return (async () => {
+    const w = bootWorker({
+      twitchClips: {
+        GoodSlug: {
+          slug: 'GoodSlug', title: 'Actually... it was more', durationSeconds: 59, viewCount: 241,
+          thumbnailURL: 'https://static-cdn.jtvnw.net/twitch-video-assets/x/thumb.jpg',
+          broadcaster: { displayName: 'Bwana', login: 'bwana' },
+        },
+        OddSlug: {
+          slug: 'OddSlug', title: 'x', thumbnailURL: 'https://evil.example/thumb.jpg',
+        },
+      },
+      kickClips: {
+        clip_01ABC: {
+          id: 'clip_01ABC', title: 'Helicopter Fly Under Bridge', duration: 15, view_count: 3,
+          thumbnail_url: 'https://clips.kick.com/clips/f6/clip_01ABC/thumbnail.webp',
+          channel: { slug: 'bwana', username: 'Bwana' },
+        },
+      },
+    });
+    try {
+      w.connect();
+      w.send({ cmd: 'hello', site: 'kick', channel: 'bwana', hints: [] });
+      await wait(30);
+
+      w.send({ cmd: 'clip', id: 'c1', platform: 'twitch', clipId: 'GoodSlug' });
+      await wait(30);
+      eq(w.last('clip'), {
+        type: 'clip',
+        id: 'c1',
+        clip: {
+          platform: 'twitch', id: 'GoodSlug', url: 'https://clips.twitch.tv/GoodSlug',
+          title: 'Actually... it was more',
+          thumbnail: 'https://static-cdn.jtvnw.net/twitch-video-assets/x/thumb.jpg',
+          duration: 59, channel: 'Bwana', views: 241,
+        },
+      }, 'clips: a Twitch clip is looked up over GQL and answered in full');
+
+      w.send({ cmd: 'clip', id: 'c2', platform: 'kick', clipId: 'clip_01ABC' });
+      await wait(30);
+      eq(w.last('clip').clip, {
+        platform: 'kick', id: 'clip_01ABC', url: 'https://kick.com/bwana/clips/clip_01ABC',
+        title: 'Helicopter Fly Under Bridge',
+        thumbnail: 'https://clips.kick.com/clips/f6/clip_01ABC/thumbnail.webp',
+        duration: 15, channel: 'Bwana', views: 3,
+      }, 'clips: a Kick clip from its record');
+
+      w.send({ cmd: 'clip', id: 'c3', platform: 'kick', clipId: 'clip_missing' });
+      await wait(30);
+      eq(w.last('clip'), { type: 'clip', id: 'c3', clip: null },
+        'clips: a clip Kick has nothing on is answered with nothing, not an error');
+
+      w.send({ cmd: 'clip', id: 'c4', platform: 'twitch', clipId: 'OddSlug' });
+      await wait(30);
+      eq(w.last('clip').clip.thumbnail, '',
+        'clips: a thumbnail off the platform’s own hosts is not passed on');
+
+      const before = w.fetchCalls.length;
+      w.send({ cmd: 'clip', id: 'c5', platform: 'twitch', clipId: 'GoodSlug' });
+      await wait(30);
+      eq(w.fetchCalls.length, before, 'clips: the same clip again is answered from memory');
+      eq(w.last('clip').id, 'c5', 'clips: and still answered');
+
+      w.send({ cmd: 'clip', id: 'c6', platform: 'twitch', clipId: '../evil' });
+      await wait(30);
+      eq(w.last('clip'), { type: 'clip', id: 'c6', clip: null },
+        'clips: an id that is not an id is not asked about');
+      eq(w.fetchCalls.length, before, 'clips: at all');
+    } finally { w.teardown(); }
+  })();
+};
+
+// ── Replaying a Kick channel's history ─────────────────────────────
+//
+// A Kick channel has two ids: the chatroom's, which names the Pusher room, and
+// the channel's own. History is keyed by the second, and asking with the first
+// is answered `200 OK` with an empty list — an answer, not an error, so nothing
+// anywhere noticed that the backlog after a reload was always empty.
+suites.kickhistory = function () {
+  const { bootWorker, wait } = require('./background.js');
+
+  async function joined(w) {
+    w.connect();
+    w.send({ cmd: 'hello', site: 'kick', channel: 'somechannel', hints: [] });
+    await wait(60);
+    w.send({ cmd: 'join', platform: 'kick', channel: 'somechannel' });
+    await wait(80);
+    const pusher = w.socketFor('pusher.com');
+    pusher.push(JSON.stringify({ event: 'pusher:connection_established', data: '{}' }));
+    await wait(80);
+    return pusher;
+  }
+
+  return (async () => {
+    // The harness's channel record is `{ id: 9, chatroom: { id: 55 } }`, so the
+    // two ids are told apart by which number the request carries.
+    {
+      const w = bootWorker({
+        kickHistory: [
+          {
+            id: 'm1',
+            content: 'said before you arrived',
+            created_at: '2024-01-01T00:00:00Z',
+            sender: { id: 3, username: 'Regular', identity: { color: '#75FD46', badges: [] } },
+          },
+        ],
+      });
+      try {
+        await joined(w);
+        await wait(40);
+        const asked = w.fetchCalls.map((c) => c.url).filter((u) => u.includes('/messages?limit='));
+        eq(asked.length, 1, 'kickhistory: the backlog is asked for once');
+        ok(asked[0].includes('/channels/9/messages'),
+          'kickhistory: with the channel’s own id');
+        ok(!asked[0].includes('/channels/55/'),
+          'kickhistory: and not the chatroom’s, which answers with an empty list');
+
+        const rows = w.of('batch').flatMap((b) => b.rows || []);
+        eq(rows.length, 1, 'kickhistory: and what came back reaches the feed');
+        eq(rows[0].author, 'Regular', 'kickhistory: as the person who said it');
+        eq(rows[0].history, true, 'kickhistory: marked as backlog rather than live chat');
+      } finally { w.teardown(); }
+    }
+
+    // A tab reloading onto a chat that is already connected replays the same
+    // way — the socket is not reopened, so the id has to have been kept.
+    {
+      const w = bootWorker({ kickHistory: [] });
+      try {
+        await joined(w);
+        w.clear();
+        w.fetchCalls.length = 0;
+        w.send({ cmd: 'hello', site: 'kick', channel: 'somechannel', hints: [] });
+        await wait(120);
+        ok(w.fetchCalls.some((c) => c.url.includes('/channels/9/messages')),
+          'kickhistory: a reload onto the same channel asks again, still by channel id');
+      } finally { w.teardown(); }
+    }
+  })();
+};
+
 // ── Moderating a Kick channel ────────────────────────────────────────────────
 //
 // Kick will only say who *you* are in a room to the browser session that asks.
@@ -9124,6 +9417,69 @@ suites.kickmodworker = function () {
         eq(w.of('needKickModerator').length, 0,
           'kickmod: and the tab is not asked for something already known');
       } finally { w.teardown(); }
+    }
+
+    // ── With the session cookie, the worker asks for itself ──
+    //
+    // Kick reads the session as a bearer token, not from the cookie jar. The
+    // `cookies` permission lets the worker read the cookie kick.com set and
+    // send it the way Kick's own site does, which is what makes this work
+    // from a Twitch tab, where there is no kick.com page to ask.
+    {
+      const record = () => ({
+        ok: true,
+        json: async () => ({
+          id: 9, user_id: 77, slug: 'somechannel', chatroom: { id: 55 },
+          user: { username: 'somechannel' },
+        }),
+      });
+      const withCookie = (whoami) => async (url, init) => {
+        const u = String(url);
+        const auth = init && init.headers && init.headers.Authorization;
+        if (u.includes('/channels/somechannel/me')) {
+          if (auth !== 'Bearer sess ion') {
+            return { ok: false, status: 401, json: async () => ({ message: 'Unauthenticated.' }) };
+          }
+          // The real shape: a standing with no name on it.
+          return { ok: true, json: async () => ({ is_moderator: true, is_broadcaster: false }) };
+        }
+        if (u.endsWith('/api/v1/user')) {
+          if (auth !== 'Bearer sess ion') return { ok: true, json: async () => ({}) };
+          return { ok: true, json: async () => ({ id: 1, username: whoami }) };
+        }
+        if (/kick\.com\/api\/v\d\/channels\/([^/?]+)$/.test(u)) return record();
+        return { ok: false, status: 404, json: async () => ({}) };
+      };
+
+      const w = bootWorker({ cookies: { session_token: 'sess%20ion' }, fetchImpl: withCookie('me') });
+      try {
+        await joined(w);
+        eq(w.last('moderator'), { type: 'moderator', platform: 'kick', canModerate: true },
+          'kickmod: the session cookie, sent as the bearer token Kick reads, is enough');
+        eq(w.of('needKickModerator').length, 0,
+          'kickmod: and the tab is not asked for what the worker found out');
+      } finally { w.teardown(); }
+
+      // The name Kick does not put on the standing is read from the account,
+      // so the guard against acting as somebody else still has something to
+      // compare.
+      const other = bootWorker({
+        cookies: { session_token: 'sess%20ion' }, fetchImpl: withCookie('SomebodyElse'),
+      });
+      try {
+        await joined(other);
+        eq(other.of('moderator').filter((m) => m.canModerate).length, 0,
+          'kickmod: a browser signed in as somebody else gets no tools from the worker either');
+        ok(other.of('sys').some((s) => /signed in as SomebodyElse/i.test(s.text)),
+          'kickmod: and the feed says so');
+      } finally { other.teardown(); }
+
+      // No cookie: exactly where things were, the tab is asked.
+      const bare = bootWorker({ fetchImpl: withCookie('me') });
+      try {
+        await joined(bare);
+        ok(bare.last('needKickModerator'), 'kickmod: without the cookie the tab is asked');
+      } finally { bare.teardown(); }
     }
 
     // ── Never taken away ──

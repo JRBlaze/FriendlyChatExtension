@@ -7,7 +7,7 @@
     'autoOpen', 'autoConnectHost', 'startCollapsed', 'hideNativeChat',
     'watchWhenLive', 'revealHighlights', 'showNativeStats', 'autoClaimBonus',
     'showHistory', 'showEvents', 'thirdPartyEmotes', 'timestamps', 'showBadges',
-    'animations', 'showGifs', 'showShareReminders', 'modHoverTools',
+    'animations', 'showGifs', 'showShareReminders', 'modHoverTools', 'showClipPreviews',
   ];
   const SELECTS = ['crossPromptMode', 'theme', 'kickRedirect'];
   const RANGES = [

@@ -171,6 +171,10 @@
     // GIFs posted to Twitch chat by Tier 2 and Tier 3 subscribers, drawn as the
     // pictures they are. Off, and each one is a small "GIF" link instead.
     showGifs: true,
+    // A card under any message that links a Twitch or Kick clip — the clip's
+    // title and thumbnail, so a bare address says what is behind it. Off, the
+    // link is a link like any other.
+    showClipPreviews: true,
     // The prompts Twitch draws in its own chat for this viewer alone — share
     // your watch streak, share your resub — which the panel would otherwise
     // cover. Surfaced as a row with the site's own Share button behind it.

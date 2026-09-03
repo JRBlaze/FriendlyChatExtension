@@ -148,6 +148,8 @@
       case 'badges': overlay.setBadges(msg.platform, msg.badges); break;
       case 'cheermotes': overlay.setCheermotes(msg.prefixes, msg.tiers); break;
       case 'profile': overlay.profileResult(msg.id, msg.platform, msg.username, msg.profile); break;
+      case 'clip': overlay.clipResult(msg.id, msg.clip); break;
+      case 'update': overlay.updateNotice(msg.status); break;
       case 'deleteMsg': overlay.deleteMessage(msg.platform, msg.messageId); break;
       case 'deleteUser': overlay.deleteUser(msg.platform, msg.username); break;
 
@@ -321,10 +323,19 @@
    * Asks Kick whether this viewer moderates the channel, from the page's own
    * origin — the only place Kick will answer it.
    *
-   * The worker cannot: Kick reads the browser session for this, not the OAuth
-   * token the extension holds, and Chrome withholds a SameSite cookie from an
+   * The worker cannot: this endpoint does not read the OAuth token the
+   * extension holds, and Chrome withholds a SameSite cookie from an
    * extension's cross-site request. A fetch from here is same-origin and
-   * carries the session the viewer is actually signed in with.
+   * carries what the viewer is actually signed in with.
+   *
+   * Being same-origin is necessary but not sufficient. Kick answers `/me` to a
+   * bearer token, not to the cookie jar: sending the session cookie alone —
+   * which is all a plain same-origin fetch does — is answered
+   * "Unauthenticated." with a 401, and that 401 is exactly why an ordinary
+   * moderator still saw no tools after the page was the one asking. Kick's own
+   * site reads its `session_token` cookie and puts it in an Authorization
+   * header, so that is what happens here. The cookie is not HttpOnly, which is
+   * what makes it readable at all, and it goes nowhere but back to kick.com.
    *
    * Nothing is posted back unless Kick actually answered. Not signed in, a
    * challenge page, or a body that is not JSON all leave the worker exactly
@@ -335,11 +346,14 @@
     const slug = FCM.normalizeChannel(channel || '');
     if (!slug) return;
     const epoch = navEpoch;
+    const headers = { Accept: 'application/json' };
+    const token = readCookie('session_token');
+    if (token) headers.Authorization = `Bearer ${token}`;
     let standing = null;
     try {
       const res = await fetch(
         `https://kick.com/api/v2/channels/${encodeURIComponent(slug)}/me`,
-        { headers: { Accept: 'application/json' }, credentials: 'include' }
+        { headers, credentials: 'include' }
       );
       if (!res.ok) return;
       standing = FCM.readKickStanding(await res.json());
@@ -349,12 +363,54 @@
     // The channel can change inside that fetch, and this answer is about the
     // one it was asked for.
     if (!standing || !standing.known || epoch !== navEpoch) return;
+    // `/me` describes a standing without ever naming whose it is, and the
+    // worker wants the name: it declines to offer tools when this browser is
+    // signed in as one person and the extension holds a token for another,
+    // because the moderation calls would go out as the other one and be
+    // refused. Asked only when there is something to compare, and a failure
+    // here just leaves the name unknown — which is where it was before.
+    let username = standing.username;
+    if (!username && standing.canModerate && token) {
+      username = await readKickAccountName(headers);
+      if (epoch !== navEpoch) return;
+    }
     post({
       cmd: 'kickModerator',
       channel: slug,
       canModerate: standing.canModerate,
-      username: standing.username,
+      username,
     });
+  }
+
+  /** The account kick.com is signed in as in this browser, or '' if unknown. */
+  async function readKickAccountName(headers) {
+    try {
+      const res = await fetch('https://kick.com/api/v1/user', { headers, credentials: 'include' });
+      if (!res.ok) return '';
+      return String(FCM.usernameFrom(await res.json()) || '');
+    } catch (e) {
+      return '';
+    }
+  }
+
+  /** One cookie of this page's, decoded. '' when the page has no such cookie. */
+  function readCookie(name) {
+    // Split rather than matched: a name is being compared, not searched for,
+    // and a regex built from one would have to escape it.
+    const pairs = String(document.cookie || '').split(';');
+    for (let i = 0; i < pairs.length; i += 1) {
+      const at = pairs[i].indexOf('=');
+      if (at < 0) continue;
+      if (pairs[i].slice(0, at).trim() !== name) continue;
+      const raw = pairs[i].slice(at + 1).trim();
+      try {
+        return decodeURIComponent(raw);
+      } catch (e) {
+        // A cookie that is not percent-encoded is still a cookie.
+        return raw;
+      }
+    }
+    return '';
   }
 
   async function fetchKickEmotesFromPage(channel) {

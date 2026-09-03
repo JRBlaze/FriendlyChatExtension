@@ -102,6 +102,11 @@
     const pendingSends = new Map();
     // Profile lookups still waiting on the worker, keyed the same way.
     const pendingProfiles = new Map();
+    // Clip lookups: the ones still waiting, and the answers already had, so a
+    // clip linked twice in an evening is asked about once.
+    const pendingClips = new Map();
+    const clipAnswers = new Map();
+    const CLIP_ANSWERS_LIMIT = 300;
     let sendSeq = 0;
     let compose = null;
     let themeWatcher = null;
@@ -188,6 +193,8 @@
           </div>
         </div>
 
+        <div class="fcm-update fcm-hidden" role="status"></div>
+
         <div class="fcm-chips"></div>
 
         <div class="fcm-prompt fcm-hidden"></div>
@@ -235,6 +242,7 @@
     const launcher = $('.fcm-launcher');
     const chipsEl = $('.fcm-chips');
     const promptEl = $('.fcm-prompt');
+    const updateEl = $('.fcm-update');
     const feedEl = $('.fcm-feed');
     const inputEl = $('.fcm-input');
     const sendEl = $('.fcm-send');
@@ -1890,6 +1898,10 @@
             <label>GIFs in chat<small>Tier 2 and Tier 3 subscribers' GIFs, drawn as pictures</small></label>
             <input type="checkbox" data-set="showGifs">
           </div>
+          <div class="fcm-field">
+            <label>Clip previews<small>The title and thumbnail under a linked Twitch or Kick clip</small></label>
+            <input type="checkbox" data-set="showClipPreviews">
+          </div>
           ${hostPlatform === 'twitch' ? `
           <div class="fcm-field">
             <label>Share reminders
@@ -2030,6 +2042,7 @@
       root.dataset.timestamps = String(settings.timestamps !== false);
       root.dataset.badges = String(settings.showBadges !== false);
       root.dataset.gifs = String(settings.showGifs !== false);
+      root.dataset.clips = String(settings.showClipPreviews !== false);
       root.style.setProperty('--fcm-size', `${FCM.clampNumber(settings.fontSize, 10, 22, FCM.DEFAULT_SETTINGS.fontSize)}px`);
       panel.style.opacity = String(FCM.clampNumber(settings.opacity, 50, 100, 96) / 100);
       applyNativeChatVisibility();
@@ -2069,6 +2082,98 @@
     // ── Misc UI ───────────────────────────────────────────────────────────────
 
     let toastTimer = null;
+    /**
+     * Hangs a card under a row for each clip it links.
+     *
+     * The row is drawn at once, as it always was, and the card lands when the
+     * worker has asked the platform — a beat later, sometimes never. Nothing
+     * about the row waits on it. A row that has already scrolled off the feed
+     * by then is simply an element nothing is attached to any more, and the
+     * card goes nowhere.
+     *
+     * One question per clip, however many rows link it: the answer is kept,
+     * and a second row linking the same clip while the first is still being
+     * asked about shares the same promise.
+     */
+    function previewClips(el, msg) {
+      if (!el || !msg || settings.showClipPreviews === false) return;
+      FCM.findClipLinks(msg.text).forEach((link) => {
+        lookupClip(link).then((clip) => {
+          const card = clip && FCM.buildClipCardEl(clip);
+          if (card) el.appendChild(card);
+        });
+      });
+    }
+
+    function lookupClip(link) {
+      const key = `${link.platform}:${link.id}`;
+      if (clipAnswers.has(key)) return clipAnswers.get(key);
+      const answer = new Promise((resolve) => {
+        const id = `c${++sendSeq}`;
+        // The worker does answer, with null, when the platform has nothing;
+        // this is for a port that went away with the question on it.
+        const timer = setTimeout(() => { pendingClips.delete(id); resolve(null); }, 15000);
+        pendingClips.set(id, (clip) => { clearTimeout(timer); resolve(clip); });
+        onCommand({ cmd: 'clip', id, platform: link.platform, clipId: link.id });
+      });
+      // Bounded: a long night in a busy chat should not keep every clip ever
+      // linked.
+      if (clipAnswers.size >= CLIP_ANSWERS_LIMIT) clipAnswers.clear();
+      clipAnswers.set(key, answer);
+      return answer;
+    }
+
+    /**
+     * The strip under the header that says a newer version exists.
+     *
+     * The toolbar icon already carries a dot for this, but only people who
+     * pinned the icon ever see it. The overlay is where everyone else is
+     * looking, so it gets one line: the version, a link to the release, and
+     * a way to dismiss it that the worker remembers per version — the same
+     * dismissal the popup uses, so closing it in either place closes it in
+     * both.
+     */
+    function renderUpdate(status) {
+      if (!status || !status.available || !status.version) {
+        updateEl.classList.add('fcm-hidden');
+        updateEl.replaceChildren();
+        return;
+      }
+      const url = String(status.downloadUrl || status.url || FCM.GITHUB_RELEASES_URL || '');
+      updateEl.replaceChildren();
+      const text = document.createElement('span');
+      text.className = 'fcm-update-text';
+      text.textContent = `v${status.version} is out`;
+      updateEl.appendChild(text);
+      if (/^https:\/\//i.test(url)) {
+        const link = document.createElement('a');
+        link.className = 'fcm-update-link';
+        link.href = url;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.textContent = status.downloadUrl ? 'Get it' : 'See release';
+        updateEl.appendChild(link);
+      }
+      const close = document.createElement('button');
+      close.type = 'button';
+      close.className = 'fcm-update-close';
+      close.title = 'Dismiss until the next release';
+      close.setAttribute('aria-label', 'Dismiss');
+      close.innerHTML = ICONS.close;
+      close.addEventListener('click', () => {
+        updateEl.classList.add('fcm-hidden');
+        try {
+          chrome.runtime.sendMessage({ cmd: 'updateDismiss', version: status.version }, () => {
+            // Read so a worker that has gone away does not leave the error
+            // unread; nothing else depends on the reply.
+            void chrome.runtime.lastError;
+          });
+        } catch (e) { /* the worker is gone; it will be told next time */ }
+      });
+      updateEl.appendChild(close);
+      updateEl.classList.remove('fcm-hidden');
+    }
+
     function toast(text) {
       toastEl.textContent = text;
       toastEl.classList.add('fcm-toast-on');
@@ -2550,6 +2655,14 @@
         renderChips();
         renderTargets();
         refreshSendNote();
+        // From what the last check stored, the same way the popup does, so the
+        // strip is there when the panel opens rather than after a check.
+        try {
+          chrome.runtime.sendMessage({ cmd: 'updateStatus' }, (status) => {
+            if (chrome.runtime.lastError || destroyed) return;
+            renderUpdate(status);
+          });
+        } catch (e) { /* no worker to ask; the next check will say */ }
         compose = FCM.createCompose({
           panel, inputEl, feedEl, emoteBtn, toast,
           onReplyTo: setReplyTo,
@@ -2672,9 +2785,9 @@
         feed.addEvent(platform, text, filter, meta);
       },
 
-      chat(msg) { feed.addMessage(msg, filter); },
+      chat(msg) { previewClips(feed.addMessage(msg, filter), msg); },
 
-      batch(rows) { rows.forEach((row) => feed.addMessage(row, filter)); },
+      batch(rows) { rows.forEach((row) => previewClips(feed.addMessage(row, filter), row)); },
 
       setStatus(platform, state, chan) {
         const previous = status[platform].channel;
@@ -2759,6 +2872,17 @@
         pendingProfiles.delete(id);
         waiting(profile);
       },
+
+      // Answers a clip lookup a row is waiting on.
+      clipResult(id, clip) {
+        const waiting = pendingClips.get(id);
+        if (!waiting) return;
+        pendingClips.delete(id);
+        waiting(clip || null);
+      },
+
+      // A newer release than the one running, as the worker's check found it.
+      updateNotice(status) { renderUpdate(status); },
 
       // The Cheermotes this channel accepts, including the broadcaster's own.
       // The prefixes tell a Cheer apart from a word ending in digits, which is
