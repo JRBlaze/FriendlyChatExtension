@@ -45,6 +45,16 @@
   --badge-vip: #ffcc00;
   --badge-gift: #ff9fbc;
   --badge-verified: #c4b8ff;
+  /* Kick's role badges, one colour each, and the gifter's ladder. */
+  --badge-host: #ff6b6b;
+  --badge-og: #2ed3c0;
+  --badge-founder: #ffb347;
+  --badge-side: #6db3ff;
+  --gift-1: #8fb8ff;
+  --gift-25: #c6a5ff;
+  --gift-50: #ff9fbc;
+  --gift-100: #ffb347;
+  --gift-200: #ff6b6b;
   --link: #7c9fff;
   --link-hover: #a8bfff;
   /* Status and event rows used to sit in a well darker than the feed itself,
@@ -92,6 +102,15 @@
   --badge-vip: #7a5400;
   --badge-gift: #9c1039;
   --badge-verified: #4133bd;
+  --badge-host: #c62828;
+  --badge-og: #0a7d70;
+  --badge-founder: #a35a00;
+  --badge-side: #0b5fbd;
+  --gift-1: #1d5fb8;
+  --gift-25: #5c1eb0;
+  --gift-50: #9c1039;
+  --gift-100: #a35a00;
+  --gift-200: #c62828;
   --link: #315ed8;
   --link-hover: #1f46b8;
   --sys-bg: #e6ebf4;
@@ -216,6 +235,25 @@
    second line. Nothing is clipped and nothing is ellipsised at any width,
    which is the point — a channel name that has been cut off is not a channel
    name, it is a guess. */
+/* One line under the header when a newer release exists. The toolbar icon
+   carries a dot for the same thing, but only for people who pinned it. */
+.fcm-update {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 9px 5px 11px;
+  background: var(--surface); border-bottom: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  font-size: 12px; color: var(--text); flex-shrink: 0;
+}
+.fcm-update-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fcm-update-link { color: var(--link); font-weight: 600; text-decoration: none; white-space: nowrap; }
+.fcm-update-link:hover { color: var(--link-hover); text-decoration: underline; }
+.fcm-update-close {
+  display: inline-flex; width: 18px; height: 18px; padding: 2px; flex-shrink: 0;
+  border: 0; border-radius: 4px; background: none; color: var(--text-muted); cursor: pointer;
+}
+.fcm-update-close:hover { background: var(--surface3); color: var(--text); }
+.fcm-update-close svg { width: 100%; height: 100%; }
+
 .fcm-chips {
   display: flex;
   align-items: center;
@@ -598,6 +636,38 @@
 .fcm-replyto .fcm-gif-img,
 .fcm-um-history .fcm-gif-img { max-height: 40px; }
 
+/* A clip somebody linked: thumbnail, title and whose channel, under the row,
+   the whole card a link to the clip. Sized to read as a preview and not a
+   player — a chat is not the place to watch it. */
+.fcm-clip {
+  display: flex; align-items: center; gap: 8px;
+  margin: 4px 0 2px; padding: 5px; max-width: 340px;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--surface2); color: var(--text); text-decoration: none;
+}
+.fcm-clip:hover { border-color: var(--border2); background: var(--surface3); }
+.fcm-clip-kick { border-left: 3px solid var(--kick); }
+.fcm-clip-twitch { border-left: 3px solid var(--twitch); }
+.fcm-clip-thumb {
+  width: 96px; height: 54px; flex-shrink: 0; border-radius: 4px;
+  object-fit: cover; background: var(--surface3);
+}
+.fcm-clip-thumb-none {
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-muted); font-size: 18px;
+}
+.fcm-clip-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.fcm-clip-title {
+  font-weight: 600; font-size: 0.95em; line-height: 1.25; overflow: hidden;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+.fcm-clip-sub {
+  font-size: 0.8em; color: var(--text-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* Previews switched off: the link in the row still says where it goes. */
+.fcm-root[data-clips="false"] .fcm-clip { display: none; }
+
 /* A Cheer: the Cheermote and the amount it was worth, drawn as the one thing
    they are so a line break can never strand the number away from its picture.
    The colour is the tier's own and arrives inline with the message, because it
@@ -709,6 +779,24 @@
 
 .fcm-badges { display: inline-flex; align-items: center; gap: 3px; margin-right: 4px; vertical-align: middle; }
 .fcm-badge-img { width: 16px; height: 16px; border-radius: 3px; vertical-align: middle; object-fit: cover; }
+/* Kick's role badges, drawn from the icons in render.js: the same box a badge
+   picture gets, coloured per role. A cut-out inside a shape is painted in the
+   surface so it reads as a hole in it. */
+.fcm-kbadge-icon { width: 16px; height: 16px; vertical-align: middle; flex-shrink: 0; fill: currentColor; }
+.fcm-kbadge-icon .fcm-kbadge-cut { fill: var(--surface); }
+.fcm-kbadge-icon-moderator, .fcm-kbadge-icon-verified { color: var(--kick-text); }
+.fcm-kbadge-icon-broadcaster { color: var(--badge-host); }
+.fcm-kbadge-icon-vip { color: var(--badge-vip); }
+.fcm-kbadge-icon-og { color: var(--badge-og); }
+.fcm-kbadge-icon-founder { color: var(--badge-founder); }
+.fcm-kbadge-icon-staff { color: var(--badge-verified); }
+.fcm-kbadge-icon-subscriber { color: var(--badge-sub); }
+.fcm-kbadge-icon-sidekick { color: var(--badge-side); }
+.fcm-kbadge-icon-sub_gifter { color: var(--gift-1); }
+.fcm-kbadge-icon-sub_gifter[data-tier="25"] { color: var(--gift-25); }
+.fcm-kbadge-icon-sub_gifter[data-tier="50"] { color: var(--gift-50); }
+.fcm-kbadge-icon-sub_gifter[data-tier="100"] { color: var(--gift-100); }
+.fcm-kbadge-icon-sub_gifter[data-tier="200"] { color: var(--gift-200); }
 .fcm-kbadge,
 .fcm-chip {
   display: inline-flex; align-items: center; height: 15px; padding: 0 5px;

@@ -230,7 +230,7 @@ function bootPair(startPath, opts = {}) {
 
   [
     'src/shared/namespace.js', 'src/shared/constants.js', 'src/shared/util.js',
-    'src/shared/irc.js', 'src/shared/emote-parsers.js', 'src/shared/kick-events.js',
+    'src/shared/irc.js', 'src/shared/emote-parsers.js', 'src/shared/kick-events.js', 'src/shared/clips.js',
     // render.js before sites.js, the order the manifest loads them in: boot.js
     // calls into render.js when a channel is left.
     'src/content/render.js', 'src/content/sites.js',

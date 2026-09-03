@@ -19,12 +19,14 @@
    * What Kick says about this viewer's own standing in a channel, out of the
    * `channels/<slug>/me` record.
    *
-   * Kick will only answer that question to the browser session that asks it —
-   * an OAuth token from its public API is not what that endpoint reads, and a
-   * request carrying no session cookie is answered "Unauthenticated". Which is
-   * why the channel record the worker already fetches cannot say it: that
-   * record describes the channel, not the person looking at it. See
-   * `loadKickStanding` in the worker for who asks, and from where.
+   * Kick will only answer that question to the signed-in web session, and only
+   * when that session arrives as a bearer token: an OAuth token from its
+   * public API is not what the endpoint reads, and a same-origin request
+   * carrying the session as a cookie alone is still answered
+   * "Unauthenticated". Which is also why the channel record the worker already
+   * fetches cannot say it: that record describes the channel, not the person
+   * looking at it. See `reportKickStandingFromPage` in the content script for
+   * who asks, and from where.
    *
    * Kick documents none of these field names, so every plausible spelling is
    * checked — and the answer is only ever used to *offer* the moderation
@@ -73,6 +75,54 @@
       canModerate,
       username: String(FCM.usernameFrom(data) || FCM.usernameFrom(data.user) || ''),
     };
+  };
+
+  /**
+   * The badges beside a Kick chatter's name, out of both the lists Kick sends.
+   *
+   * `badges` is the older list: a type, a caption, and for a subscriber the
+   * months. No picture — Kick's own chat draws these from icons of its own,
+   * and so does this one. `badges_v2` is newer and carries a picture: today
+   * the chatter's level badge, tomorrow whatever else Kick gives a picture to.
+   * Both are kept, role badges first, which is the order Kick draws them in.
+   */
+  FCM.kickBadgeList = function (identity) {
+    const id = (identity && typeof identity === 'object') ? identity : {};
+    const roles = Array.isArray(id.badges)
+      ? id.badges.filter((b) => b && typeof b === 'object') : [];
+    const pictured = (Array.isArray(id.badges_v2) ? id.badges_v2 : []).map((b) => {
+      if (!b || typeof b !== 'object') return null;
+      if (typeof b.image_url !== 'string' || !b.image_url) return null;
+      const name = String(b.name || b.badge_type || 'badge');
+      const level = b.metadata && b.metadata.level;
+      const caption = name.charAt(0).toUpperCase() + name.slice(1);
+      return {
+        type: name,
+        text: (level === undefined || level === null) ? caption : `${caption} ${level}`,
+        image_url: b.image_url,
+      };
+    }).filter(Boolean);
+    return roles.concat(pictured);
+  };
+
+  /**
+   * The channel's own subscriber badges, by the months they are earned at,
+   * largest first — so the badge a subscriber of N months wears is simply the
+   * first one N reaches.
+   *
+   * @returns {{months: number, url: string}[]}
+   */
+  FCM.kickSubscriberBadges = function (info) {
+    const list = info && Array.isArray(info.subscriber_badges) ? info.subscriber_badges : [];
+    return list.map((b) => {
+      if (!b || typeof b !== 'object') return null;
+      const months = Number(b.months);
+      const image = b.badge_image;
+      const url = typeof image === 'string' ? image : (image && image.src) || '';
+      if (!Number.isFinite(months) || months < 0 || typeof url !== 'string') return null;
+      if (!/^https:\/\//i.test(url)) return null;
+      return { months, url };
+    }).filter(Boolean).sort((a, b) => b.months - a.months);
   };
 
   FCM.kickBadgeClass = function (badges = []) {

@@ -81,6 +81,14 @@
       }
       const channelId = info.id || info.channel_id || null;
       conn.chatroomId = chatroomId;
+      // Kept because the history endpoint is keyed by it and by nothing else
+      // this connection holds; see fetchHistory for why the two ids are not
+      // interchangeable.
+      conn.channelId = channelId;
+      // What a subscriber's badge looks like here, by months. Sent to the view
+      // once the room is joined; it is the one badge Kick draws from a picture
+      // the channel chose rather than an icon of its own.
+      conn.subscriberBadges = FCM.kickSubscriberBadges(info);
       // A late resolve must not open a socket the caller has already dropped.
       if (conn.forceClose || !current()) return;
 
@@ -181,7 +189,7 @@
 
         const text = payload.content || '';
         if (!text) return;
-        const badges = (payload.sender && payload.sender.identity && payload.sender.identity.badges) || [];
+        const badges = FCM.kickBadgeList(payload.sender && payload.sender.identity);
 
         // Emotes seen in a live message top up the store, so one posted before
         // the full list finishes loading still renders as an image.
@@ -266,10 +274,24 @@
       if (conn.ws) { try { conn.ws.close(); } catch (e) { /* already gone */ } conn.ws = null; }
     },
 
-    async fetchHistory(chatroomId, sink, limit) {
+    /**
+     * The last few messages of a channel's chat, replayed into the feed.
+     *
+     * Keyed by the channel's own id — the `id` on the channel record — and not
+     * by the chatroom's, which is a different number and the one everything
+     * else here uses: the Pusher room is `chatrooms.<chatroom id>.v2`, so the
+     * chatroom id was the id in hand and the one this asked with. Kick answers
+     * that with `200 OK` and an empty list rather than an error, so there was
+     * nothing to notice: no history arrived, nothing said why, and the feed
+     * after a reload started blank while Twitch's filled in beside it.
+     *
+     * @param {number|string} channelId the channel's id, not the chatroom's
+     */
+    async fetchHistory(channelId, sink, limit) {
+      if (!channelId) return;
       try {
         const r = await fetch(
-          `https://kick.com/api/v2/channels/${encodeURIComponent(chatroomId)}/messages?limit=${limit}`
+          `https://kick.com/api/v2/channels/${encodeURIComponent(channelId)}/messages?limit=${limit}`
         );
         if (!r.ok) return;
         const data = await r.json();
@@ -282,7 +304,7 @@
           const text = msg.content || '';
           if (!text) return;
           const sender = msg.sender || (msg.metadata && msg.metadata.sender) || {};
-          const badges = (sender.identity && sender.identity.badges) || [];
+          const badges = FCM.kickBadgeList(sender.identity);
           rows.push({
             platform: 'kick',
             author: sender.username || 'unknown',

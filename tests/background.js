@@ -90,6 +90,12 @@ function bootWorker(opts = {}) {
       },
     },
     identity: { getRedirectURL: () => 'https://ext.chromiumapp.org/' },
+    // The browser's cookie jar, as far as the worker can see it: only what a
+    // test put there under `opts.cookies`, keyed by name.
+    cookies: {
+      get: async ({ name }) => (opts.cookies && opts.cookies[name] !== undefined
+        ? { name, value: String(opts.cookies[name]) } : null),
+    },
   };
 
   const defaultFetch = async (url, init) => {
@@ -98,6 +104,11 @@ function bootWorker(opts = {}) {
     if (u.includes('gql.twitch.tv')) {
       const body = JSON.parse(init.body);
       const query = Array.isArray(body) ? '' : String(body.query || '');
+      if (query.includes('clip(slug:')) {
+        const slug = body.variables && body.variables.s;
+        const known = opts.twitchClips && opts.twitchClips[slug];
+        return { ok: true, json: async () => ({ data: { clip: known || null } }) };
+      }
       if (query.includes('badges')) {
         return { ok: true, json: async () => ({ data: { badges: [], user: { broadcastBadges: [] } } }) };
       }
@@ -124,6 +135,12 @@ function bootWorker(opts = {}) {
           user: { username: slug, profile_pic: '' },
         }),
       };
+    }
+    if (/kick\.com\/api\/v2\/clips\/([^/?]+)$/.test(u)) {
+      const id = u.match(/clips\/([^/?]+)$/)[1];
+      const known = opts.kickClips && opts.kickClips[id];
+      if (!known) return { ok: false, status: 404, json: async () => ({ message: '' }) };
+      return { ok: true, json: async () => ({ clip: known }) };
     }
     if (u.includes('/messages?limit=')) {
       return { ok: true, json: async () => ({ data: { messages: opts.kickHistory || [] } }) };

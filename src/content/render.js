@@ -107,7 +107,14 @@
       twitch: { native: {}, thirdparty: {} },
       kick: { native: {}, thirdparty: {} },
     },
-    badges: { twitch: { global: {}, channel: {} } },
+    badges: {
+      twitch: { global: {}, channel: {} },
+      // The channel's subscriber badges by months, largest first, as the
+      // worker read them off the channel record. Everything else Kick puts
+      // beside a name is either a role, drawn from an icon here, or arrives
+      // with its own picture.
+      kick: { subscriber: [] },
+    },
     // Lowercased Cheermote prefix -> its tiers, largest first. Empty until the
     // worker has asked Twitch what this channel accepts, which is why a Cheer
     // is only ever drawn from what arrived rather than guessed at.
@@ -189,7 +196,12 @@
   };
 
   FCM.setBadges = function (platform, badges) {
-    if (platform !== 'twitch' || !badges) return;
+    if (!badges) return;
+    if (platform === 'kick') {
+      view.badges.kick.subscriber = Array.isArray(badges.subscriber) ? badges.subscriber : [];
+      return;
+    }
+    if (platform !== 'twitch') return;
     if (badges.global) view.badges.twitch.global = badges.global;
     if (badges.channel && Object.keys(badges.channel).length) {
       view.badges.twitch.channel = badges.channel;
@@ -271,6 +283,7 @@
     view.emotes[platform] = { native: {}, thirdparty: {} };
     // Global badges are the same everywhere and are re-sent on join regardless;
     // the channel's own are the ones that would be wrong here.
+    if (platform === 'kick') view.badges.kick.subscriber = [];
     if (platform === 'twitch') {
       view.badges.twitch.channel = {};
       // Cheermotes go the same way, and for a sharper reason than badges: a
@@ -892,6 +905,76 @@
     return rendered.length ? `<span class="fcm-badges">${rendered.join('')}</span>` : '';
   }
 
+  // ── Kick's role badges, drawn ──
+  //
+  // Kick sends a role badge as a type and a caption and nothing else: its own
+  // chat draws the picture from icons built into the site, which is why the
+  // feed here spelled them out as MOD, OG, VIP. These are the icons for that
+  // job — one per role, in the shape Kick's reads as, coloured by CSS so both
+  // themes stay readable. `currentColor` throughout; a cut-out (the tick in
+  // the verified circle, the star on the founder shield) is painted in the
+  // panel's surface colour by the class rather than in a second fill.
+  const KICK_ICON_PATHS = {
+    // A sword, hilt at the bottom left.
+    moderator: '<path d="M14.6 1.4h-2.3L6 7.7l2.3 2.3 6.3-6.3zM5.1 8.6l-1.8 1.8-1.5-.4-.9.9L2.3 12l-1 1 .7.7 1-1 1.4 1.4.9-.9-.4-1.5 1.8-1.8z"/>',
+    // A camera: the host of the room.
+    broadcaster: '<path d="M1.5 4.5A1.5 1.5 0 0 1 3 3h6.2a1.5 1.5 0 0 1 1.5 1.5v7a1.5 1.5 0 0 1-1.5 1.5H3a1.5 1.5 0 0 1-1.5-1.5zm10.2 2.3 2.8-1.6v5.6l-2.8-1.6z"/>',
+    // A gem.
+    vip: '<path d="M4.2 2h7.6l3 4.1L8 14.2.8 6.1z"/>',
+    // A shield with the letters on it.
+    og: '<path d="M8 .8 14 3.9v5.6c0 2.8-2.4 5-6 6.2-3.6-1.2-6-3.4-6-6.2V3.9z"/>'
+      + '<text class="fcm-kbadge-cut" x="8" y="10.4" text-anchor="middle" font-size="5.6"'
+      + ' font-weight="700" font-family="var(--fcm-mono)">OG</text>',
+    // A shield with a star cut out of it.
+    founder: '<path d="M8 .8 14 3.9v5.6c0 2.8-2.4 5-6 6.2-3.6-1.2-6-3.4-6-6.2V3.9z"/>'
+      + '<path class="fcm-kbadge-cut" d="M8 4.1l1.1 2.3 2.5.3-1.8 1.7.5 2.5L8 9.7l-2.3 1.2.5-2.5-1.8-1.7 2.5-.3z"/>',
+    // A disc with a tick cut out of it.
+    verified: '<circle cx="8" cy="8" r="7"/>'
+      + '<path class="fcm-kbadge-cut" d="M4.4 8.3l2.3 2.3 4.9-4.9-1.1-1.1-3.8 3.8-1.2-1.2z"/>',
+    // The plain shield.
+    staff: '<path d="M8 .8 14 3.9v5.6c0 2.8-2.4 5-6 6.2-3.6-1.2-6-3.4-6-6.2V3.9z"/>',
+    // A wrapped box: subs given away.
+    sub_gifter: '<path d="M1.5 6.3h13v2.4h-13zm1 3.4h5V15h-5zm6 0h5V15h-5zM1.5 3.6h13v2.3h-13z"/>'
+      + '<path class="fcm-kbadge-cut" d="M8 1.3c.6.9.9 1.7.9 2.6H7.1c0-.9.3-1.7.9-2.6z"/>',
+    // A star: a subscriber of a channel that has not made badges of its own.
+    subscriber: '<path d="M8 1.1l2.1 4.4 4.8.6-3.5 3.3 1 4.8L8 11.8l-4.4 2.4 1-4.8L1.1 6.1l4.8-.6z"/>',
+    // A bolt.
+    sidekick: '<path d="M9.6.8 3 9.2h4.2L6.4 15.2 13 6.8H8.8z"/>',
+  };
+  // The one badge Kick tiers by a number: how many subs the gifter has given.
+  // The steps are Kick's own, and each is a colour of its own in CSS.
+  const GIFTER_TIERS = [200, 100, 50, 25, 1];
+
+  function gifterTier(count) {
+    const n = Number(count) || 0;
+    return GIFTER_TIERS.find((step) => n >= step) || 1;
+  }
+
+  /**
+   * The picture for a Kick role badge, or '' for a type there is no icon
+   * for — which falls back to the label, as before.
+   */
+  function kickBadgeIcon(type, badge, title) {
+    const paths = KICK_ICON_PATHS[type];
+    if (!paths) return '';
+    const tier = type === 'sub_gifter' ? ` data-tier="${gifterTier(badge.count)}"` : '';
+    return `<svg class="fcm-kbadge-icon fcm-kbadge-icon-${FCM.escapeHtml(type)}"${tier}`
+      + ` viewBox="0 0 16 16" role="img" aria-label="${FCM.escapeHtml(title)}">`
+      + `<title>${FCM.escapeHtml(title)}</title>${paths}</svg>`;
+  }
+
+  /**
+   * The channel's own badge for a subscriber of this many months, or '' when
+   * the channel has none — or none yet, the list arriving a beat after the
+   * join.
+   */
+  function kickSubscriberBadgeUrl(months) {
+    const n = Number(months);
+    if (!Number.isFinite(n)) return '';
+    const hit = view.badges.kick.subscriber.find((b) => n >= b.months);
+    return hit ? hit.url : '';
+  }
+
   function kickBadgeImageUrl(badge) {
     if (!badge || typeof badge !== 'object') return '';
     const direct = badge.image_url || badge.image || badge.icon || badge.badge_image || badge.badge_url;
@@ -904,6 +987,18 @@
       || '';
   }
 
+  /**
+   * Kick's badges, as pictures where there is one to draw.
+   *
+   * In order of preference: the picture Kick sent with the badge; for a
+   * subscriber, the channel's own badge for their months; the icon for the
+   * role; and, for a type none of those cover, the short label — which is
+   * what every badge used to be.
+   *
+   * The caption Kick sent is the tooltip, because it says more than the type
+   * does: "Subscriber" for a type, but Kick's caption for a gifter says how
+   * many. A subscriber's months are added, the way Kick's own tooltip has it.
+   */
   function renderKickBadges(badges = []) {
     if (!Array.isArray(badges) || !badges.length) return '';
     const rendered = badges.map((badge) => {
@@ -911,13 +1006,24 @@
       const type = String(badge.type || '').toLowerCase();
       const label = ROLE_LABELS[type]
         || (type ? type.replace(/[_-]+/g, ' ').toUpperCase() : 'BADGE');
-      const imageUrl = kickBadgeImageUrl(badge);
+      const months = type === 'subscriber' ? Number(badge.count) : NaN;
+      // Kick always captions a badge; the type spelled out covers one that
+      // arrives without.
+      const caption = String(badge.text || '').trim() || type.split(/[_-]+/)
+        .map((w) => (w.length <= 3 ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1)))
+        .join(' ');
+      const title = Number.isFinite(months) && months > 0
+        ? `${caption} (${months} month${months === 1 ? '' : 's'})` : caption;
+      const imageUrl = kickBadgeImageUrl(badge)
+        || (type === 'subscriber' ? kickSubscriberBadgeUrl(months) : '');
       if (imageUrl) {
         return `<img class="fcm-badge-img" src="${FCM.escapeHtml(imageUrl)}"`
-          + ` alt="${FCM.escapeHtml(label)}" title="${FCM.escapeHtml(label)}">`;
+          + ` alt="${FCM.escapeHtml(label)}" title="${FCM.escapeHtml(title)}">`;
       }
+      const icon = kickBadgeIcon(type, badge, title);
+      if (icon) return icon;
       const cls = type ? `fcm-kbadge-${FCM.escapeHtml(type)}` : 'fcm-kbadge-default';
-      return `<span class="fcm-kbadge ${cls}">${FCM.escapeHtml(label)}</span>`;
+      return `<span class="fcm-kbadge ${cls}" title="${FCM.escapeHtml(title)}">${FCM.escapeHtml(label)}</span>`;
     }).filter(Boolean);
     return rendered.length ? `<span class="fcm-badges">${rendered.join('')}</span>` : '';
   }
@@ -953,6 +1059,51 @@
       + `${FCM.authorColorStyle(FCM.chatterColor(platform, reply.name))}>${name}</span>`
       + `<span class="fcm-replyto-text">${quoted}</span></span>`;
   }
+
+  // m:ss, the way a clip's length is written under it everywhere else.
+  function clipLength(seconds) {
+    const total = Math.max(0, Math.round(Number(seconds) || 0));
+    if (!total) return '';
+    const m = Math.floor(total / 60);
+    const s = total % 60;
+    return `${m}:${String(s).padStart(2, '0')}`;
+  }
+
+  /**
+   * A card for a clip somebody linked: the thumbnail, the title, and whose
+   * channel it came from, the whole thing a link to the clip.
+   *
+   * Built as an element rather than into the row's HTML because it arrives
+   * later than the row does — the worker has to ask the platform — and is
+   * hung under the message once it has. Only ever an https address in either
+   * attribute: the worker has already held the thumbnail to the platforms' own
+   * hosts, and the link is the clip's canonical page.
+   *
+   * @returns {HTMLElement|null} null for anything that is not a clip worth a
+   *   card, so the row simply keeps its link
+   */
+  FCM.buildClipCardEl = function (clip) {
+    if (!clip || typeof clip !== 'object') return null;
+    if (!/^https:\/\//i.test(String(clip.url || ''))) return null;
+    const platform = clip.platform === 'kick' ? 'kick' : 'twitch';
+    const el = document.createElement('a');
+    el.className = `fcm-clip fcm-clip-${platform}`;
+    el.href = String(clip.url);
+    el.target = '_blank';
+    el.rel = 'noopener noreferrer';
+    const thumb = /^https:\/\//i.test(String(clip.thumbnail || ''))
+      ? `<img class="fcm-clip-thumb" src="${FCM.escapeHtml(clip.thumbnail)}" alt="" loading="lazy">`
+      : '<span class="fcm-clip-thumb fcm-clip-thumb-none" aria-hidden="true">&#9654;</span>';
+    const bits = [
+      platform === 'kick' ? 'Kick clip' : 'Twitch clip',
+      String(clip.channel || '').trim(),
+      clipLength(clip.duration),
+    ].filter(Boolean);
+    el.innerHTML = `${thumb}<span class="fcm-clip-meta">`
+      + `<span class="fcm-clip-title">${FCM.escapeHtml(String(clip.title || '').trim() || 'Clip')}</span>`
+      + `<span class="fcm-clip-sub">${FCM.escapeHtml(bits.join(' \u00b7 '))}</span></span>`;
+    return el;
+  };
 
   FCM.buildMessageEl = function (msg, activeFilter) {
     const platform = msg.platform;
