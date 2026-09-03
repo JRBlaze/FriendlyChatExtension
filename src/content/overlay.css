@@ -147,13 +147,21 @@
    was keeping it in, the rounded corners and shadow that separated it from
    what was behind it, and the resize corner, which the window frame now does.
    The inline left/top/width/height the placement code last wrote are still on
-   the element, which is why every one of them has to be overridden here. */
+   the element, which is why every one of them has to be overridden here.
+
+   Pinned to the window's viewport rather than sized 100% of its parent. The
+   host the panel hangs off is a plain block with no height of its own, so a
+   percentage height resolved to "as tall as the content" — and a feed that is
+   as tall as its content never scrolls, while the composer, the send targets
+   and the status bar sat below the bottom edge of a window whose body does
+   not scroll either. Fixed to the viewport, the panel is exactly the window,
+   the feed takes what is left after the header and composer, and the feed is
+   the part that scrolls, the way it does on the page. */
 .fcm-root[data-popped="true"] .fcm-panel {
-  position: static !important;
-  left: auto !important;
-  top: auto !important;
-  width: 100% !important;
-  height: 100% !important;
+  position: fixed !important;
+  inset: 0 !important;
+  width: auto !important;
+  height: auto !important;
   max-width: none;
   max-height: none;
   border: 0;
