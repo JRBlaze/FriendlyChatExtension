@@ -2047,6 +2047,10 @@
       panel.style.opacity = String(FCM.clampNumber(settings.opacity, 50, 100, 96) / 100);
       applyNativeChatVisibility();
       feed.trim();
+      // The text size, timestamps and badges all change how tall every row is,
+      // which moves the live end without a scroll, a message or a change to the
+      // feed's own box — so the feed has to be told to go and look again.
+      feed.resettle();
       renderPrompt();
       renderTargets();
       refreshSendNote();
@@ -2744,6 +2748,7 @@
         // not a reason to throw it away.
         flushSettings();
         destroyed = true;
+        feed.destroy();
         if (compose) compose.closeAll();
         pendingSends.clear();
         // Their timers are cleared by resolving them; a menu torn down mid-look

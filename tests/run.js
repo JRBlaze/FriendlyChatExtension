@@ -91,6 +91,180 @@ const suites = {};
 // sat at 1.5.0 through four releases while the extension shipped 1.6, 1.7,
 // 1.8 and 1.9. The badge now reads the manifest, and everything else that
 // names a version is checked here, because remembering is what failed.
+// ── The height a row is assumed to be ───────────────────────────────────
+//
+// Rows carry content-visibility, so one the browser has not drawn yet is only
+// this number until it is measured for real. Scrolling to the live end is aimed
+// at a total built out of it, which is why the two ways of being wrong are not
+// the same: guess high and the correction shrinks the content, leaving the feed
+// still sitting on the end; guess low and the end drops away below it.
+//
+// A plain one-line row is about 26px and a wrapped one about 46px on a column
+// this narrow, and a good half of them wrap. So the guess belongs at the
+// wrapped end rather than below the plain one, which is where 30px put it and
+// why every join used to land four rows short.
+suites.rowheight = function () {
+  const css = fs.readFileSync(path.join(ROOT, 'src/content/overlay.css'), 'utf8');
+
+  ok(/\.fcm-msg,\s*\n\.fcm-sys\s*\{[^}]*content-visibility:\s*auto/.test(css),
+    'css: rows are skipped when they are out of view');
+
+  const rule = /contain-intrinsic-size:\s*auto\s+(\d+)px/.exec(css);
+  ok(rule, 'css: and carry an assumed height for the browser to skip them with');
+  const assumed = Number(rule && rule[1]);
+  ok(assumed >= 40,
+    `css: which is a wrapped row rather than a plain one (${assumed}px)`);
+  ok(assumed <= 80,
+    `css: without being so tall that the scrollbar is a work of fiction (${assumed}px)`);
+
+  // `auto` is what makes the guess a guess only once: a row measured for real
+  // keeps that measurement while it is skipped, so scrolling back lands where
+  // the viewer expects rather than on an estimate.
+  ok(/contain-intrinsic-size:\s*auto\s/.test(css),
+    'css: and a row measured once is remembered rather than re-guessed');
+};
+
+// ── The release zip ───────────────────────────────────────────────────────────
+//
+// What a person downloads has to open straight onto the extension:
+// `manifest.json` next to `src` and `icons`, with nothing wrapped around them.
+// Chrome's "Load unpacked" wants the folder the manifest is directly inside,
+// and Windows already makes a folder of its own when it extracts — so a wrapper
+// directory in the archive puts the manifest one level deeper than the README
+// says it will be, and the install fails with "Manifest file is missing".
+//
+// This is not hypothetical. v1.18.2 and v1.18.3 both shipped wrapped, because
+// the zip was whatever the person making the release happened to select and
+// nothing checked afterwards. tools/pack.js is now the only way one is built,
+// the release workflow is the only thing that uploads one, and this is what
+// says the two agree.
+suites.pack = function () {
+  const pack = require(path.join(ROOT, 'tools', 'pack.js'));
+  const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8'));
+  const names = pack.collect();
+
+  // ── What goes in ──
+  ok(names.includes('manifest.json'), 'pack: the manifest is in the archive');
+  ok(names.includes('LICENSE'), 'pack: so is the licence');
+  ok(names.includes('README.md'), 'pack: and the README');
+  ok(names.some((n) => n.startsWith('src/')), 'pack: and the source');
+  ok(names.some((n) => n.startsWith('icons/')), 'pack: and the icons');
+
+  // Every path in the archive is relative to its root. A name with a leading
+  // slash, a drive letter or a `..` would be a different archive on a different
+  // machine, and a name starting with the project's own directory would be the
+  // wrapper this exists to prevent.
+  const rooted = names.filter((n) => n.startsWith('/') || n.includes('\\')
+    || n.includes('..') || /^[A-Za-z]:/.test(n));
+  eq(rooted, [], `pack: every path is relative and forward-slashed (${rooted.join(', ')})`);
+  ok(!names.some((n) => n.startsWith('FriendlyChatExtension/')),
+    'pack: nothing is wrapped in a folder named after the project');
+
+  // ── What stays out ──
+  //
+  // The suite, the worker and CI are not part of the extension. Shipping them
+  // would put the tests in every user's folder and the worker's config with it.
+  ['tests/', '.github/', '.git/', 'node_modules/', 'dist/'].forEach((prefix) => {
+    const leaked = names.filter((n) => n.startsWith(prefix));
+    eq(leaked, [], `pack: nothing under ${prefix} is shipped (${leaked.join(', ')})`);
+  });
+  ['cloudflare-worker.js', 'wrangler.toml', '.gitignore'].forEach((f) => {
+    ok(!names.includes(f), `pack: ${f} is not shipped`);
+  });
+
+  // ── Everything the manifest names is actually in there ──
+  //
+  // The repo suite checks these exist on disk. This checks they were packed,
+  // which is a different question and the one that decides whether the download
+  // loads.
+  const referenced = [manifest.background.service_worker];
+  (manifest.content_scripts || []).forEach((entry) => {
+    (entry.js || []).forEach((f) => referenced.push(f));
+    (entry.css || []).forEach((f) => referenced.push(f));
+  });
+  (manifest.web_accessible_resources || []).forEach((res) => {
+    (res.resources || []).forEach((f) => { if (!f.includes('*')) referenced.push(f); });
+  });
+  Object.values(manifest.icons || {}).forEach((f) => referenced.push(f));
+  Object.values((manifest.action || {}).default_icon || {}).forEach((f) => referenced.push(f));
+  if ((manifest.action || {}).default_popup) referenced.push(manifest.action.default_popup);
+  const optionsPage = manifest.options_page || (manifest.options_ui || {}).page;
+  if (optionsPage) referenced.push(optionsPage);
+
+  const unpacked = [...new Set(referenced)]
+    .map((f) => f.replace(/^\//, ''))
+    .filter((f) => !names.includes(f));
+  eq(unpacked, [], `pack: every file the manifest names is packed (${unpacked.join(', ')})`);
+
+  // ── And the archive it writes says the same ──
+  //
+  // Read back through the central directory rather than the local headers,
+  // because the central directory is what an unzipper actually reads — an
+  // archive can disagree with itself, and the half that wins is this one.
+  const buf = pack.build();
+  const entries = readZipNames(buf);
+  eq(entries.sort(), names.slice().sort(), 'pack: the archive holds exactly that list');
+
+  const roots = [...new Set(entries.map((n) => n.split('/')[0]))].sort();
+  eq(roots, ['LICENSE', 'README.md', 'icons', 'manifest.json', 'src'],
+    'pack: and it opens onto the extension, not onto a folder holding it');
+
+  // The name follows the manifest, so the README's download link cannot point
+  // at something the workflow did not build.
+  eq(pack.assetName(), `FriendlyChatExtension-v${manifest.version}.zip`,
+    'pack: the asset is named for the version in the manifest');
+
+  // A round trip through the bytes: one file out of the archive, uncompressed,
+  // matching what is on disk. Headers that describe the wrong thing are the way
+  // a hand-written zip writer goes wrong, and they are invisible in a name list.
+  const feed = readZipFile(buf, 'src/content/feed.js');
+  eq(feed.toString('utf8'), fs.readFileSync(path.join(ROOT, 'src/content/feed.js'), 'utf8'),
+    'pack: and a file read back out of it is byte-for-byte what was packed');
+};
+
+// A minimal reader, written against the format rather than against pack.js, so
+// that a packer which is confidently wrong cannot agree with itself.
+function readZipCentral(buf) {
+  let end = buf.length - 22;
+  while (end >= 0 && buf.readUInt32LE(end) !== 0x06054b50) end--;
+  if (end < 0) throw new Error('no end-of-central-directory record');
+  const count = buf.readUInt16LE(end + 10);
+  let at = buf.readUInt32LE(end + 16);
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    if (buf.readUInt32LE(at) !== 0x02014b50) throw new Error(`bad central header at ${at}`);
+    const nameLen = buf.readUInt16LE(at + 28);
+    const extraLen = buf.readUInt16LE(at + 30);
+    const commentLen = buf.readUInt16LE(at + 32);
+    out.push({
+      name: buf.toString('utf8', at + 46, at + 46 + nameLen),
+      method: buf.readUInt16LE(at + 10),
+      crc: buf.readUInt32LE(at + 16),
+      compressedSize: buf.readUInt32LE(at + 20),
+      size: buf.readUInt32LE(at + 24),
+      offset: buf.readUInt32LE(at + 42),
+    });
+    at += 46 + nameLen + extraLen + commentLen;
+  }
+  return out;
+}
+
+function readZipNames(buf) {
+  return readZipCentral(buf).map((e) => e.name);
+}
+
+function readZipFile(buf, name) {
+  const entry = readZipCentral(buf).find((e) => e.name === name);
+  if (!entry) throw new Error(`${name} is not in the archive`);
+  const at = entry.offset;
+  if (buf.readUInt32LE(at) !== 0x04034b50) throw new Error('bad local header');
+  const start = at + 30 + buf.readUInt16LE(at + 26) + buf.readUInt16LE(at + 28);
+  const body = buf.subarray(start, start + entry.compressedSize);
+  const data = entry.method === 0 ? body : require('zlib').inflateRawSync(body);
+  if (data.length !== entry.size) throw new Error('size disagrees with the directory');
+  return data;
+}
+
 suites.repo = function () {
   const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8'));
   const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
@@ -107,6 +281,16 @@ suites.repo = function () {
 
   // The badge is derived from the manifest rather than typed out, which is why
   // there is no third place to forget.
+  // Any other way of writing the asset's name counts too. The download link is
+  // not the only place a version can be typed out — the install steps once
+  // named the folder it extracts to, which the check above sails past because
+  // it has no `.zip` on the end, and it sat a release behind for exactly that
+  // reason. Naming a *past* release in prose is fine; naming this one wrongly
+  // is not, so the test is on the asset's own name and nothing else.
+  const named = Array.from(new Set(readme.match(/FriendlyChatExtension-v\d+\.\d+\.\d+/g) || []));
+  const wrong = named.filter((n) => n !== `FriendlyChatExtension-v${version}`);
+  eq(wrong, [], `repo: every asset name in the README is this version (${wrong.join(', ')})`);
+
   ok(readme.includes('img.shields.io/badge/dynamic/json'),
     'repo: the version badge reads the manifest rather than repeating it');
   const hardcoded = readme.match(/badge\/version-[\d.]+/g) || [];
@@ -4572,7 +4756,14 @@ suites.feed = function () {
 
   function build(settings, clock) {
     const feedEl = fakeNode();
+    // A press that starts on the feed is released wherever the pointer happens
+    // to be by then — off the bottom of the scrollbar, outside the panel — so
+    // the feed listens for that on the document rather than on itself.
+    const doc = fakeNode();
+    feedEl.ownerDocument = doc;
     const frames = [];
+    const cancelled = [];
+    const observers = [];
     const sandbox = makeSandbox({
       chrome: { storage: { sync: { get: async () => ({}) } } },
       document: {
@@ -4584,7 +4775,24 @@ suites.feed = function () {
           return f;
         },
       },
-      window: { requestAnimationFrame: (fn) => { frames.push(fn); return frames.length; } },
+      window: {
+        requestAnimationFrame: (fn) => { frames.push(fn); return frames.length; },
+        cancelAnimationFrame: (id) => { cancelled.push(id); },
+        // The feed watches its own box, because the panel is collapsed,
+        // expanded, popped out and fitted to the site's chat column without any
+        // of that producing a scroll event or a message.
+        ResizeObserver: function FakeResizeObserver(cb) {
+          const observer = {
+            fire: cb,
+            targets: [],
+            disconnected: false,
+            observe(el) { observer.targets.push(el); },
+            disconnect() { observer.disconnected = true; observer.targets.length = 0; },
+          };
+          observers.push(observer);
+          return observer;
+        },
+      },
       // The feed asks the time for two things: how long ago the viewer last
       // touched it, and how long a flush has been watching for the end to move.
       // A test that cares about either hands in a clock it can wind; everything
@@ -4596,7 +4804,7 @@ suites.feed = function () {
     const current = { ...FCM.DEFAULT_SETTINGS, ...(settings || {}) };
     const feed = FCM.createFeed(feedEl, () => current);
     return {
-      FCM, feed, feedEl, current,
+      FCM, feed, feedEl, doc, current, observers, cancelled,
       flush() { const pending = frames.splice(0); pending.forEach((fn) => fn()); },
       // One animation frame after another. A flush keeps looking for the end
       // for a while after it, asking for the next frame from inside the last,
@@ -5035,6 +5243,377 @@ suites.feed = function () {
     browserMovesTo(ue, 1200);
     ok(u.feed.isPinned(), 'feed: a gesture a minute ago does not explain a scroll now');
     eq(ue.scrollTop, atEnd(ue), 'feed: which is still on the live end');
+  }
+
+  // ── A hand on the feed does not make the browser's scrolling theirs ──
+  //
+  // The feed holds still while a hand is on it, which means a flush during that
+  // hold leaves it short of the live end. That is fine on its own. What is not
+  // fine is what used to happen next: Chrome trims the oldest rows, scroll
+  // anchoring drops the position to hold the visible line still, and a feed
+  // reading "the position went up, and a hand was on it" called that reading
+  // back and stopped following — from a click on a username that scrolled
+  // nothing.
+  //
+  // The two are separable, and the distance to the end is what separates them.
+  // Anchoring compensates exactly: the position drops and the content above it
+  // shrinks by the same amount, so the newest message is left exactly as far
+  // away as it was. A viewer scrolling up moves both.
+  {
+    const clock = { now: 20000 };
+    const t = build(null, clock);
+    const el = t.feedEl;
+    const seen = [];
+    t.feed.onPinChange((pinned, missed) => seen.push({ pinned, missed }));
+
+    el.scrollHeight = 6000; el.clientHeight = 400; el.scrollTop = 6000;
+    el.__fire('scroll');
+    ok(t.feed.isPinned(), 'feed: following the live end to start with');
+
+    // They click a name in a row to see who said something. Nothing scrolls.
+    el.__fire('pointerdown');
+    t.doc.__fire('pointerup');
+
+    // A burst lands while that is still recent, so the feed holds rather than
+    // scrolling itself, and is left short of the end.
+    t.feed.addMessage({ platform: 'twitch', author: 'a', text: '1', messageId: 'A1' }, filter);
+    el.scrollHeight = 6600;
+    t.flush();
+    ok(t.feed.isPinned(), 'feed: a press that scrolls nothing does not stop it following');
+    eq(el.scrollTop, 5600, 'feed: and the feed holds still under their hand');
+
+    // Now the cap trims the oldest rows and Chrome anchors: 1600px comes off
+    // the top and the position comes down with it. The end has not moved
+    // relative to the viewer at all.
+    el.scrollHeight = 5000;
+    el.scrollTop = 4000;
+    el.__fire('scroll');
+    ok(t.feed.isPinned(),
+      'feed: an anchoring adjustment is not a gesture, even with a hand on the feed');
+    eq(seen.length, 0, 'feed: and no way back is offered, because they never left');
+
+    // A real scroll up, in the same window, still is one: the position drops
+    // and the end gets further away with it.
+    viewerScrollsTo(el, 2000);
+    ok(!t.feed.isPinned(), 'feed: but actually scrolling up still stops it following');
+    eq(seen[seen.length - 1].pinned, false, 'feed: and that is reported');
+  }
+
+  // ── A burst that trims is not somebody scrolling either ──
+  //
+  // The hardest case, and the one that survived the first attempt at this. A
+  // flush appends below and trims above in the same breath, and the anchoring
+  // that compensates for the trim arrives afterwards, with the layout. Measured
+  // across the two, the position has dropped by what was trimmed and the end
+  // has receded by what was appended — which is both halves of "the viewer
+  // scrolled up", from a feed nobody touched. Any hand event in the seconds
+  // before it (a wheel resting on the chat, a click on a username) was enough
+  // to make that stick.
+  //
+  // So a rearrangement the feed did not follow says so, and the reading that
+  // spans it re-establishes the baseline rather than being read as a gesture.
+  {
+    const clock = { now: 150000 };
+    const t = build({ maxMessages: FCM_MIN_MESSAGES }, clock);
+    const el = t.feedEl;
+    const seen = [];
+    t.feed.onPinChange((pinned, missed) => seen.push({ pinned, missed }));
+
+    // A full feed, sitting on the live end.
+    for (let i = 0; i < FCM_MIN_MESSAGES; i++) {
+      t.feed.addMessage({ platform: 'twitch', author: 'a', text: 'x', messageId: `T${i}` }, filter);
+    }
+    el.scrollHeight = 9000; el.clientHeight = 400; el.scrollTop = 9000;
+    t.flush();
+    el.__fire('scroll');
+    ok(t.feed.isPinned(), 'feed: a full feed, following the live end');
+    eq(el.scrollTop, atEnd(el), 'feed: and sitting on it');
+
+    // Their hand brushes the wheel without moving anything — the feed is
+    // already at the end, so there is nowhere for it to go.
+    el.__fire('wheel');
+
+    // A burst of six lands a moment later. The cap is already reached, so six
+    // rows come off the top as six go on the bottom.
+    clock.now += 120;
+    for (let i = 0; i < 6; i++) {
+      t.feed.addMessage({ platform: 'kick', author: 'b', text: 'y', messageId: `U${i}` }, filter);
+    }
+    t.flush();
+
+    // And now the layout: anchoring drops the position by the 264px it trimmed
+    // off the top, while the six new rows have pushed the end 264px further
+    // down. Both halves, and neither is the viewer.
+    el.scrollHeight = 9000;
+    el.scrollTop = atEnd(el) - 264;
+    el.__fire('scroll');
+
+    ok(t.feed.isPinned(),
+      'feed: a burst that trims while a hand is near is not somebody scrolling up');
+    eq(seen.length, 0, 'feed: so no way back is offered, because they never left');
+
+    // And once their hand is off it, the feed closes the gap by itself.
+    clock.now += 1000;
+    t.frames(1);
+    eq(el.scrollTop, atEnd(el), 'feed: it goes back to the live end on its own');
+    ok(t.feed.isPinned(), 'feed: having never stopped following');
+  }
+
+  // ── A press lasts as long as it is held ──
+  //
+  // Dragging the scrollbar, middle-clicking to autoscroll and dragging a
+  // selection past the top edge are each one press followed by scrolling and no
+  // further events at all. A fixed window after the press times out mid-drag,
+  // and the feed then scrolls itself back to the live end while the viewer is
+  // still holding the button down.
+  {
+    const clock = { now: 40000 };
+    const t = build(null, clock);
+    const el = t.feedEl;
+    el.scrollHeight = 5000; el.clientHeight = 400; el.scrollTop = 5000;
+    el.__fire('scroll');
+
+    // The button goes down on the scrollbar, and stays down.
+    el.__fire('pointerdown');
+    clock.now += 2000;                    // longer than any window after a press
+    el.scrollTop = atEnd(el) - 60;
+    el.__fire('scroll');
+    ok(t.feed.isPinned(), 'feed: barely moved, so it is still following');
+    eq(el.scrollTop, atEnd(el) - 60,
+      'feed: and it holds where the drag left it, two seconds into the press');
+
+    // The button comes up, and the feed takes the live end back.
+    t.doc.__fire('pointerup');
+    clock.now += 800;
+    el.__fire('scroll');
+    eq(el.scrollTop, atEnd(el), 'feed: once the button is up, it follows again');
+    ok(t.feed.isPinned(), 'feed: having never stopped');
+  }
+
+  // ── The looking outlives the gesture that interrupted it ──
+  //
+  // A flush keeps looking for the live end for a while afterwards, and a hand
+  // on the feed stops it moving anything while it looks. Those two windows are
+  // the same length, so a gesture starting part way through a flush's looking
+  // used to outlive it: the frame that would have picked the end up once the
+  // hand came off had already been the last one, and on a quiet channel nothing
+  // came along to ask again.
+  {
+    const clock = { now: 60000 };
+    const t = build(null, clock);
+    const el = t.feedEl;
+    el.clientHeight = 400; el.scrollHeight = 400; el.scrollTop = 0;
+
+    t.feed.addMessage({ platform: 'twitch', author: 'a', text: '1', messageId: 'S1' }, filter);
+    el.scrollHeight = 2000;
+    t.flush();
+
+    clock.now += 300;
+    el.__fire('wheel');                   // a hand arrives, part way through
+    clock.now += 600;                     // past where the flush's looking ended
+    t.frames(1);
+    ok(t.pendingFrames() > 0,
+      'feed: the looking is still going after the gesture that interrupted it');
+
+    // And it does what it was kept alive to do.
+    el.scrollHeight = 2600;
+    clock.now += 800;                     // their hand is off it again
+    t.frames(1);
+    eq(el.scrollTop, atEnd(el), 'feed: which is to put the feed back on the live end');
+  }
+
+  // ── Rows changing height without a message, a scroll or a resize ──
+  //
+  // Turning a platform back on un-hides every one of its rows at once, and
+  // leaving a channel takes a platform's worth away. Both move the live end by
+  // screenfuls, and neither is a scroll, a flush, an image loading or a change
+  // to the feed's own box — so nothing else here would notice.
+  {
+    const t = build();
+    const el = t.feedEl;
+    el.clientHeight = 400; el.scrollHeight = 2000; el.scrollTop = 2000;
+    el.__fire('scroll');
+
+    t.feed.addMessage({ platform: 'kick', author: 'k', text: '1', messageId: 'F1' }, filter);
+    t.flush();
+
+    el.scrollHeight = 5000;               // Kick's rows come back on
+    t.feed.applyFilter(new Set(['twitch', 'kick']));
+    eq(el.scrollTop, atEnd(el), 'feed: turning a platform back on goes after the end');
+
+    el.scrollHeight = 2400;               // and leaving it takes them away again
+    t.feed.dropPlatform('kick');
+    eq(el.scrollTop, atEnd(el), 'feed: and leaving one goes after it too');
+
+    // The same for the things outside the feed that change every row's height.
+    el.scrollHeight = 3200;
+    t.feed.resettle();
+    eq(el.scrollTop, atEnd(el), 'feed: and a settings change can ask for the same');
+  }
+
+  // ── A click is not a reason to stop following ──
+  //
+  // Holding the feed still under a hand and deciding whose scroll it was want
+  // windows of different lengths, and using one window for both meant a click
+  // on a username stopped the chat following for most of a second — no jump
+  // button, no missed count, just a feed that had quietly stopped moving. The
+  // hold only has to outlast the scroll event a hand has just caused, which is
+  // a frame or two; working out whose that scroll was can take as long as it
+  // likes, because nothing is standing still while it decides.
+  {
+    const clock = { now: 80000 };
+    const t = build(null, clock);
+    const el = t.feedEl;
+    const seen = [];
+    t.feed.onPinChange((pinned, missed) => seen.push({ pinned, missed }));
+    el.scrollHeight = 3000; el.clientHeight = 400; el.scrollTop = 3000;
+    el.__fire('scroll');
+
+    // A click on a name in a row: down and up, scrolling nothing.
+    el.__fire('pointerdown');
+    t.doc.__fire('pointerup');
+
+    // A message arrives a fifth of a second later, which is a long time in chat.
+    clock.now += 200;
+    t.feed.addMessage({ platform: 'twitch', author: 'a', text: '1', messageId: 'C1' }, filter);
+    el.scrollHeight = 3600;
+    t.flush();
+    eq(el.scrollTop, atEnd(el), 'feed: a click does not stop it following the live end');
+    eq(seen.length, 0, 'feed: and nothing is reported, because nothing happened');
+  }
+
+  // ── Coming back means arriving, not nearly arriving ──
+  //
+  // The slack that decides somebody has come back is deliberately generous, so
+  // they do not have to find the last pixel. But being let go of is not the same
+  // as being on the live end: stopping where they landed left the feed a few
+  // rows short with the button already hidden, and on a quiet channel nothing
+  // came along to close it.
+  {
+    const clock = { now: 90000 };
+    const t = build(null, clock);
+    const el = t.feedEl;
+    el.scrollHeight = 5000; el.clientHeight = 400; el.scrollTop = 5000;
+    el.__fire('scroll');
+    viewerScrollsTo(el, 1000);
+    ok(!t.feed.isPinned(), 'feed: scrolled back to read');
+
+    // Long enough that nothing armed earlier is still looking, so what happens
+    // next is the return itself and not a leftover frame from the way out.
+    clock.now += 5000;
+    t.frames(4);
+    eq(t.pendingFrames(), 0, 'feed: and nothing is left running while they read');
+
+    // Back down to within the slack, but not onto the end. 140px is deliberate:
+    // inside the slack as it now stands and outside the one it replaced, so
+    // narrowing it again would show up here.
+    viewerScrollsTo(el, atEnd(el) - 140);
+    ok(t.feed.isPinned(), 'feed: near enough to the end is coming back');
+
+    // Their hand comes off, and the looking finishes the last hundred pixels.
+    clock.now += 1000;
+    t.frames(1);
+    eq(el.scrollTop, atEnd(el), 'feed: and it lands on the live end rather than near it');
+  }
+
+  // ── Every way a hand reaches a scroller ──
+  //
+  // Only the wheel was ever exercised, so the rest of the list was carried by
+  // nothing. `focusin` earns its place: tabbing to a link inside a row scrolls
+  // that row into view, and the key that did it was pressed on whatever had
+  // focus before — which is somewhere else entirely.
+  ['wheel', 'touchmove', 'keydown', 'focusin'].forEach((how) => {
+    const clock = { now: 100000 };
+    const t = build(null, clock);
+    const el = t.feedEl;
+    el.scrollHeight = 5000; el.clientHeight = 400; el.scrollTop = 5000;
+    el.__fire('scroll');
+
+    el.__fire(how);
+    el.scrollTop = 1000;
+    el.__fire('scroll');
+    ok(!t.feed.isPinned(), `feed: ${how} counts as the viewer scrolling`);
+
+    // And the same scroll with nothing before it does not.
+    const u = build(null, { now: 100000 });
+    const ue = u.feedEl;
+    ue.scrollHeight = 5000; ue.clientHeight = 400; ue.scrollTop = 5000;
+    ue.__fire('scroll');
+    ue.scrollTop = 1000;
+    ue.__fire('scroll');
+    ok(u.feed.isPinned(), `feed: and without ${how} first, the same scroll is the browser's`);
+  });
+
+  // ── The feed watches its own box ──
+  //
+  // Collapsed and expanded, popped out and brought home, dragged to a new size,
+  // fitted to the site's chat column — and, on the first frames of a page, given
+  // a box at all, because the stylesheet that makes it a scroller is fetched.
+  // None of that is a scroll event or a message, so nothing else would notice
+  // that the live end had moved.
+  {
+    const clock = { now: 110000 };
+    const t = build(null, clock);
+    const el = t.feedEl;
+    eq(t.observers.length, 1, 'feed: the feed observes its own box');
+    eq(t.observers[0].targets, [el], 'feed: which is the feed itself');
+
+    el.scrollHeight = 4000; el.clientHeight = 400; el.scrollTop = 4000;
+    el.__fire('scroll');
+    t.frames(4);
+
+    // The panel is expanded and the chat column turns out to be taller.
+    el.clientHeight = 900;
+    t.observers[0].fire();
+    t.frames(1);
+    eq(el.scrollTop, atEnd(el), 'feed: and goes after the live end when it changes');
+
+    // Nothing is left running once the panel is gone.
+    t.feed.destroy();
+    ok(t.observers[0].disconnected, 'feed: and lets go of it when the panel does');
+  }
+
+  // ── A clock that goes backwards ──
+  //
+  // Machines wake up and get corrected. A hand that was on the feed a moment
+  // "in the future" must not read as a hand that is still on it, or the feed
+  // would hold still for as long as the correction was large.
+  {
+    const clock = { now: 120000 };
+    const t = build(null, clock);
+    const el = t.feedEl;
+    el.scrollHeight = 4000; el.clientHeight = 400; el.scrollTop = 4000;
+    el.__fire('scroll');
+    el.__fire('wheel');
+
+    clock.now -= 3600000;                 // an hour backwards, mid-session
+    el.scrollHeight = 4600;
+    el.__fire('scroll');
+    eq(el.scrollTop, atEnd(el), 'feed: a clock that jumped back does not strand it');
+    ok(t.feed.isPinned(), 'feed: nor is the jump mistaken for somebody reading');
+  }
+
+  // ── Nothing to look at ──
+  //
+  // A collapsed panel measures zero for everything. Looking at it every frame
+  // could not tell anyone anything, and the feed is being asked to look on every
+  // flush of a chat that has not stopped arriving.
+  {
+    const clock = { now: 130000 };
+    const t = build(null, clock);
+    const el = t.feedEl;
+    el.scrollHeight = 3000; el.clientHeight = 0; el.scrollTop = 0;
+
+    t.feed.addMessage({ platform: 'twitch', author: 'a', text: '1', messageId: 'B1' }, filter);
+    t.flush();
+    t.frames(1);
+    eq(t.pendingFrames(), 0, 'feed: a feed with no box does not keep looking at it');
+
+    // And it starts again the moment there is something to see.
+    el.clientHeight = 400;
+    t.observers[0].fire();
+    t.frames(1);
+    eq(el.scrollTop, atEnd(el), 'feed: it is on the live end when the box comes back');
   }
 
   // ── A nudge of the wheel is not somebody reading back ──

@@ -40,13 +40,23 @@
     // way back was a button the viewer had to keep pressing while the chat ran
     // away from them again. Only the viewer stops it now.
     let following = true;
-    // The scroll position this feed last looked at, so a move can be told from
-    // a stay, and which way it went.
+    // What the last look saw: where the scroll position was, and how far the
+    // newest message was below the fold. Both, because neither alone tells a
+    // viewer's scroll from the browser's — see notePinState.
     let lastTop = 0;
+    let lastAway = 0;
     let missed = 0;
-    // When the viewer last touched the feed with their hands. Nothing else can
-    // stop it following, which is what the rest of this file is about.
+    // When the viewer last touched the feed with their hands, and whether one is
+    // still on it. Nothing else can stop it following, which is what the rest of
+    // this file is about.
     let gestureAt = 0;
+    let pointerAt = 0;
+    let pointerHeld = false;
+    // Set whenever this feed changes its own rows, and cleared by the next look
+    // at the scroll position. What it buys is explained in notePinState: a
+    // reading taken across a change the feed made itself cannot be compared
+    // with the one before it.
+    let contentDirty = false;
 
     function limit() {
       const s = getSettings();
@@ -88,12 +98,43 @@
     function stickToBottom() {
       feedEl.scrollTop = feedEl.scrollHeight;
       lastTop = feedEl.scrollTop;
+      lastAway = distanceFromEnd();
     }
 
     // A scroll that follows one of these within living memory is the viewer's.
     // A scroll that follows none of them is the browser's, however far it went.
     const GESTURE_MS = 700;
-    function viewerDriving() { return Date.now() - gestureAt < GESTURE_MS; }
+    // A press, though, lasts as long as it is held rather than for a fixed
+    // window after it: dragging the scrollbar, middle-clicking to autoscroll and
+    // dragging a selection past the top edge are all one press followed by
+    // scrolling and no further events at all. Timing those out mid-drag would
+    // hand the feed back to itself while the viewer was still using it.
+    //
+    // Bounded anyway. If the release is somehow never seen — the window torn
+    // down mid-drag — the feed must not be left believing a hand is on it for
+    // the rest of the session, and letting go early only ever means it follows
+    // the live end again, which is the safe way to be wrong.
+    const POINTER_MAX_MS = 30000;
+    // A clock that has gone backwards — the machine waking up, an NTP
+    // correction — must not read as a gesture that has not finished. Letting go
+    // early only ever means following the live end again.
+    function since(then) {
+      const dt = Date.now() - then;
+      return dt < 0 ? Infinity : dt;
+    }
+    function pressed() { return pointerHeld && since(pointerAt) < POINTER_MAX_MS; }
+
+    // Long enough to still be sure whose scroll this was: a wheel event and the
+    // scroll it causes are one frame apart, and this is many.
+    function viewerDriving() { return pressed() || since(gestureAt) < GESTURE_MS; }
+
+    // And short enough that the feed is not left standing about. This is only
+    // ever asked so the feed does not move itself out from under a hand before
+    // the scroll that hand just made has been read — which is a frame or two,
+    // not most of a second. A press is different: it is held, and while it is
+    // held the viewer is still using it.
+    const HOLD_MS = 150;
+    function heldStill() { return pressed() || since(gestureAt) < HOLD_MS; }
 
     function setFollowing(next) {
       if (next === following) return;
@@ -141,10 +182,36 @@
      * short stopped it following, and it never started again on its own however
      * long they waited. So the question asked here is not "did the position
      * change" but "did the viewer change it" — a wheel, a drag, a finger, a
-     * key, within the last breath — and upwards, since scrolling *towards* the
-     * live end is nobody's way of leaving it. Distance is not the test either:
-     * the distance to the end grows whenever the feed grows, which is exactly
-     * the thing that must not read as somebody reading back.
+     * key, or a press still held down.
+     *
+     * Even then it takes two readings to be sure, because a hand being on the
+     * feed does not make every scroll during it the hand's work. The position
+     * going up is not enough: anchoring moves it up for every trim. The
+     * distance to the end growing is not enough either: the feed growing
+     * underneath does that. But they separate cleanly when read together, since
+     * the browser's adjustments are the ones that leave the newest message
+     * exactly where it was on screen —
+     *
+     *   * The viewer scrolls up: the position drops and the end gets further
+     *     away by the same amount. Both move.
+     *   * Rows are trimmed and anchoring compensates: the position drops and
+     *     the content above it shrinks by the same amount, so the distance to
+     *     the end does not change at all.
+     *   * The feed grows below: the distance grows and the position does not
+     *     move.
+     *   * The panel is resized and the scroller re-clamps: the position drops
+     *     because the end came up to meet it, so again the distance is unmoved.
+     *
+     * Only the first has both, and that is the test — but only across a feed
+     * that held still in between, which is why a flush cancels it. A flush both
+     * appends below and trims above in the same breath, and the compensation
+     * for the trim arrives later, with the layout. Measured across the two, the
+     * position has dropped by what was trimmed and the end has receded by what
+     * was appended: both conjuncts, from a feed nobody touched. So the first
+     * reading after the feed rearranges itself is never taken for a gesture —
+     * it only re-establishes what to compare the next one against. A viewer who
+     * really is scrolling sends another along a frame later, and in the meantime
+     * their hand on it is what stops the feed moving.
      *
      * Anything else that finds the feed short of the end goes after it, because
      * nothing else can have meant to be short of the end.
@@ -158,34 +225,43 @@
      */
     function notePinState() {
       const top = feedEl.scrollTop;
-      // Up: the only direction anybody leaves the live end in.
-      const wentUp = top < lastTop;
+      const away = distanceFromEnd();
+      // Up, and further from the newest message than it was, across a feed that
+      // did not rearrange itself in between. See above: any one of those three
+      // missing and this is the browser, not a hand.
+      const settled = !contentDirty;
+      contentDirty = false;
+      const wentUp = settled && top < lastTop && away > lastAway;
       lastTop = top;
+      lastAway = away;
 
       if (!following) {
-        if (atBottom()) setFollowing(true);
+        // Near enough to the end is how somebody comes back, and it has to be
+        // generous — but being let go again is not the same as being on the
+        // live end, and stopping there left the feed parked a few rows short
+        // with the button already hidden and nothing offering to close it.
+        if (atBottom()) { setFollowing(true); settleToBottom(); }
         return;
       }
       // No box, no answer: a collapsed or hidden panel measures zero for
       // everything, and being told the feed is at the end of nothing is not
       // worth acting on either way.
       if (!feedEl.clientHeight) return;
-      const away = distanceFromEnd();
       if (away <= AT_END_EPSILON) return;
-      if (viewerDriving()) {
-        // Their hand is on it. The feed does not move itself under a hand, so
-        // whatever they are doing it stays where they put it — which also means
-        // a scroll of theirs cannot be undone before it has been read.
-        //
-        // Whether that is somebody reading back is a different question, and a
-        // nudge of the wheel is not: they can still see the newest line, and
-        // answering that with a button offering to take them to it would be
-        // silly. Past a few rows they mean it, and the way back is worth
-        // offering. Short of that the feed simply holds, and picks the live end
-        // up again by itself once their hand comes off it.
-        if (wentUp && away > AT_BOTTOM_SLACK) setFollowing(false);
+      if (wentUp && viewerDriving()) {
+        // They moved away from the newest line themselves. Whether that is
+        // reading back is a separate question, and a nudge of the wheel is not:
+        // they can still see it, and answering that with a button offering to
+        // take them to something already on screen would be silly. Past a few
+        // rows they mean it, and the way back is worth offering. Short of that
+        // the feed holds, and picks the live end up again once they stop.
+        if (away > AT_BOTTOM_SLACK) setFollowing(false);
         return;
       }
+      // A hand is on it right now. Whatever it is doing, the feed does not move
+      // itself out from under it — a scroll they have just made must not be
+      // undone before the event carrying it has been read.
+      if (heldStill()) return;
       stickToBottom();
     }
 
@@ -198,15 +274,44 @@
     // time — what they did to the scroll position is read from the scroll event
     // that follows, like any other.
     //
-    // `touchmove` rather than `touchstart`, and `pointerdown` rather than both
-    // it and `mousedown`: a tap or a click that scrolls nothing still opens the
-    // window, and the fewer of those the better. `pointerdown` has to stay,
-    // because dragging the scrollbar or middle-clicking to autoscroll is a
-    // press followed by scrolling and nothing else.
-    function noteGesture() { gestureAt = Date.now(); }
-    ['wheel', 'touchmove', 'pointerdown', 'keydown'].forEach((type) => {
+    // `touchmove` rather than `touchstart`: a tap that scrolls nothing still
+    // opens the window, and the fewer of those the better.
+    //
+    // Each one also keeps the looking alive past the end of the gesture. The
+    // settle window and the gesture window are the same length, so a gesture
+    // that starts part way through a flush's looking outlives it — and the
+    // frame that would have picked the live end up once the hand came off would
+    // already have been the last one.
+    function noteGesture() {
+      gestureAt = Date.now();
+      if (following) keepSettling(GESTURE_MS + SETTLE_MS);
+    }
+    // `focusin` because tabbing to a link in a row scrolls that row into view,
+    // and the key that did it was pressed on whatever had focus before —
+    // somewhere else entirely. The scroll is still the viewer's.
+    const GESTURE_EVENTS = ['wheel', 'touchmove', 'keydown', 'focusin'];
+    GESTURE_EVENTS.forEach((type) => {
       feedEl.addEventListener(type, noteGesture, { passive: true, capture: true });
     });
+
+    // A press is held rather than stamped. The release is listened for on the
+    // document the feed is in at the time, because the pointer leaves the feed
+    // during a scrollbar drag and the window is a different document once the
+    // panel is popped out — and only until it arrives, so nothing accumulates.
+    function releasePointer() {
+      pointerHeld = false;
+      // The scroll that the release itself settles is still the viewer's.
+      noteGesture();
+    }
+    feedEl.addEventListener('pointerdown', () => {
+      pointerHeld = true;
+      pointerAt = Date.now();
+      noteGesture();
+      const doc = feedEl.ownerDocument;
+      if (!doc) return;
+      doc.addEventListener('pointerup', releasePointer, { once: true, capture: true });
+      doc.addEventListener('pointercancel', releasePointer, { once: true, capture: true });
+    }, { passive: true, capture: true });
 
     function flush() {
       scheduled = false;
@@ -294,6 +399,10 @@
       const step = () => {
         settleFrame = null;
         if (!following) return;
+        // A collapsed or hidden panel has no box, so there is nothing here to
+        // measure and nothing that could be done about it. The observer below
+        // starts this again the moment it gets one back.
+        if (!feedEl.clientHeight) return;
         notePinState();
         if (following && Date.now() < settleUntil) {
           settleFrame = window.requestAnimationFrame(step);
@@ -303,10 +412,20 @@
     }
 
     function settleToBottom() {
-      // Not under a hand: a flush landing mid-gesture would take back a scroll
-      // the viewer has only just made. The looking that follows picks the end
-      // up the moment their hand comes off.
-      if (!viewerDriving()) stickToBottom();
+      if (heldStill()) {
+        // Not out from under a hand: this would take back a scroll the viewer
+        // has only just made. The looking that follows picks the end up the
+        // moment their hand comes off.
+        //
+        // And having rearranged its rows without going to the end, the feed has
+        // left the next reading nothing honest to compare itself against — so
+        // it says so, and that reading re-establishes the baseline instead of
+        // being read as a gesture. Going to the end needs no such note, because
+        // a reading taken from the end is measured against the end.
+        contentDirty = true;
+      } else {
+        stickToBottom();
+      }
       keepSettling(SETTLE_MS);
     }
 
@@ -331,10 +450,12 @@
       if (following) keepSettling(SETTLE_MS);
     }, true);
 
+    let resizeObserver = null;
     if (typeof window.ResizeObserver === 'function') {
-      new window.ResizeObserver(() => {
+      resizeObserver = new window.ResizeObserver(() => {
         if (following) keepSettling(SETTLE_MS);
-      }).observe(feedEl);
+      });
+      resizeObserver.observe(feedEl);
     }
 
     /**
@@ -483,10 +604,22 @@
         );
       },
 
+      // Turning a platform back on un-hides every one of its rows at once,
+      // which is a screenful or ten of new height with no scroll event, no
+      // flush and no change to the feed's own box — so nothing else here would
+      // notice the live end had moved.
       applyFilter(activeFilter) {
         eachRow('[data-platform]', (el) => {
           el.classList.toggle('fcm-hide', !activeFilter.has(el.dataset.platform));
         });
+        if (following) settleToBottom();
+      },
+
+      // For the things outside this file that change how tall every row is:
+      // the text size, timestamps and badges being switched on or off. They
+      // move the live end without touching a row's contents or the feed's box.
+      resettle() {
+        if (following) settleToBottom();
       },
 
       // Drops every row belonging to one platform, used when its chat is left.
@@ -502,6 +635,8 @@
         // silently discard the replayed history as "already seen".
         const prefix = `${platform}:`;
         seen.forEach((key) => { if (key.startsWith(prefix)) seen.delete(key); });
+        // A platform's worth of rows has just gone; the end is somewhere else.
+        if (following) settleToBottom();
       },
 
       clear() {
@@ -513,6 +648,9 @@
         missed = 0;
         following = true;
         lastTop = 0;
+        lastAway = 0;
+        pointerHeld = false;
+        contentDirty = false;
         if (onCount) onCount(0);
         if (onPinChange) onPinChange(true, 0);
       },
@@ -537,6 +675,23 @@
       },
       isPinned,
       trim,
+
+      // Let go of everything that outlives the element. The listeners go with
+      // the feed when the panel is removed, but an observer is held by the
+      // browser rather than by the node, and a frame already asked for will
+      // still arrive — and this is torn down and rebuilt on every channel
+      // switch, which on these sites is a link click.
+      destroy() {
+        if (settleFrame !== null && window.cancelAnimationFrame) {
+          window.cancelAnimationFrame(settleFrame);
+        }
+        settleFrame = null;
+        settleUntil = 0;
+        if (resizeObserver) {
+          resizeObserver.disconnect();
+          resizeObserver = null;
+        }
+      },
     };
   };
 })(self.FCM);
