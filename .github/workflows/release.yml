@@ -1,0 +1,82 @@
+# The release, built by the same thing every time.
+#
+# Push a `v*` tag and this runs the suite, builds the zip with tools/pack.js and
+# attaches it to a release for that tag. Nothing is uploaded by hand, so the
+# archive cannot be whatever the person making the release happened to select —
+# which is exactly how v1.18.2 and v1.18.3 went out with the extension wrapped
+# in a folder, putting `manifest.json` a level deeper than the README says and
+# breaking "Load unpacked" for anyone who followed it.
+#
+# The suite runs first and the job stops if it fails, so a tag cannot become a
+# release that does not pass its own tests. It also checks the tag against the
+# manifest: the version in the tag, the version in the manifest and the filename
+# the README sends people to are three places that have to agree, and the only
+# moment they can be compared is here.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write   # to create the release and upload the asset
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      # Including the pack suite, which is what says the archive opens onto the
+      # extension rather than onto a folder holding it.
+      - name: Test
+        run: node tests/run.js
+
+      # A tag that disagrees with the manifest would publish an asset named for
+      # one version containing another.
+      - name: Check the tag against the manifest
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          manifest="$(node -p "require('./manifest.json').version")"
+          if [ "$tag" != "$manifest" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match manifest version $manifest"
+            exit 1
+          fi
+          echo "v$manifest"
+
+      - name: Build the zip
+        run: node tools/pack.js dist
+
+      # Belt and braces, against the one failure this workflow exists to
+      # prevent: read the archive back and refuse to publish a wrapped one.
+      - name: Check the archive opens onto the extension
+        run: |
+          cd dist
+          unzip -Z1 FriendlyChatExtension-v*.zip | sort > entries.txt
+          echo "--- entries ---"
+          cat entries.txt
+          if ! grep -qx 'manifest.json' entries.txt; then
+            echo "::error::manifest.json is not at the root of the archive"
+            exit 1
+          fi
+          if grep -q '^FriendlyChatExtension/' entries.txt; then
+            echo "::error::the archive is wrapped in a FriendlyChatExtension/ folder"
+            exit 1
+          fi
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The notes are whatever the release already has if one was made for
+          # this tag by hand; otherwise GitHub writes them from the commits.
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/FriendlyChatExtension-v*.zip --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/FriendlyChatExtension-v*.zip \
+              --title "$GITHUB_REF_NAME" --generate-notes
+          fi

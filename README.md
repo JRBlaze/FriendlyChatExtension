@@ -15,7 +15,7 @@ feed. Open a Kick channel and it works the other way round.
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.18.4.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.18.5.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and an extra folder named `FriendlyChatExtension-main`
@@ -23,9 +23,9 @@ wrapped around everything. The release zip is just the extension, with nothing w
 
 1. **Unzip it.** The zip opens straight onto the extension: `manifest.json`, `src` and `icons`,
    with nothing wrapped around them. Extracting it gives you one folder holding exactly those —
-   Windows names it after the zip, so `FriendlyChatExtension-v1.18.4`, and you can rename it to
-   whatever you like. Put it somewhere it can stay: Chrome loads it from that location every
-   time, so it must not be deleted or moved into the recycle bin.
+   Windows names that folder after the zip, and you can rename it to whatever you like. Put it
+   somewhere it can stay: Chrome loads it from that location every time, so it must not be
+   deleted or moved into the recycle bin.
 2. **Open Chrome and go to `chrome://extensions`.** Type that into the address bar and press
    Enter. (It is also under ⋮ menu → Extensions → Manage Extensions.)
 3. **Turn on Developer mode** using the switch in the top-right corner of that page.
@@ -1044,7 +1044,7 @@ Run one suite with `node tests/run.js <name>` (
 `irc`, `kick`, `render`, `settings`, `compose`, `favourites`, `reply`, `authpages`,
 `sites`, `discovery`, `twitchEmotes`, `emotes`, `theme`, `native`, `auth`, `send`,
 `states`, `resilience`, `errors`, `feed`, `navigation`, `moderation`, `channelswitch`,
-`endtoend`, `reload`, `linking`, `multitab`, `background`).
+`endtoend`, `reload`, `linking`, `multitab`, `background`, `pack`, `rowheight`).
 
 The **`native`** suite covers the part of the overlay that reads the page rather than a protocol:
 splitting the message list's siblings into the cards above and the bar below against both sites'
@@ -1102,6 +1102,34 @@ driven on either site. Setting `window.autoSendResult` answers a send with a can
 per-platform result, which is how the partial-failure and expired-token paths get exercised. Setting `composerMode` in the console to `paste-only`, `beforeinput`, `plain`,
 `readonly` or `no-submit` switches how the mock composer behaves, which covers each branch of
 the send path.
+
+### Cutting a release
+
+```bash
+node tools/pack.js          # -> dist/FriendlyChatExtension-v<version>.zip
+```
+
+The archive has **no wrapper directory**. It opens straight onto `manifest.json`, next to `src`
+and `icons`, because Chrome's *Load unpacked* wants the folder the manifest is directly inside
+and Windows already makes a folder of its own when it extracts. A wrapper puts the manifest one
+level deeper than the install steps say it will be, and the install fails with *Manifest file is
+missing or unreadable*.
+
+That is not hypothetical: v1.18.2 and v1.18.3 both shipped wrapped, because the zip was whatever
+the person making the release happened to select and nothing checked afterwards. So there is now
+one way to build it and two things that check it — the `pack` suite reads the archive back
+through its central directory and asserts what is in it and what is not, and the release
+workflow refuses to publish one whose root is not the extension.
+
+Releases are made by pushing a tag:
+
+```bash
+git tag v1.2.3 && git push origin v1.2.3
+```
+
+`.github/workflows/release.yml` runs the suite, checks the tag against `manifest.json`, builds
+the zip and attaches it. Bump `manifest.json` and the README's download link together — the
+`repo` suite fails if they drift, and the workflow fails if the tag disagrees with either.
 
 ### Deploying the proxy
 
