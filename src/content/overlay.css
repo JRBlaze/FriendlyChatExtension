@@ -522,6 +522,36 @@
   font-size: var(--fcm-size);
   line-height: 1.45;
 }
+
+/* Rows the feed is holding but nobody is looking at cost nothing to hold.
+ *
+ * The feed keeps hundreds of rows so the viewer can scroll back through them,
+ * and every one of those rows is a live piece of the page: it is laid out on
+ * every reflow, it is painted into the scroller's tiles, and each emote in it
+ * is an image the browser keeps decoded and — for the animated ones that are
+ * most of a busy chat — keeps advancing frame by frame. Only the last
+ * screenful is ever on show; the rest were being paid for in full.
+ *
+ * That is why the panel was fine for the first few hundred messages and then
+ * was not. Nothing goes wrong when the feed reaches its limit — the limit is
+ * simply the point where the feed stops growing, which is to say the point
+ * where this cost stops growing and settles at its worst. On a busy channel
+ * with two chats merged into one feed that is thousands of images at once, on
+ * top of a page that is also playing video.
+ *
+ * content-visibility lets the browser skip layout, paint and image work for a
+ * row scrolled out of view, so the feed costs about what one screenful costs
+ * however many messages are kept behind it. The `auto` in
+ * contain-intrinsic-size is what keeps the scrollbar honest: every row is
+ * measured for real when it arrives at the live end, and that measurement is
+ * remembered while the row is skipped, so scrolling back lands where the
+ * viewer expects rather than on an estimate. The length after it is only ever
+ * used for a row that has not been rendered even once. */
+.fcm-msg,
+.fcm-sys {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 24px;
+}
 .fcm-root[data-animate="true"] .fcm-msg { animation: fcm-fade .18s ease; }
 @keyframes fcm-fade { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
 

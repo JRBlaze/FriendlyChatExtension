@@ -4860,6 +4860,46 @@ suites.feed = function () {
       null, 'feed: recent ids are still deduped');
   }
 
+  // ── The empty-state row belongs to the feed ──
+  //
+  // It used to be found by searching the feed for it on every queued message,
+  // which meant walking every row being kept — thousands of nodes on a busy
+  // channel — to fail to find a row that has not been there since the first
+  // message of the session. The feed holds it instead, so nothing on the
+  // message path searches for it.
+  {
+    const t = build();
+    let built = 0;
+    const make = () => { built += 1; const el = fakeNode(); el.className = 'fcm-empty'; return el; };
+
+    t.feed.setPlaceholder(make);
+    eq(t.feedEl.childElementCount, 1, 'feed: the placeholder is shown');
+    t.feed.setPlaceholder(make);
+    eq(built, 1, 'feed: and is not built a second time while it is up');
+    eq(t.feedEl.childElementCount, 1, 'feed: nor shown twice');
+
+    // The first message to arrive takes it away, without being told to.
+    t.feed.addMessage({ platform: 'twitch', author: 'a', text: 'x', messageId: 'e1' }, filter);
+    t.flush();
+    eq(t.feedEl.querySelectorAll('.fcm-empty').length, 0,
+      'feed: the first message clears the placeholder');
+    ok(t.feed.hasMessages, 'feed: and the feed says it is holding messages');
+
+    // Clearing forgets it too, so a later empty state is shown rather than
+    // taken for one that is already up.
+    t.feed.setPlaceholder(make);
+    t.feed.clear();
+    eq(t.feedEl.childElementCount, 0, 'feed: clearing takes the placeholder with it');
+    ok(!t.feed.hasMessages, 'feed: and the feed is holding nothing');
+    t.feed.setPlaceholder(make);
+    eq(t.feedEl.childElementCount, 1, 'feed: so a later empty state is shown again');
+
+    t.feed.clearPlaceholder();
+    eq(t.feedEl.childElementCount, 0, 'feed: and it can be taken away directly');
+    t.feed.clearPlaceholder();
+    eq(t.feedEl.childElementCount, 0, 'feed: clearing it twice is harmless');
+  }
+
   // ── Clearing resets everything ──
   {
     const t = build();

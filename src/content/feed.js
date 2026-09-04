@@ -17,6 +17,9 @@
     let frameId = null;
     let timerId = null;
     let msgCount = 0;
+    // The empty-state row, while one is on show. Held rather than looked up, so
+    // the hot path never searches the feed for it.
+    let placeholderEl = null;
     const seen = new Set();
     let onCount = null;
     // Told whenever the feed starts or stops following the live end, and how
@@ -134,8 +137,16 @@
     }
 
     function queue(el) {
-      const placeholder = feedEl.querySelector('.fcm-empty');
-      if (placeholder) placeholder.remove();
+      // The "nothing here yet" placeholder, cleared by the first row to arrive.
+      // Looked up through a held reference rather than by searching the feed:
+      // the search ran on every message and had to walk the whole feed to fail,
+      // so its cost grew with every row kept — several thousand nodes on a busy
+      // channel, for a placeholder that has not been there since the first
+      // message of the session.
+      if (placeholderEl) {
+        placeholderEl.remove();
+        placeholderEl = null;
+      }
       pending.push(el);
       // Bound the queue on the way in as well as on the way out: a busy channel
       // left in a background tab would otherwise pile up nodes between flushes.
@@ -177,7 +188,25 @@
 
     return {
       get count() { return msgCount; },
+      // Whether the feed is showing anybody's message. Asked only when the
+      // empty state is being decided, which is a status change rather than
+      // anything on the message path.
+      get hasMessages() { return !!feedEl.querySelector('.fcm-msg'); },
       onCount(fn) { onCount = fn; },
+
+      // The "nothing here yet" row. The feed owns it because the feed is what
+      // takes it away: the first message to arrive clears it.
+      setPlaceholder(build) {
+        if (placeholderEl) return;
+        placeholderEl = build();
+        if (placeholderEl) feedEl.appendChild(placeholderEl);
+      },
+
+      clearPlaceholder() {
+        if (!placeholderEl) return;
+        placeholderEl.remove();
+        placeholderEl = null;
+      },
       // Called with (pinned, missed) whenever the feed leaves or rejoins the
       // live end, and again as messages pile up while it is away from it.
       onPinChange(fn) { onPinChange = fn; },
@@ -246,6 +275,7 @@
       clear() {
         pending.length = 0;
         feedEl.replaceChildren();
+        placeholderEl = null;
         seen.clear();
         msgCount = 0;
         missed = 0;
