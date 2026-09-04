@@ -546,11 +546,15 @@
  * measured for real when it arrives at the live end, and that measurement is
  * remembered while the row is skipped, so scrolling back lands where the
  * viewer expects rather than on an estimate. The length after it is only ever
- * used for a row that has not been rendered even once. */
+ * used for a row that has not been rendered even once — a batch of history
+ * replayed on join, or a burst that lands several screens at a time. It is a
+ * plain chat row on the default text size, measured on a live channel rather
+ * than guessed at: too small a number and every scroll to the live end lands
+ * short of it, which is exactly as annoying as it sounds. */
 .fcm-msg,
 .fcm-sys {
   content-visibility: auto;
-  contain-intrinsic-size: auto 24px;
+  contain-intrinsic-size: auto 30px;
 }
 .fcm-root[data-animate="true"] .fcm-msg { animation: fcm-fade .18s ease; }
 @keyframes fcm-fade { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
