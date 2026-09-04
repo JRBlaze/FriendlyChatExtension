@@ -15,21 +15,23 @@ feed. Open a Kick channel and it works the other way round.
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.18.3.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.18.4.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
-repository — tests, the Cloudflare worker, and a folder named `FriendlyChatExtension-main`. The
-release zip is just the extension.)
+repository — tests, the Cloudflare worker, and an extra folder named `FriendlyChatExtension-main`
+wrapped around everything. The release zip is just the extension, with nothing wrapped around it.)
 
-1. **Unzip it.** You get a folder called `FriendlyChatExtension` with `manifest.json` sitting
-   directly inside it, next to `src` and `icons`. Put it somewhere it can stay — Chrome loads it
-   from that location every time, so it must not be deleted or moved into the recycle bin.
+1. **Unzip it.** The zip opens straight onto the extension: `manifest.json`, `src` and `icons`,
+   with nothing wrapped around them. Extracting it gives you one folder holding exactly those —
+   Windows names it after the zip, so `FriendlyChatExtension-v1.18.4`, and you can rename it to
+   whatever you like. Put it somewhere it can stay: Chrome loads it from that location every
+   time, so it must not be deleted or moved into the recycle bin.
 2. **Open Chrome and go to `chrome://extensions`.** Type that into the address bar and press
    Enter. (It is also under ⋮ menu → Extensions → Manage Extensions.)
 3. **Turn on Developer mode** using the switch in the top-right corner of that page.
 4. **Click "Load unpacked"** — the button appears on the top left once Developer mode is on.
-5. **Choose the `FriendlyChatExtension` folder** and click Select Folder. Pick the folder
-   *itself* — the one containing `manifest.json` — not the file, and not a folder above it.
+5. **Choose the folder you just extracted** and click Select Folder. Pick the folder that has
+   `manifest.json` directly inside it — not the file itself, and not a folder above it.
 6. **Check it loaded.** A card titled *Friendly Chat Extension* appears with no red error text.
 
 That is the whole install. Now open any channel — for example `twitch.tv/somechannel` or

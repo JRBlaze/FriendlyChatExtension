@@ -38,33 +38,62 @@
     // them reading wrong once stopped the feed following for good: nothing
     // scrolled again while it was behind, so the gap only ever grew, and the
     // way back was a button the viewer had to keep pressing while the chat ran
-    // away from them again. Nothing but the viewer scrolling up stops it now.
+    // away from them again. Only the viewer stops it now.
     let following = true;
-    // The scroll position this feed last set for itself, so its own scrolling
-    // is never mistaken for the viewer's.
+    // The scroll position this feed last looked at, so a move can be told from
+    // a stay, and which way it went.
     let lastTop = 0;
     let missed = 0;
+    // When the viewer last touched the feed with their hands. Nothing else can
+    // stop it following, which is what the rest of this file is about.
+    let gestureAt = 0;
 
     function limit() {
       const s = getSettings();
       return FCM.clampNumber(s.maxMessages, FCM.MAX_MESSAGES_MIN, FCM.MAX_MESSAGES_MAX, FCM.MAX_MESSAGES_DEFAULT);
     }
 
-    // Close enough to the end to count as being at it. Only ever asked about
-    // a feed the viewer has scrolled, to know whether they have come back.
-    const AT_BOTTOM_SLACK = 120;
+    // How far below the last visible line the newest message is. Zero means the
+    // live end is on screen, which is the only thing this file is trying to be
+    // true.
+    //
+    // Two pixels of slack, because a scroller sitting exactly on its end does
+    // not reliably say zero: scrollTop is fractional while the two heights it
+    // is subtracted from are whole numbers, and on a display at 125% or 150%
+    // every layout value underneath them is fractional too. Without the slack
+    // a feed already on the end can read a pixel short of it and spend every
+    // frame writing a scroll position it is already at. Two pixels is below
+    // anything a person can see; the message is on screen either way.
+    const AT_END_EPSILON = 2;
+    function distanceFromEnd() {
+      return feedEl.scrollHeight - feedEl.scrollTop - feedEl.clientHeight;
+    }
+
+    // Close enough to the end to count as having come back to it. Only ever
+    // asked about a feed the viewer has scrolled away from, so it can be
+    // generous: landing within a few rows of the newest message is a viewer
+    // who has finished reading back, and making them find the last pixel to be
+    // let go again would be a worse answer than starting to follow one row
+    // early. It is never used to decide the feed is close enough to *stay*
+    // where it is — while following, the end is the end.
+    const AT_BOTTOM_SLACK = 160;
     function atBottom() {
       // A collapsed or hidden panel gives the feed no box at all and every
       // measurement off it reads zero, which is not an answer. Whatever was
       // true when it had a box is still true now.
       if (!feedEl.clientHeight) return following;
-      return feedEl.scrollHeight - feedEl.scrollTop - feedEl.clientHeight <= AT_BOTTOM_SLACK;
+      return distanceFromEnd() <= AT_BOTTOM_SLACK;
     }
 
     function stickToBottom() {
       feedEl.scrollTop = feedEl.scrollHeight;
       lastTop = feedEl.scrollTop;
     }
+
+    // A scroll that follows one of these within living memory is the viewer's.
+    // A scroll that follows none of them is the browser's, however far it went.
+    const GESTURE_MS = 700;
+    function viewerDriving() { return Date.now() - gestureAt < GESTURE_MS; }
 
     function setFollowing(next) {
       if (next === following) return;
@@ -90,22 +119,38 @@
      * A feed that is following the live end and finds itself no longer at it
      * got there one of two ways, and they want opposite answers:
      *
-     *   * The viewer moved away from the end. The scroll position changed, and
-     *     they are reading something — hold still and offer them the way back.
-     *   * The end moved away from the viewer. The scroll position did not
-     *     change at all; the feed simply grew below it, because a row that had
-     *     been scrolled out of view was measured for real, or an emote finished
-     *     loading and grew the row it is in. On a busy channel that is a few
-     *     hundred pixels at a time. Follow it down.
+     *   * The viewer moved away from the end. They are reading something —
+     *     hold still and offer them the way back.
+     *   * The end moved away from the viewer. The feed grew below them, because
+     *     a row that had been scrolled out of view was measured for real, or an
+     *     emote finished loading and grew the row it is in, or the panel was
+     *     resized around them. Follow it down.
      *
-     * Telling them apart by whether the scroll position moved is what makes
-     * this safe. Measuring the distance to the end and calling anything far
-     * enough "the viewer scrolled up" is what used to strand people: one growth
-     * spurt read as a gesture, the feed stopped following, and it never started
-     * again on its own however long they waited.
+     * What tells them apart is whether the viewer's hands were on it. A scroll
+     * position changing does not: the browser moves it by itself constantly and
+     * has every right to. Scroll anchoring shifts it to hold the visible line
+     * still whenever rows are trimmed off the top, and it is *supposed* to —
+     * that is what keeps somebody reading back from being jerked around. The
+     * scroller re-clamps it whenever the panel is resized or a strip appears
+     * above the feed. Rows that have never been drawn are guesses until they
+     * are measured, and the correction lands after the scroll that was aimed at
+     * the old number.
+     *
+     * Reading any of those as "the viewer scrolled up" is what stranded people:
+     * one of them landing while the feed happened to be a few hundred pixels
+     * short stopped it following, and it never started again on its own however
+     * long they waited. So the question asked here is not "did the position
+     * change" but "did the viewer change it" — a wheel, a drag, a finger, a
+     * key, within the last breath — and upwards, since scrolling *towards* the
+     * live end is nobody's way of leaving it. Distance is not the test either:
+     * the distance to the end grows whenever the feed grows, which is exactly
+     * the thing that must not read as somebody reading back.
+     *
+     * Anything else that finds the feed short of the end goes after it, because
+     * nothing else can have meant to be short of the end.
      *
      * The way back needs no gesture, because there is none to give: a viewer
-     * who has scrolled back is following again once they are at the end,
+     * who has scrolled back is following again once they are near the end,
      * however they got there.
      *
      * Called on every scroll of a busy chat, so it reads the layout values it
@@ -113,19 +158,55 @@
      */
     function notePinState() {
       const top = feedEl.scrollTop;
-      const moved = top !== lastTop;
+      // Up: the only direction anybody leaves the live end in.
+      const wentUp = top < lastTop;
       lastTop = top;
 
       if (!following) {
         if (atBottom()) setFollowing(true);
         return;
       }
-      if (atBottom()) return;
-      if (moved) setFollowing(false);
-      else stickToBottom();
+      // No box, no answer: a collapsed or hidden panel measures zero for
+      // everything, and being told the feed is at the end of nothing is not
+      // worth acting on either way.
+      if (!feedEl.clientHeight) return;
+      const away = distanceFromEnd();
+      if (away <= AT_END_EPSILON) return;
+      if (viewerDriving()) {
+        // Their hand is on it. The feed does not move itself under a hand, so
+        // whatever they are doing it stays where they put it — which also means
+        // a scroll of theirs cannot be undone before it has been read.
+        //
+        // Whether that is somebody reading back is a different question, and a
+        // nudge of the wheel is not: they can still see the newest line, and
+        // answering that with a button offering to take them to it would be
+        // silly. Past a few rows they mean it, and the way back is worth
+        // offering. Short of that the feed simply holds, and picks the live end
+        // up again by itself once their hand comes off it.
+        if (wentUp && away > AT_BOTTOM_SLACK) setFollowing(false);
+        return;
+      }
+      stickToBottom();
     }
 
     feedEl.addEventListener('scroll', notePinState, { passive: true });
+
+    // Every way a viewer has of moving a scroller: the wheel, a finger dragged
+    // across it, the scrollbar or the middle button under the pointer, and the
+    // keys when something inside the feed has focus. Listened for on the way
+    // down so a row's own handlers cannot swallow them, and only to note the
+    // time — what they did to the scroll position is read from the scroll event
+    // that follows, like any other.
+    //
+    // `touchmove` rather than `touchstart`, and `pointerdown` rather than both
+    // it and `mousedown`: a tap or a click that scrolls nothing still opens the
+    // window, and the fewer of those the better. `pointerdown` has to stay,
+    // because dragging the scrollbar or middle-clicking to autoscroll is a
+    // press followed by scrolling and nothing else.
+    function noteGesture() { gestureAt = Date.now(); }
+    ['wheel', 'touchmove', 'pointerdown', 'keydown'].forEach((type) => {
+      feedEl.addEventListener(type, noteGesture, { passive: true, capture: true });
+    });
 
     function flush() {
       scheduled = false;
@@ -164,24 +245,96 @@
     }
 
     /**
-     * Puts the feed back on the live end, and again once the browser has
-     * caught up with itself.
+     * Puts the feed back on the live end, and keeps checking that it is still
+     * there while the page settles around it.
      *
-     * Scrolling to the end is only as good as the height the feed has at that
-     * moment, and rows just attached are measured after this, not during it —
-     * so the end is a little further down than it was when it was scrolled to.
-     * A scroll of its own does not always follow (the position may not have
-     * changed, only the height below it), so one more look on the next frame is
-     * what keeps the newest messages on screen rather than just below the fold.
+     * Scrolling to the end is only ever as good as the height the feed has at
+     * that instant, and that height is a guess for any row the browser has not
+     * drawn yet: rows out of view carry an assumed height until they are
+     * measured for real. A batch of history replayed on join is sixty rows per
+     * platform that have never been drawn, so the scroll that lands on the end
+     * is aimed at a number that is about to change.
+     *
+     * The corrections do not all arrive at once, and none of them arrives
+     * during this call:
+     *
+     *   * The browser decides which rows are worth drawing as part of the frame
+     *     *after* they are attached, so the real heights land a frame or two
+     *     late, and the end drops a few hundred pixels below where it was.
+     *   * Emotes, badges and thumbnails are images with no size until they have
+     *     been fetched, and they grow the row they are in whenever they land —
+     *     a quarter of a second later, or a second, and later still for the
+     *     lazy ones scrolled out of view.
+     *
+     * One extra look on the next frame caught none of that. It measured the
+     * feed before the browser had drawn the rows it was measuring, found it
+     * within the slack, and left the newest four rows below the fold — where
+     * they stayed, because on a channel between messages nothing came along to
+     * look again. So this keeps looking, every frame, for as long as any of
+     * that can still be arriving, and it is looking for the end rather than for
+     * something close enough to it.
+     *
+     * The cost of looking is a layout read on a layout that is almost always
+     * already clean, and on a channel busy enough for that to be untrue the
+     * feed is appending rows on the same frames anyway.
      */
+    const SETTLE_MS = 700;
     let settleFrame = null;
-    function settleToBottom() {
-      stickToBottom();
+    let settleUntil = 0;
+    function keepSettling(ms) {
+      settleUntil = Math.max(settleUntil, Date.now() + ms);
       if (settleFrame !== null || !window.requestAnimationFrame) return;
-      settleFrame = window.requestAnimationFrame(() => {
+      // Through the same reading every scroll gets, rather than by scrolling on
+      // its own account. The difference matters: a viewer can put their hand on
+      // the wheel between two frames, and a feed that spent this frame moving
+      // itself to the end would be taking that back before it had even been
+      // told about it. Asking the question instead means a hand on the feed is
+      // noticed here as readily as it is in a scroll event — and everything
+      // else still ends up on the live end, which is the point of looking.
+      const step = () => {
         settleFrame = null;
-        if (following && !atBottom()) stickToBottom();
-      });
+        if (!following) return;
+        notePinState();
+        if (following && Date.now() < settleUntil) {
+          settleFrame = window.requestAnimationFrame(step);
+        }
+      };
+      settleFrame = window.requestAnimationFrame(step);
+    }
+
+    function settleToBottom() {
+      // Not under a hand: a flush landing mid-gesture would take back a scroll
+      // the viewer has only just made. The looking that follows picks the end
+      // up the moment their hand comes off.
+      if (!viewerDriving()) stickToBottom();
+      keepSettling(SETTLE_MS);
+    }
+
+    /**
+     * The two things that move the live end without touching the feed's rows,
+     * and so without a flush to notice.
+     *
+     * An image finishing its fetch grows the row it is in, long after the flush
+     * that brought that row. `load` does not bubble, so it is caught on the way
+     * down; there is no work in it beyond asking for the looking to carry on a
+     * little longer.
+     *
+     * And the feed's own box changes size without any scroll event at all: the
+     * panel is collapsed and expanded, popped out into a window of its own and
+     * brought home, dragged to a new size, fitted to the site's chat column
+     * once the placement code finds it — and the stylesheet that makes the feed
+     * a scroller in the first place is fetched, so for the first frames of a
+     * page there is no scroller here at all and nothing to scroll to the end
+     * of. Every one of those moves where the end is.
+     */
+    feedEl.addEventListener('load', () => {
+      if (following) keepSettling(SETTLE_MS);
+    }, true);
+
+    if (typeof window.ResizeObserver === 'function') {
+      new window.ResizeObserver(() => {
+        if (following) keepSettling(SETTLE_MS);
+      }).observe(feedEl);
     }
 
     /**
@@ -364,10 +517,22 @@
         if (onPinChange) onPinChange(true, 0);
       },
 
+      // The way back, and also what expanding, showing or popping the panel
+      // means. It settles rather than simply scrolling: the rows it is landing
+      // on may not have been drawn since they arrived, so the end it can see
+      // from here is a guess until the browser has caught up. Being asked to go
+      // to the live end and stopping four rows short of it is the whole of the
+      // complaint this exists to answer.
       scrollToBottom() {
-        stickToBottom();
         missed = 0;
         following = true;
+        // Asked for outright, so it goes, whatever the viewer's hands have been
+        // doing a moment ago: pressing the button is itself the gesture, and
+        // what it asks for is the end. Forgetting the last one is what stops
+        // the hold that keeps the feed still under a hand from arguing with it.
+        gestureAt = 0;
+        stickToBottom();
+        keepSettling(SETTLE_MS);
         if (onPinChange) onPinChange(true, 0);
       },
       isPinned,
