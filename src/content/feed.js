@@ -25,7 +25,24 @@
     // Told whenever the feed starts or stops following the live end, and how
     // many messages have arrived since it stopped.
     let onPinChange = null;
-    let wasPinned = true;
+    // Whether the feed is following the live end.
+    //
+    // This is what the viewer asked for, not what a measurement says, and the
+    // difference is the whole of it. The feed's content moves underneath itself
+    // constantly: rows are trimmed off the top, an emote finishes loading and
+    // grows the row it is in, a row that was scrolled out of view is measured
+    // for real the moment it comes back. Every one of those moves the numbers
+    // an "are we at the bottom?" test reads.
+    //
+    // Deciding it afresh from those numbers on every flush meant any one of
+    // them reading wrong once stopped the feed following for good: nothing
+    // scrolled again while it was behind, so the gap only ever grew, and the
+    // way back was a button the viewer had to keep pressing while the chat ran
+    // away from them again. Nothing but the viewer scrolling up stops it now.
+    let following = true;
+    // The scroll position this feed last set for itself, so its own scrolling
+    // is never mistaken for the viewer's.
+    let lastTop = 0;
     let missed = 0;
 
     function limit() {
@@ -33,17 +50,31 @@
       return FCM.clampNumber(s.maxMessages, FCM.MAX_MESSAGES_MIN, FCM.MAX_MESSAGES_MAX, FCM.MAX_MESSAGES_DEFAULT);
     }
 
-    function isPinned() {
-      // A collapsed or hidden panel gives the feed no box at all, and every
-      // measurement off it reads zero — which came out as "following the live
-      // end" however far behind it actually was. So the messages that arrived
-      // while it was away were counted as seen, the jump button stayed hidden,
-      // and opening the panel again left the viewer somewhere in the middle of
-      // an hour ago with nothing on screen offering to take them back.
-      // Whatever was true when it had a box is still true now.
-      if (!feedEl.clientHeight) return wasPinned;
-      return feedEl.scrollHeight - feedEl.scrollTop < feedEl.clientHeight + 120;
+    // Close enough to the end to count as being at it. Only ever asked about
+    // a feed the viewer has scrolled, to know whether they have come back.
+    const AT_BOTTOM_SLACK = 120;
+    function atBottom() {
+      // A collapsed or hidden panel gives the feed no box at all and every
+      // measurement off it reads zero, which is not an answer. Whatever was
+      // true when it had a box is still true now.
+      if (!feedEl.clientHeight) return following;
+      return feedEl.scrollHeight - feedEl.scrollTop - feedEl.clientHeight <= AT_BOTTOM_SLACK;
     }
+
+    function stickToBottom() {
+      feedEl.scrollTop = feedEl.scrollHeight;
+      lastTop = feedEl.scrollTop;
+    }
+
+    function setFollowing(next) {
+      if (next === following) return;
+      following = next;
+      // Coming back to the live end clears what was missed while away from it.
+      if (next) missed = 0;
+      if (onPinChange) onPinChange(next, missed);
+    }
+
+    function isPinned() { return following; }
 
     function trim() {
       let excess = feedEl.childElementCount - limit();
@@ -54,19 +85,44 @@
     }
 
     /**
-     * Says whether the feed is following the live end, and how far behind it is.
+     * Reads one scroll, and decides nothing it does not have to.
      *
-     * Called on every scroll, so it reads the three layout values it needs and
-     * nothing else — and only reports when the answer has actually changed,
-     * because a scrolling chat fires this continuously.
+     * A feed that is following the live end and finds itself no longer at it
+     * got there one of two ways, and they want opposite answers:
+     *
+     *   * The viewer moved away from the end. The scroll position changed, and
+     *     they are reading something — hold still and offer them the way back.
+     *   * The end moved away from the viewer. The scroll position did not
+     *     change at all; the feed simply grew below it, because a row that had
+     *     been scrolled out of view was measured for real, or an emote finished
+     *     loading and grew the row it is in. On a busy channel that is a few
+     *     hundred pixels at a time. Follow it down.
+     *
+     * Telling them apart by whether the scroll position moved is what makes
+     * this safe. Measuring the distance to the end and calling anything far
+     * enough "the viewer scrolled up" is what used to strand people: one growth
+     * spurt read as a gesture, the feed stopped following, and it never started
+     * again on its own however long they waited.
+     *
+     * The way back needs no gesture, because there is none to give: a viewer
+     * who has scrolled back is following again once they are at the end,
+     * however they got there.
+     *
+     * Called on every scroll of a busy chat, so it reads the layout values it
+     * needs and nothing else, and reports only when the answer has changed.
      */
     function notePinState() {
-      const pinned = isPinned();
-      if (pinned === wasPinned) return;
-      wasPinned = pinned;
-      // Coming back to the live end clears what was missed while away from it.
-      if (pinned) missed = 0;
-      if (onPinChange) onPinChange(pinned, missed);
+      const top = feedEl.scrollTop;
+      const moved = top !== lastTop;
+      lastTop = top;
+
+      if (!following) {
+        if (atBottom()) setFollowing(true);
+        return;
+      }
+      if (atBottom()) return;
+      if (moved) setFollowing(false);
+      else stickToBottom();
     }
 
     feedEl.addEventListener('scroll', notePinState, { passive: true });
@@ -75,7 +131,10 @@
       scheduled = false;
       if (!pending.length) return;
 
-      const pinned = isPinned();
+      // A scroll the viewer has just made, whose event has not been delivered
+      // yet, has to be seen before this decides to take them back to the end.
+      notePinState();
+
       const cap = limit();
       // If a single burst already exceeds the cap, drop the surplus before it is
       // ever attached instead of attaching and immediately removing it.
@@ -83,7 +142,7 @@
 
       // Counted before the queue is emptied. Only chat rows count: a status
       // line arriving is not something the viewer scrolled up to avoid missing.
-      if (!pinned) {
+      if (!following) {
         missed += pending.filter((el) => el.classList
           && el.classList.contains('fcm-msg')).length;
       }
@@ -94,15 +153,35 @@
       feedEl.appendChild(fragment);
 
       trim();
-      if (pinned) {
-        feedEl.scrollTop = feedEl.scrollHeight;
-      } else {
+      if (following) {
+        settleToBottom();
+      } else if (onPinChange) {
         // Appending does not move the scroll position, so the feed has just
         // fallen further behind. Say so, or the count on the button stops
         // climbing while messages carry on arriving.
-        wasPinned = false;
-        if (onPinChange) onPinChange(false, missed);
+        onPinChange(false, missed);
       }
+    }
+
+    /**
+     * Puts the feed back on the live end, and again once the browser has
+     * caught up with itself.
+     *
+     * Scrolling to the end is only as good as the height the feed has at that
+     * moment, and rows just attached are measured after this, not during it —
+     * so the end is a little further down than it was when it was scrolled to.
+     * A scroll of its own does not always follow (the position may not have
+     * changed, only the height below it), so one more look on the next frame is
+     * what keeps the newest messages on screen rather than just below the fold.
+     */
+    let settleFrame = null;
+    function settleToBottom() {
+      stickToBottom();
+      if (settleFrame !== null || !window.requestAnimationFrame) return;
+      settleFrame = window.requestAnimationFrame(() => {
+        settleFrame = null;
+        if (following && !atBottom()) stickToBottom();
+      });
     }
 
     /**
@@ -279,15 +358,16 @@
         seen.clear();
         msgCount = 0;
         missed = 0;
-        wasPinned = true;
+        following = true;
+        lastTop = 0;
         if (onCount) onCount(0);
         if (onPinChange) onPinChange(true, 0);
       },
 
       scrollToBottom() {
-        feedEl.scrollTop = feedEl.scrollHeight;
+        stickToBottom();
         missed = 0;
-        wasPinned = true;
+        following = true;
         if (onPinChange) onPinChange(true, 0);
       },
       isPinned,

@@ -4860,6 +4860,86 @@ suites.feed = function () {
       null, 'feed: recent ids are still deduped');
   }
 
+  // ── The end moving is not the viewer moving ──
+  //
+  // The feed follows the live end until the viewer scrolls away from it, and
+  // the two ways of stopping being at the end want opposite answers. The
+  // viewer moving away is a gesture: hold still and offer the way back. The end
+  // moving away from a viewer who has not touched anything is the feed growing
+  // underneath them — a row scrolled out of view being measured for real, an
+  // emote finishing loading — and the answer is to follow it down.
+  //
+  // Deciding this by distance alone stranded people: one growth spurt read as a
+  // gesture, the feed stopped following, and nothing ever started it again, so
+  // the only way back was pressing the button over and over while a fast chat
+  // ran away again between presses.
+  {
+    const t = build();
+    const el = t.feedEl;
+    const seen = [];
+    t.feed.onPinChange((pinned, missed) => seen.push({ pinned, missed }));
+
+    el.scrollHeight = 1000; el.clientHeight = 400; el.scrollTop = 1000;
+    el.__fire('scroll');
+    ok(t.feed.isPinned(), 'feed: it starts out following the live end');
+
+    // The end moves without the viewer: taller rows, measured after the fact.
+    // Nothing was touched, so this is not somebody reading back.
+    el.scrollHeight = 1600;
+    el.__fire('scroll');
+    ok(t.feed.isPinned(), 'feed: the end growing underneath does not stop it following');
+    eq(el.scrollTop, 1600, 'feed: it goes after the end instead of sitting short of it');
+    eq(seen.length, 0, 'feed: and says nothing, because nothing happened to report');
+
+    // The same again on a flush, which is where it actually bites.
+    t.feed.addMessage({ platform: 'twitch', author: 'a', text: '1', messageId: 'g1' }, filter);
+    el.scrollHeight = 2000;
+    t.flush();
+    eq(el.scrollTop, 2000, 'feed: and every flush lands on the end, however far it moved');
+    ok(t.feed.isPinned(), 'feed: still following after a busy stretch');
+
+    // The viewer moving is a gesture, and is still honoured.
+    el.scrollTop = 400;
+    el.__fire('scroll');
+    ok(!t.feed.isPinned(), 'feed: the viewer scrolling up does stop it following');
+    eq(seen[seen.length - 1].pinned, false, 'feed: and that is reported');
+
+    // Held still while they read, however much the feed grows below them.
+    t.feed.addMessage({ platform: 'twitch', author: 'a', text: '2', messageId: 'g2' }, filter);
+    el.scrollHeight = 2600;
+    t.flush();
+    eq(el.scrollTop, 400, 'feed: and they are left exactly where they were reading');
+    ok(!t.feed.isPinned(), 'feed: growth below them does not drag them back');
+
+    // Back at the end under their own steam, and it follows again.
+    el.scrollTop = 2200;
+    el.__fire('scroll');
+    ok(t.feed.isPinned(), 'feed: scrolling back to the end follows again');
+    eq(seen[seen.length - 1].missed, 0, 'feed: with nothing left outstanding');
+  }
+
+  // ── A hidden panel is not a viewer scrolling ──
+  //
+  // Collapsed or popped away, the feed has no box and every measurement off it
+  // reads zero. That must not be taken for anything.
+  {
+    const t = build();
+    const el = t.feedEl;
+    el.scrollHeight = 1000; el.clientHeight = 400; el.scrollTop = 1000;
+    el.__fire('scroll');
+    ok(t.feed.isPinned(), 'feed: following before the panel is put away');
+
+    el.clientHeight = 0;
+    el.__fire('scroll');
+    ok(t.feed.isPinned(), 'feed: a panel with no box does not stop it following');
+
+    el.clientHeight = 400;
+    t.feed.addMessage({ platform: 'twitch', author: 'a', text: '1', messageId: 'h1' }, filter);
+    el.scrollHeight = 1400;
+    t.flush();
+    eq(el.scrollTop, 1400, 'feed: and it is on the live end when the panel comes back');
+  }
+
   // ── The empty-state row belongs to the feed ──
   //
   // It used to be found by searching the feed for it on every queued message,
