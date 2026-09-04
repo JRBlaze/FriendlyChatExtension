@@ -2942,18 +2942,18 @@
     };
 
     function showEmpty() {
-      const existing = feedEl.querySelector('.fcm-empty');
       const anyConnected = FCM.PLATFORMS.some((p) => status[p].channel);
-      if (anyConnected || feedEl.querySelector('.fcm-msg')) {
-        if (existing) existing.remove();
+      if (anyConnected || feed.hasMessages) {
+        feed.clearPlaceholder();
         return;
       }
-      if (existing) return;
-      const el = document.createElement('div');
-      el.className = 'fcm-empty';
-      el.innerHTML = '<div class="fcm-empty-icon">◈</div>'
-        + `<div>Click a platform above to start watching ${FCM.escapeHtml(channel)}</div>`;
-      feedEl.appendChild(el);
+      feed.setPlaceholder(() => {
+        const el = document.createElement('div');
+        el.className = 'fcm-empty';
+        el.innerHTML = '<div class="fcm-empty-icon">◈</div>'
+          + `<div>Click a platform above to start watching ${FCM.escapeHtml(channel)}</div>`;
+        return el;
+      });
     }
 
     return api;
