@@ -547,14 +547,20 @@
  * remembered while the row is skipped, so scrolling back lands where the
  * viewer expects rather than on an estimate. The length after it is only ever
  * used for a row that has not been rendered even once — a batch of history
- * replayed on join, or a burst that lands several screens at a time. It is a
- * plain chat row on the default text size, measured on a live channel rather
- * than guessed at: too small a number and every scroll to the live end lands
- * short of it, which is exactly as annoying as it sounds. */
+ * replayed on join, or a burst that lands several screens at a time.
+ *
+ * It errs high on purpose. The two ways of being wrong are not symmetrical:
+ * scrolling to the end asks for a position past the end and is clamped to the
+ * real one, so a row that turns out shorter than assumed leaves the feed still
+ * sitting on the end, while a row that turns out taller leaves it short of the
+ * end by the difference. Guessing 30px for rows that measure about 37px on a
+ * narrow column — where a good half of them wrap to a second line — is what
+ * put the newest four messages below the fold on every join. A plain one-line
+ * row is 26px, a wrapped one 46px; 44px is the wrapped one, near enough. */
 .fcm-msg,
 .fcm-sys {
   content-visibility: auto;
-  contain-intrinsic-size: auto 30px;
+  contain-intrinsic-size: auto 44px;
 }
 .fcm-root[data-animate="true"] .fcm-msg { animation: fcm-fade .18s ease; }
 @keyframes fcm-fade { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }

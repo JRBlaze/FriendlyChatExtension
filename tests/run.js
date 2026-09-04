@@ -4478,7 +4478,6 @@ suites.feed = function () {
       dataset: {},
       style: {},
       innerHTML: '',
-      scrollTop: 0,
       scrollHeight: 0,
       clientHeight: 100,
       appendChild(child) {
@@ -4529,6 +4528,22 @@ suites.feed = function () {
         });
       },
     };
+    // A real scroller clamps: asked to go past the end it lands on the end, and
+    // where the end is moves whenever the content grows or the box changes size.
+    // Every scroll this part of the feed is about is one the browser clamped or
+    // adjusted, so a scrollTop that simply keeps whatever it is handed would be
+    // testing a fiction. `feedEl.scrollTop = feedEl.scrollHeight` reads back as
+    // the last screenful, the way it does in a page.
+    let scrollTop = 0;
+    const maxScroll = () => Math.max(0, node.scrollHeight - node.clientHeight);
+    Object.defineProperty(node, 'scrollTop', {
+      // Clamped on the way in, because that is when a browser clamps it and the
+      // clamp is not taken back if the content grows again afterwards; and on
+      // the way out, because content shrinking underneath a scroller pulls it
+      // up whether or not anybody has written to it since.
+      get: () => Math.min(scrollTop, maxScroll()),
+      set: (v) => { scrollTop = Math.min(Math.max(0, Number(v) || 0), maxScroll()); },
+    });
     Object.defineProperty(node, 'childElementCount', { get: () => node.children.length });
     Object.defineProperty(node, 'firstElementChild', { get: () => node.children[0] || null });
     // The feed listens for its own scroll to know whether it is still following
@@ -4555,7 +4570,7 @@ suites.feed = function () {
     return node;
   }
 
-  function build(settings) {
+  function build(settings, clock) {
     const feedEl = fakeNode();
     const frames = [];
     const sandbox = makeSandbox({
@@ -4570,6 +4585,11 @@ suites.feed = function () {
         },
       },
       window: { requestAnimationFrame: (fn) => { frames.push(fn); return frames.length; } },
+      // The feed asks the time for two things: how long ago the viewer last
+      // touched it, and how long a flush has been watching for the end to move.
+      // A test that cares about either hands in a clock it can wind; everything
+      // else gets the real one, which never rewinds and is never waited on.
+      ...(clock ? { Date: class extends Date { static now() { return clock.now; } } } : {}),
     });
     const FCM = load(sandbox, ...SHARED, 'src/content/render.js', 'src/content/feed.js');
     FCM.setViewSettings(FCM.DEFAULT_SETTINGS);
@@ -4578,11 +4598,38 @@ suites.feed = function () {
     return {
       FCM, feed, feedEl, current,
       flush() { const pending = frames.splice(0); pending.forEach((fn) => fn()); },
+      // One animation frame after another. A flush keeps looking for the end
+      // for a while after it, asking for the next frame from inside the last,
+      // so draining the queue once is not the same as letting time pass.
+      frames(n) {
+        for (let i = 0; i < (n === undefined ? 1 : n); i++) {
+          const pending = frames.splice(0);
+          pending.forEach((fn) => fn());
+        }
+      },
+      pendingFrames() { return frames.length; },
     };
   }
 
   const filter = new Set(['twitch', 'kick']);
   const FCM_MIN_MESSAGES = build().FCM.MAX_MESSAGES_MIN;
+
+  // The viewer scrolling, and the browser scrolling. They reach the feed as the
+  // same event and the feed tells them apart by whether a wheel, a drag, a
+  // finger or a key came first — because the browser moves the scroll position
+  // by itself all the time, and every one of those moves used to read as
+  // somebody scrolling up.
+  function viewerScrollsTo(el, top) {
+    el.__fire('wheel');
+    el.scrollTop = top;
+    el.__fire('scroll');
+  }
+  function browserMovesTo(el, top) {
+    el.scrollTop = top;
+    el.__fire('scroll');
+  }
+  // The furthest down a scroller can go: the last screenful of its content.
+  function atEnd(el) { return Math.max(0, el.scrollHeight - el.clientHeight); }
 
   // ── Scrolling up holds the feed still, and offers the way back ─────────────
   //
@@ -4595,19 +4642,22 @@ suites.feed = function () {
     const seen = [];
     t.feed.onPinChange((pinned, missed) => seen.push({ pinned, missed }));
 
-    // Pinned: the bottom is within a screen of the scroll position.
+    // Pinned: the bottom is within a screen of the scroll position. The scroll
+    // is fired as well as set, because the feed knows where it is from having
+    // watched it get there — a position it has never been told about is one it
+    // has no way to see a move away from.
     el.scrollHeight = 1000; el.clientHeight = 400; el.scrollTop = 600;
+    el.__fire('scroll');
     ok(t.feed.isPinned(), 'feed: at the bottom it is following the live end');
 
-    // Scrolled up several screens.
-    el.scrollTop = 100;
-    el.__fire('scroll');
+    // Scrolled up several screens, by hand.
+    viewerScrollsTo(el, 100);
     eq(seen.length, 1, 'feed: leaving the live end is reported once');
     eq(seen[0].pinned, false, 'feed: and reported as no longer pinned');
 
     // More scrolling while already away from the bottom says nothing new.
-    el.scrollTop = 90; el.__fire('scroll');
-    el.scrollTop = 80; el.__fire('scroll');
+    viewerScrollsTo(el, 90);
+    viewerScrollsTo(el, 80);
     eq(seen.length, 1, 'feed: scrolling about up there is not reported again');
 
     // Messages arriving while up there are counted, and the count climbs.
@@ -4629,7 +4679,7 @@ suites.feed = function () {
 
     // The way back: scrolled to the bottom, count cleared, reported pinned.
     t.feed.scrollToBottom();
-    eq(el.scrollTop, el.scrollHeight, 'feed: jumping to live goes to the bottom');
+    eq(el.scrollTop, atEnd(el), 'feed: jumping to live goes to the bottom');
     eq(seen[seen.length - 1].pinned, true, 'feed: and reports it is following again');
     eq(seen[seen.length - 1].missed, 0, 'feed: with nothing left outstanding');
 
@@ -4638,21 +4688,21 @@ suites.feed = function () {
     t.feed.addMessage({ platform: 'twitch', author: 'd', text: '4', messageId: 'p4' }, filter);
     el.scrollHeight = 1200;
     t.flush();
-    eq(el.scrollTop, 1200, 'feed: and it follows the newest line again');
+    eq(el.scrollTop, atEnd(el), 'feed: and it follows the newest line again');
     ok(before !== 1200, 'feed: which is a move, not a coincidence');
 
     // Scrolling back down by hand is the same as pressing the button.
-    el.scrollTop = 100; el.__fire('scroll');
+    viewerScrollsTo(el, 100);
     eq(seen[seen.length - 1].pinned, false, 'feed: scrolling up again unpins');
     t.feed.addMessage({ platform: 'twitch', author: 'e', text: '5', messageId: 'p5' }, filter);
     t.flush();
     ok(seen[seen.length - 1].missed > 0, 'feed: and starts counting again');
-    el.scrollTop = el.scrollHeight; el.__fire('scroll');
+    viewerScrollsTo(el, el.scrollHeight);
     eq(seen[seen.length - 1].pinned, true, 'feed: scrolling down by hand also rejoins');
     eq(seen[seen.length - 1].missed, 0, 'feed: and clears what was missed');
 
     // Clearing the feed starts over at the live end.
-    el.scrollTop = 0; el.__fire('scroll');
+    viewerScrollsTo(el, 0);
     t.feed.clear();
     eq(seen[seen.length - 1].pinned, true, 'feed: a cleared feed is at the live end');
     eq(seen[seen.length - 1].missed, 0, 'feed: with nothing missed');
@@ -4673,8 +4723,9 @@ suites.feed = function () {
     t.feed.onPinChange((pinned, missed) => seen.push({ pinned, missed }));
 
     // Scrolled up, and then the panel is collapsed.
-    el.scrollHeight = 1000; el.clientHeight = 400; el.scrollTop = 100;
+    el.scrollHeight = 1000; el.clientHeight = 400; el.scrollTop = 1000;
     el.__fire('scroll');
+    viewerScrollsTo(el, 100);
     eq(t.feed.isPinned(), false, 'feed: away from the live end before it is put away');
 
     // A collapsed element reports nothing for any of the three, not just the
@@ -4888,19 +4939,18 @@ suites.feed = function () {
     el.scrollHeight = 1600;
     el.__fire('scroll');
     ok(t.feed.isPinned(), 'feed: the end growing underneath does not stop it following');
-    eq(el.scrollTop, 1600, 'feed: it goes after the end instead of sitting short of it');
+    eq(el.scrollTop, atEnd(el), 'feed: it goes after the end instead of sitting short of it');
     eq(seen.length, 0, 'feed: and says nothing, because nothing happened to report');
 
     // The same again on a flush, which is where it actually bites.
     t.feed.addMessage({ platform: 'twitch', author: 'a', text: '1', messageId: 'g1' }, filter);
     el.scrollHeight = 2000;
     t.flush();
-    eq(el.scrollTop, 2000, 'feed: and every flush lands on the end, however far it moved');
+    eq(el.scrollTop, atEnd(el), 'feed: and every flush lands on the end, however far it moved');
     ok(t.feed.isPinned(), 'feed: still following after a busy stretch');
 
     // The viewer moving is a gesture, and is still honoured.
-    el.scrollTop = 400;
-    el.__fire('scroll');
+    viewerScrollsTo(el, 400);
     ok(!t.feed.isPinned(), 'feed: the viewer scrolling up does stop it following');
     eq(seen[seen.length - 1].pinned, false, 'feed: and that is reported');
 
@@ -4912,10 +4962,225 @@ suites.feed = function () {
     ok(!t.feed.isPinned(), 'feed: growth below them does not drag them back');
 
     // Back at the end under their own steam, and it follows again.
-    el.scrollTop = 2200;
-    el.__fire('scroll');
+    viewerScrollsTo(el, 2200);
     ok(t.feed.isPinned(), 'feed: scrolling back to the end follows again');
     eq(seen[seen.length - 1].missed, 0, 'feed: with nothing left outstanding');
+  }
+
+  // ── The browser moving the scroll is not the viewer moving it ──
+  //
+  // This is what took the feed off the live end on load and left it there. The
+  // scroll position is not the viewer's to move alone: Chrome moves it whenever
+  // rows are trimmed off the top, to hold the visible line still — which is
+  // wanted, and is what keeps somebody reading back from being jerked around —
+  // and the scroller re-clamps it whenever the panel is resized or a strip
+  // appears above the feed. Both arrive as an ordinary scroll event.
+  //
+  // Reading those as "the viewer scrolled up" stopped the feed following with
+  // nobody having touched anything, and nothing but the jump button could start
+  // it again. So the question is not whether the position moved but whether the
+  // viewer moved it, and the answer is whether their hands were on it.
+  {
+    const t = build();
+    const el = t.feedEl;
+    const seen = [];
+    t.feed.onPinChange((pinned, missed) => seen.push({ pinned, missed }));
+
+    el.scrollHeight = 4000; el.clientHeight = 400; el.scrollTop = 4000;
+    el.__fire('scroll');
+    ok(t.feed.isPinned(), 'feed: following the live end to start with');
+
+    // Scroll anchoring, after rows were trimmed off the top: the position moves
+    // a long way, upwards, and nobody touched anything.
+    el.scrollHeight = 2800;
+    browserMovesTo(el, 2000);
+    ok(t.feed.isPinned(), 'feed: an anchoring adjustment does not stop it following');
+    eq(el.scrollTop, atEnd(el), 'feed: it goes back to the end instead');
+    eq(seen.length, 0, 'feed: and nothing is reported, because nothing happened');
+
+    // The panel is fitted to the site's chat column and the scroller re-clamps.
+    el.clientHeight = 900;
+    browserMovesTo(el, 1500);
+    ok(t.feed.isPinned(), 'feed: a re-clamp after a resize does not stop it either');
+    eq(el.scrollTop, atEnd(el), 'feed: and it is back on the end');
+
+    // A gesture that goes *towards* the newest line is not leaving it, however
+    // far short of the end the feed happens to be when it lands. It holds where
+    // they put it while their hand is on it, and takes the end up again after.
+    const clockA = { now: 7000 };
+    const a = build(null, clockA);
+    const ae = a.feedEl;
+    ae.scrollHeight = 5000; ae.clientHeight = 900; ae.scrollTop = 5000;
+    ae.__fire('scroll');
+    // The end runs a long way ahead — a burst measured for real underneath them.
+    ae.scrollHeight = 6000;
+    // And the viewer is on the wheel, going down towards it, when it does.
+    viewerScrollsTo(ae, 4600);
+    ok(a.feed.isPinned(), 'feed: scrolling towards the live end is not leaving it');
+    eq(ae.scrollTop, 4600, 'feed: and the feed does not move itself under their hand');
+    clockA.now += 1000;
+    ae.__fire('scroll');
+    eq(ae.scrollTop, atEnd(ae), 'feed: once it comes off, it carries on down to the end');
+
+    // And a gesture long past is not a gesture. The viewer flicked up a minute
+    // ago, came back to the end, and has not touched it since; a browser nudge
+    // now is still the browser's.
+    const clock = { now: 10000 };
+    const u = build(null, clock);
+    const ue = u.feedEl;
+    ue.scrollHeight = 4000; ue.clientHeight = 400; ue.scrollTop = 4000;
+    ue.__fire('scroll');
+    ue.__fire('wheel');
+    clock.now += 60000;
+    browserMovesTo(ue, 1200);
+    ok(u.feed.isPinned(), 'feed: a gesture a minute ago does not explain a scroll now');
+    eq(ue.scrollTop, atEnd(ue), 'feed: which is still on the live end');
+  }
+
+  // ── A nudge of the wheel is not somebody reading back ──
+  //
+  // Following stops so the viewer can read, and the button exists to bring them
+  // back from wherever they went. Neither is worth anything for a scroll of a
+  // few pixels: they can still see the newest line, so a button offering to
+  // take them to it says nothing. The feed holds still while their hand is on
+  // it and picks the live end up again by itself once it comes off.
+  {
+    const clock = { now: 3000 };
+    const t = build(null, clock);
+    const el = t.feedEl;
+    const seen = [];
+    t.feed.onPinChange((pinned, missed) => seen.push({ pinned, missed }));
+    el.scrollHeight = 3000; el.clientHeight = 400; el.scrollTop = 3000;
+    el.__fire('scroll');
+
+    // A notch of the wheel, a few rows short of the end at most.
+    viewerScrollsTo(el, atEnd(el) - 60);
+    ok(t.feed.isPinned(), 'feed: a small scroll up does not stop it following');
+    eq(seen.length, 0, 'feed: and offers no way back to somewhere they can see');
+    eq(el.scrollTop, atEnd(el) - 60, 'feed: but it holds still while their hand is on it');
+
+    // Messages arriving while their hand is still on it do not drag them down.
+    t.feed.addMessage({ platform: 'twitch', author: 'a', text: '1', messageId: 'n1' }, filter);
+    el.scrollHeight = 3200;
+    t.flush();
+    eq(el.scrollTop, 2540, 'feed: and nor does a flush, while they are still holding it');
+
+    // Hand off the wheel, and it picks the live end up again by itself.
+    clock.now += 1000;
+    t.feed.addMessage({ platform: 'twitch', author: 'a', text: '2', messageId: 'n2' }, filter);
+    t.flush();
+    eq(el.scrollTop, atEnd(el), 'feed: once their hand is off it, it follows again');
+    ok(t.feed.isPinned(), 'feed: having never stopped following');
+
+    // Going properly is different, and that is what the button is for.
+    viewerScrollsTo(el, 400);
+    ok(!t.feed.isPinned(), 'feed: scrolling well back does stop it following');
+    eq(seen[seen.length - 1].pinned, false, 'feed: and offers the way back');
+  }
+
+  // ── A flush keeps looking, because the end keeps moving after it ──
+  //
+  // A row the browser has not drawn yet is only an assumed height, so scrolling
+  // to the end lands on a number that is about to change: the rows just
+  // attached are measured a frame or two later, and emotes are images with no
+  // size at all until they have been fetched. One extra look on the next frame
+  // measured the feed before any of that had landed, found it inside the slack,
+  // and left the newest four rows below the fold — where they stayed, because
+  // between messages nothing came along to look again.
+  {
+    const clock = { now: 5000 };
+    const t = build(null, clock);
+    const el = t.feedEl;
+    el.clientHeight = 400; el.scrollHeight = 400; el.scrollTop = 0;
+
+    // Sixty rows of replayed history in one flush, the way a join delivers it.
+    for (let i = 0; i < 60; i++) {
+      t.feed.addMessage({ platform: 'twitch', author: 'a', text: 'x', messageId: 'H' + i }, filter);
+    }
+    // The feed can only see the assumed height when it lands on the end.
+    el.scrollHeight = 1800;
+    t.flush();
+    eq(el.scrollTop, atEnd(el), 'feed: the flush lands on the end it can see');
+
+    // The real heights arrive a frame later and the end drops below it. Nothing
+    // scrolled, no message arrived, and on a quiet channel nothing will.
+    el.scrollHeight = 2240;
+    t.frames(1);
+    eq(el.scrollTop, atEnd(el), 'feed: the next frame follows the end down');
+
+    // An emote finishes loading a quarter of a second later and grows its row.
+    clock.now += 250;
+    el.scrollHeight = 2286;
+    t.frames(1);
+    eq(el.scrollTop, atEnd(el), 'feed: and it is still looking when the emotes land');
+
+    // It does not look forever, though.
+    clock.now += 5000;
+    t.frames(2);
+    eq(t.pendingFrames(), 0, 'feed: the looking stops once the page has settled');
+    const parked = el.scrollTop;
+    el.scrollHeight = 3000;
+    t.frames(1);
+    eq(el.scrollTop, parked, 'feed: and nothing is running to chase it after that');
+
+    // The next message starts it looking again.
+    t.feed.addMessage({ platform: 'kick', author: 'b', text: 'y', messageId: 'H-live' }, filter);
+    t.flush();
+    eq(el.scrollTop, atEnd(el), 'feed: which the next flush puts right');
+  }
+
+  // ── Being asked for the live end means the live end ──
+  //
+  // The jump button, and expanding, showing or popping the panel. The rows it
+  // is landing on may not have been drawn since they arrived, so the end it can
+  // see from here is a guess — and stopping four rows short of the newest
+  // message is exactly the complaint the button exists to answer.
+  {
+    const clock = { now: 1000 };
+    const t = build(null, clock);
+    const el = t.feedEl;
+    el.clientHeight = 400; el.scrollHeight = 3000; el.scrollTop = 3000;
+    el.__fire('scroll');
+    viewerScrollsTo(el, 500);
+    ok(!t.feed.isPinned(), 'feed: scrolled back to read something');
+
+    t.feed.scrollToBottom();
+    eq(el.scrollTop, atEnd(el), 'feed: the way back lands on the end it can see');
+    ok(t.feed.isPinned(), 'feed: and it is following again');
+
+    // The rows it landed on are measured for real straight afterwards.
+    el.scrollHeight = 3400;
+    t.frames(1);
+    eq(el.scrollTop, atEnd(el), 'feed: and it follows the end down as it settles');
+  }
+
+  // ── The end moves without a scroll, and without a message ──
+  //
+  // An image finishing its fetch grows the row it is in. The panel is expanded,
+  // popped out, dragged to a new size, fitted to the site's chat column — and
+  // the stylesheet that makes the feed a scroller at all is fetched, so for the
+  // first frames of a page there is nothing here to scroll. None of that fires
+  // a scroll event and none of it goes through a flush.
+  {
+    const clock = { now: 2000 };
+    const t = build(null, clock);
+    const el = t.feedEl;
+    el.clientHeight = 400; el.scrollHeight = 2000; el.scrollTop = 2000;
+    el.__fire('scroll');
+    t.frames(4);
+    eq(t.pendingFrames(), 0, 'feed: nothing is looking while nothing is happening');
+
+    // An emote lands, long after the flush that brought its row.
+    el.scrollHeight = 2200;
+    el.__fire('load');
+    t.frames(1);
+    eq(el.scrollTop, atEnd(el), 'feed: an image finishing its fetch is followed down');
+
+    // And it carries on looking, for the ones still arriving.
+    clock.now += 200;
+    el.scrollHeight = 2260;
+    t.frames(1);
+    eq(el.scrollTop, atEnd(el), 'feed: for as long as they can still be arriving');
   }
 
   // ── A hidden panel is not a viewer scrolling ──
@@ -4937,7 +5202,7 @@ suites.feed = function () {
     t.feed.addMessage({ platform: 'twitch', author: 'a', text: '1', messageId: 'h1' }, filter);
     el.scrollHeight = 1400;
     t.flush();
-    eq(el.scrollTop, 1400, 'feed: and it is on the live end when the panel comes back');
+    eq(el.scrollTop, atEnd(el), 'feed: and it is on the live end when the panel comes back');
   }
 
   // ── The empty-state row belongs to the feed ──
