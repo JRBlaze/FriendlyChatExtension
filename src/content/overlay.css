@@ -1091,6 +1091,13 @@
 .fcm-gif-btn[data-tier="3"] {
   border-color: var(--twitch-border); background: var(--twitch-dim); color: var(--twitch-text);
 }
+/* On a page that is not Twitch the button reaches the other site, and opens a
+   window to do it. The outline and the arrow say where it goes; the fill stays
+   what it has always been, which is whether Twitch will take you. */
+.fcm-gif-btn[data-to="twitch"] { border-color: var(--twitch-border); color: var(--twitch-text); }
+.fcm-gif-btn[data-to="twitch"]::after {
+  content: "\2197"; margin-left: 3px; font-size: 9px; line-height: 1;
+}
 /* A contenteditable rather than an input, so a typed emote can be drawn as the
    emote. `pre-wrap` matters: an editable box collapses the trailing space that
    has just completed a name, and the caret would jump back over it. */

@@ -24,9 +24,23 @@
   const IDLE_SCAN_TICKS = 10;
 
   // How long the panel stays out of the way after asking the site to open a
-  // menu, before giving up on one appearing. It only has to cover the time
-  // between the click and the site drawing something.
-  const PEEK_HOLD_MS = 1200;
+  // menu, before giving up on one appearing. It has to cover the time between
+  // the press and the site having finished drawing — which is not the same as
+  // the site having started.
+  //
+  // It was 1200ms, which covered the starting and not the finishing.
+  // Kick's Channel Points panel is drawn low in the chat column and settles
+  // upward into place, and for the first second or so of that nothing sees it:
+  // it carries no role, no open state, and is drawn inside the chat column
+  // rather than portalled to the end of `<body>`, so `dialogOver` cannot find
+  // it at all and `coveringChat` — the one test that can — still answers "no"
+  // while it is below the messages. 1200ms expired inside exactly that gap.
+  // The panel came back over the rewards it had just opened, and because the
+  // idle path has only `dialogOver` to go on, it could never see them to stand
+  // aside a second time. Once the panel has settled, `coveringChat` holds the
+  // peek on its own for as long as the menu is up, so this is only ever the
+  // bridge across the drawing.
+  const NATIVE_MENU_PEEK_MS = 4000;
 
   // How long a slider or a typed number has to stop changing before it is
   // written down. Every drag of a slider fires an input event per pixel, and
@@ -147,6 +161,16 @@
     let dialogScanUntil = 0;
     let idleTicks = 0;
     let statsSignature = '';
+    // What the last look at the site's own footer said about its emote picker.
+    // The GIF button used to be shown and hidden inside renderNativeBar, which
+    // gives up early whenever the panel is hidden or collapsed. The button now
+    // has a second reason to be there that has nothing to do with this page, so
+    // the reading is kept here and the decision is made in one place.
+    let pageHasGifs = false;
+    // The window Twitch's GIF keyboard was opened in, from a page that is not
+    // Twitch. Held so that a second press brings it to the front rather than
+    // reloading it out from under a GIF being picked.
+    let gifWindow = null;
 
     // ── DOM ───────────────────────────────────────────────────────────────────
 
@@ -893,10 +917,7 @@
       if (signature === statsSignature) return;
       statsSignature = signature;
 
-      // Only where the site is showing its own picker to open. The button is
-      // offered to everyone on that page: Twitch's keyboard is where the tier
-      // rule is applied, and it explains itself to a viewer it turns away.
-      gifBtn.classList.toggle('fcm-hidden', !read.hasGifs);
+      pageHasGifs = read.hasGifs;
       updateGifButton();
 
       const show = !!stats
@@ -1010,7 +1031,7 @@
       // same task deliberately: the un-hide is a synchronous style change, and
       // waiting a frame for it would strand the panel invisible on a tab the
       // browser has stopped animating.
-      peekHoldUntil = Date.now() + PEEK_HOLD_MS;
+      peekHoldUntil = Date.now() + NATIVE_MENU_PEEK_MS;
       // Armed before the click, so the element the site draws in response is
       // seen being added even on a site that gives its menu no role to match on.
       native.expectMenu();
@@ -1027,27 +1048,45 @@
     // ── GIFs, through the site's own keyboard ─────────────────────────────────
 
     /**
-     * What the GIF button says about this viewer's standing here.
+     * Whether the window opened for a GIF is still there.
+     *
+     * Asked rather than remembered: the viewer closes that window whenever they
+     * please, and the handle goes stale without telling anyone. Reading it can
+     * throw once the window is gone, which is an answer of its own.
+     */
+    function gifWindowOpen() {
+      if (!gifWindow) return false;
+      try {
+        if (!gifWindow.closed) return true;
+      } catch (e) { /* gone, and saying so is the point */ }
+      gifWindow = null;
+      return false;
+    }
+
+    /**
+     * What the GIF button says about this viewer's standing, and whether it is
+     * there at all.
      *
      * The tier is Twitch's rule, not ours — Tier 2 and Tier 3 subscribers may
      * send GIFs — so the button says where the viewer stands rather than
      * hiding itself, and lights up in the platform's colour once it knows the
-     * keyboard will accept them.
+     * keyboard will accept them. The rest of the answer lives in gifButtonState,
+     * where a page with no Twitch on it and a page that is Twitch are decided
+     * the same way and can be checked without a browser.
      */
     function updateGifButton() {
-      const sub = subscription.twitch;
-      const tier = sub && sub.subscribed ? sub.tier : 0;
-      gifBtn.dataset.tier = String(tier || '');
-      if (tier >= 2) {
-        gifBtn.title = `Send a GIF — you are a Tier ${tier} subscriber here`
-          + (sub.months ? ` (${sub.months} month${sub.months === 1 ? '' : 's'})` : '');
-      } else if (sub && sub.subscribed) {
-        gifBtn.title = 'Send a GIF — Twitch offers GIFs in chat to Tier 2 and Tier 3 '
-          + `subscribers, and you are ${tier === 1 ? 'Tier 1' : 'subscribed at a tier it has not said'}`;
-      } else {
-        gifBtn.title = "Send a GIF through Twitch's own GIF keyboard "
-          + '(a Tier 2 and Tier 3 subscriber perk)';
-      }
+      const state = FCM.gifButtonState({
+        hostPlatform,
+        pageHasGifs,
+        twitchChannel: status.twitch.channel,
+        subscription: subscription.twitch,
+        windowOpen: gifWindowOpen(),
+      });
+      gifBtn.classList.toggle('fcm-hidden', !state.show);
+      gifBtn.dataset.tier = String(state.tier || '');
+      if (state.cross) gifBtn.dataset.to = 'twitch';
+      else delete gifBtn.dataset.to;
+      gifBtn.title = state.title;
     }
 
     /**
@@ -1062,7 +1101,10 @@
     let openingGifs = false;
 
     async function openGifKeyboard() {
-      if (destroyed || openingGifs || hostPlatform !== 'twitch') return;
+      if (destroyed || openingGifs) return;
+      // No Twitch on this page to open a keyboard in, so one is opened
+      // somewhere there is.
+      if (hostPlatform !== 'twitch') { openGifErrand(); return; }
       const sub = subscription.twitch;
       if (sub && sub.subscribed && sub.tier === 1) {
         toast('GIFs in chat are a Tier 2 and Tier 3 perk — Twitch will offer the upgrade');
@@ -1072,7 +1114,7 @@
       openingGifs = true;
       // The site's own chat has to be on screen before its picker will draw,
       // so the panel steps aside first and the press follows.
-      peekHoldUntil = Date.now() + PEEK_HOLD_MS;
+      peekHoldUntil = Date.now() + NATIVE_MENU_PEEK_MS;
       native.expectMenu();
       setPeek(true);
       let result;
@@ -1094,6 +1136,62 @@
         toast("Opened Twitch's emote picker — the GIFs tab is where GIFs are, when the channel allows them");
       }
       schedulePeekCheck();
+    }
+
+    /**
+     * Opens Twitch's own GIF keyboard in a window of its own.
+     *
+     * The merged panel already sends to Twitch from here, but only text: the
+     * Helix endpoint takes a string, and the address of a GIF pasted into it
+     * arrives as an address. The keyboard is the only thing that sends a GIF,
+     * it only exists inside a twitch.tv document, and there is not one on this
+     * page — so a small one is opened beside the stream, on Twitch's own popout
+     * chat for the channel this panel is already joined to. Nothing here is
+     * peeked aside for: peek reveals what is under the panel on this page, and
+     * what is under it here is Kick.
+     *
+     * The GIF comes back on its own. This tab's Twitch socket is joined to the
+     * same channel, so the picture arrives in the merged feed the way every
+     * other subscriber's GIF always has.
+     */
+    function openGifErrand() {
+      const plan = FCM.gifClickPlan({
+        twitchChannel: status.twitch.channel,
+        subscription: subscription.twitch,
+        windowOpen: gifWindowOpen(),
+      });
+      if (plan.act === 'none') { toast(plan.note); return; }
+      if (plan.act === 'focus') {
+        try { gifWindow.focus(); } catch (e) { gifWindow = null; }
+        toast(plan.note);
+        return;
+      }
+      // The window the press happened in. A popped-out panel is a window of its
+      // own, and the gesture Chrome wants belongs to the document that saw the
+      // click, not to the tab standing behind it.
+      const opener = (poppedOut() && pipWindow) || window;
+      let opened = null;
+      try {
+        opened = opener.open(plan.url, plan.name, FCM.gifWindowFeatures(opener, window.screen));
+      } catch (e) {
+        opened = null;
+      }
+      if (!opened) {
+        // Chrome refuses a window it did not see asked for, and there is nothing
+        // to be done about that from in here except hand over the address. The
+        // feed makes a link of it; a toast is gone in two seconds.
+        feed.addSys(`[Twitch] Chrome would not open the window for Twitch's GIF keyboard. `
+          + `It is at ${plan.url}`);
+        toast('Chrome would not open the window — the address is in the feed');
+        return;
+      }
+      // Kept, so the next press raises this window instead of reloading it.
+      // Keeping it means not passing noopener, which leaves that Twitch document
+      // holding a handle on this one; it is Twitch's own chat, opened by this
+      // viewer, and nothing here ever listens to a message from it.
+      gifWindow = opened;
+      updateGifButton();
+      toast(plan.note);
     }
 
     // ── The prompts Twitch draws for this viewer ──────────────────────────────
@@ -1154,7 +1252,7 @@
         }
         // Sharing a resub opens a box to type a message into, on the site's
         // own chat, so the panel steps aside for whatever follows the press.
-        peekHoldUntil = Date.now() + PEEK_HOLD_MS;
+        peekHoldUntil = Date.now() + NATIVE_MENU_PEEK_MS;
         native.expectMenu();
         setPeek(true);
         if (!FCM.pressNativeControl(prompt.share)) {
@@ -2313,7 +2411,13 @@
 
     function setReplyTo(platform, name, messageId) {
       if (!FCM.SEND_PLATFORMS.includes(platform)) return;
-      replyTo.set(platform, { name, messageId: messageId || '' });
+      // Completing the same person's name from the autocomplete arrives here
+      // with no message id, and overwriting the one the reply menu armed would
+      // quietly turn a threaded reply back into a bare mention while the reply
+      // bar still said otherwise. A name already being answered keeps its id.
+      const held = replyTo.get(platform);
+      const keep = !messageId && held && held.name === name ? held.messageId : '';
+      replyTo.set(platform, { name, messageId: messageId || keep });
       renderReplyBar();
       renderTargets();
       refreshSendNote();
@@ -2415,6 +2519,9 @@
       'composer-disabled': (name) => `${name}'s chat box is disabled — sign in, or the channel may be in a restricted mode.`,
       'insert-failed': (name) => `Could not type into ${name}'s chat box. Try sending from the site's own box.`,
       'not-submitted': (name) => `${name} did not accept the message — check for slow mode, follower-only mode, or a timeout.`,
+      // A Cheer is never retried and never put back, so its line has to say
+      // what to do instead of implying it can simply be sent again.
+      'cheer-unconfirmed': (name) => `${name} has not said whether it took the Cheer. Check your Bits balance before cheering it again.`,
       // Connected-account failures
       'not-connected': (name) => `No ${name} account connected — set one up in settings.`,
       'no-channel': (name) => `${name} chat is not connected in this overlay.`,
@@ -2554,19 +2661,40 @@
             const info = replyTo.get(p);
             if (info && info.messageId) replies[p] = info.messageId;
           });
-          work.push(sendViaApi(apiTargets, text, replies).then((results) => {
-            apiTargets.forEach((p) => {
-              const r = results[p] || { ok: false, reason: 'timeout' };
-              if (r.ok) delivered++;
-              else failures.push({ platform: p, reason: r.reason, detail: r.detail });
-            });
-          }));
+          // Twitch writes the name in itself on a threaded reply, so the
+          // "@name " the reply menu typed into the box is the second one and
+          // everybody would read it twice. It comes off the copy Twitch is
+          // sent, and off nothing else: Kick's endpoint has no reply field at
+          // all, so there the mention is the only thing addressing anybody.
+          // The box keeps what the viewer typed, and so does the text put back
+          // if the send fails.
+          const twitchText = replies.twitch
+            ? FCM.dropLeadingMention(text, (replyTo.get('twitch') || {}).name)
+            : text;
+          // Split only when the two actually differ, so the ordinary send
+          // stays the single call it has always been.
+          const batches = twitchText === text
+            ? [[apiTargets, text]]
+            : [[apiTargets.filter((p) => p !== 'twitch'), text], [['twitch'], twitchText]];
+          batches.forEach(([targets, body]) => {
+            if (!targets.length) return;
+            work.push(sendViaApi(targets, body, replies).then((results) => {
+              targets.forEach((p) => {
+                const r = results[p] || { ok: false, reason: 'timeout' };
+                if (r.ok) delivered++;
+                else failures.push({ platform: p, reason: r.reason, detail: r.detail });
+              });
+            }));
+          });
         }
         nativeTargets.forEach((p) => {
-          work.push(FCM.sendViaNativeComposer(site, text).then((r) => {
-            if (r.ok) delivered++;
-            else failures.push({ platform: p, reason: r.reason });
-          }));
+          // Only Twitch's box is ever handed a Cheer, and it is the one message
+          // that must not be submitted a second time to hurry it along.
+          work.push(FCM.sendViaNativeComposer(site, text, { cheer: !!cheer && p === 'twitch' })
+            .then((r) => {
+              if (r.ok) delivered++;
+              else failures.push({ platform: p, reason: r.reason });
+            }));
         });
         // Said once, as the Cheer goes out, because it is the one case where the
         // message deliberately does not go the way the Send button says it will.
@@ -2582,7 +2710,13 @@
         focusInput(true);
       }
 
-      if (!delivered && !inputEl.value) inputEl.value = text;
+      // A Cheer Twitch never confirmed is the one failure whose text is not put
+      // back. It may well have gone out — Twitch clears its own box when it is
+      // ready, not when we stop watching — and Send pressed again on a message
+      // that spends Bits spends them again. The line below says so, and the
+      // viewer's own balance is the answer.
+      const unconfirmedCheer = failures.some((f) => f.reason === 'cheer-unconfirmed');
+      if (!delivered && !unconfirmedCheer && !inputEl.value) inputEl.value = text;
       // The reply is finished with once the message has gone out; keep it if
       // nothing was delivered so a retry still goes to the right chat.
       if (delivered) clearReplyTo();
@@ -2595,7 +2729,7 @@
         toast(failures.length > 1 ? `${message} (${failures.length} targets failed)` : message);
         // A failure worth acting on belongs in the feed too, not just a toast
         // that disappears.
-        if (['expired', 'rejected', 'dropped'].includes(first.reason)) {
+        if (['expired', 'rejected', 'dropped', 'cheer-unconfirmed'].includes(first.reason)) {
           feed.addSys(`${name}: ${first.detail || message}`);
         }
       }
@@ -2748,6 +2882,11 @@
         // not a reason to throw it away.
         flushSettings();
         destroyed = true;
+        // Only the handle. The window is Twitch's own chat, it may have a GIF
+        // half-picked in it, and the channel it was opened for is still the
+        // channel it will post to — closing it would throw away work the viewer
+        // started, for the sake of a panel they were not looking at.
+        gifWindow = null;
         feed.destroy();
         if (compose) compose.closeAll();
         pendingSends.clear();
@@ -2816,6 +2955,10 @@
         renderPrompt();
         renderTargets();
         refreshSendNote();
+        // On a page that is not Twitch, joining or dropping Twitch chat is the
+        // whole of what the GIF button follows: it is the difference between
+        // having somewhere to send a GIF and not.
+        updateGifButton();
         showEmpty();
       },
 
@@ -2866,8 +3009,15 @@
         const standing = info.tier ? `Tier ${info.tier}` : (info.founder ? 'Founder' : 'subscriber');
         const months = info.months
           ? ` for ${info.months} month${info.months === 1 ? '' : 's'}` : '';
+        // "Here" is only true on a Twitch page. On a Kick one the perk is real
+        // and this is not where it is spent, so the sentence says where it is
+        // and how to get at it from this side.
+        const unlocked = hostPlatform === 'twitch'
+          ? ' — GIFs in chat are unlocked for you here'
+          : ' — GIFs in chat are unlocked for you there, and the GIF button opens'
+            + ' the keyboard from here';
         feed.addSys(`[Twitch] You are subscribed to ${where}${months} (${standing})`
-          + (info.tier >= 2 ? ' — GIFs in chat are unlocked for you here' : ''));
+          + (info.tier >= 2 ? unlocked : ''));
       },
 
       // Answers a profile lookup the user menu is waiting on.

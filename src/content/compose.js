@@ -582,8 +582,12 @@
     function insertMention(name, platform, messageId) {
       const prefix = `@${name} `;
       const current = inputEl.value;
-      // Replying to a second person should add to the message, not replace it.
-      inputEl.value = current.trim() ? `${current.replace(/\s*$/, ' ')}${prefix}` : prefix;
+      // Replying to a second person should add to the message, not replace it —
+      // but the same person twice is never what anybody meant, and the menu is
+      // easy to reach twice because the only sign it worked is the reply bar.
+      const already = new RegExp(`(^|\\s)@${FCM.escapeRegExp(name)}\\b`, 'i').test(current);
+      if (already) inputEl.value = current;
+      else inputEl.value = current.trim() ? `${current.replace(/\s*$/, ' ')}${prefix}` : prefix;
       inputEl.focus();
       inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
       if (platform) onReplyTo(platform, name, messageId);

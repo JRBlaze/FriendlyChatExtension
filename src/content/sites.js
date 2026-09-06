@@ -710,6 +710,20 @@
      * The GIFs tab inside Twitch's open emote picker, or null while the picker
      * is closed or has no such tab — which is what a channel that has switched
      * GIFs off looks like.
+     *
+     * It is not a tab any more. Twitch now draws Emotes and GIFs as a two-way
+     * segmented control — a `[role="group"]` of `<label>`s, each wrapping a
+     * hidden `input[type="radio"][name="emote-picker-top-tab"]` — and nothing
+     * in it carries the word "gif" in an attribute; only the label's own words
+     * say which is which. Asking for `role="tab"` found nothing, so the GIF
+     * button opened the picker, never reached the GIFs on it, and reported
+     * that the channel had probably switched them off. The radio group is
+     * looked for first and the old tab shape is kept behind it, because a
+     * selector that has been right before costs nothing to keep.
+     *
+     * The label is what is returned, never the input: the input is visually
+     * hidden by the control's own styling, and a press has to land on the
+     * thing a mouse could actually hit.
      */
     gifTab() {
       const named = firstMatch([
@@ -719,6 +733,19 @@
         '[role="tab"][aria-label*="gif" i]',
       ]);
       if (named && named.getClientRects().length) return named;
+
+      const options = document.querySelectorAll(
+        'input[name="emote-picker-top-tab"], .tw-segmented-button-option input, '
+        + '[role="group"] label input[type="radio"]'
+      );
+      for (const input of options) {
+        const label = input.closest ? input.closest('label') : null;
+        if (!label || !label.getClientRects().length) continue;
+        const text = (label.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!/^gifs?$/i.test(text)) continue;
+        return label;
+      }
+
       const tabs = document.querySelectorAll('[role="tab"],[role="tablist"] button');
       for (const tab of tabs) {
         const text = `${tab.textContent || ''} ${tab.getAttribute('aria-label') || ''}`
@@ -1057,9 +1084,19 @@
 
   const tick = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-  // How long to give the site to draw its picker before giving up on the tab
-  // inside it. React draws it inside a frame or two; this is generous.
-  const GIF_TAB_WAIT_MS = 1500;
+  // How long to give the site to draw its picker before giving up on the GIFs
+  // inside it. "React draws it inside a frame or two" was the guess this was
+  // built on, and it is wrong: Twitch fetches the picker's own bundle the first
+  // time it is opened on a page, and on a channel page still settling from a
+  // cold load it was measured at ten seconds to draw the picker and another
+  // second to put the GIFs option on it. A second and a half of waiting meant
+  // the button opened the picker and reported that the channel had probably
+  // switched GIFs off — on a channel whose viewers were posting them.
+  //
+  // Waiting this long costs nothing on screen. The panel steps aside for its
+  // own short hold and comes back; when the picker does open, the idle scan
+  // sees a dialog over the chat and steps aside again on its own.
+  const GIF_TAB_WAIT_MS = 12000;
   const GIF_TAB_POLL_MS = 100;
 
   /**
@@ -1073,11 +1110,15 @@
    * seconds. Those rules are Twitch's to apply, so the site's own keyboard is
    * opened and the panel steps aside for it, exactly as it does for a Cheer.
    *
+   * @param {object} [opts] { tabWaitMs } — how long to wait for the GIFs tab.
+   *   The default suits a page that has been open long enough for somebody to
+   *   press a button on it; a window opened for a GIF has only just loaded, and
+   *   asks for longer.
    * @returns {Promise<{ok: boolean, reason: string}>} `reason` is 'gifs' when
    *   the GIFs tab was reached, 'picker' when only the picker opened (the tab
    *   may be absent because the channel has turned GIFs off), or why not.
    */
-  FCM.openNativeGifKeyboard = async function (site) {
+  FCM.openNativeGifKeyboard = async function (site, opts) {
     if (!site || !site.emotePickerButton) return { ok: false, reason: 'unsupported' };
     // Already on the tab: nothing to press, and pressing the picker button
     // again would close it.
@@ -1102,7 +1143,8 @@
       if (!(FCM.pressNativeControl || ((el) => { el.click(); return true; }))(button)) {
         return { ok: false, reason: 'no-picker' };
       }
-      const until = Date.now() + GIF_TAB_WAIT_MS;
+      const wait = Math.max(Number((opts && opts.tabWaitMs) || 0), GIF_TAB_WAIT_MS);
+      const until = Date.now() + wait;
       while (Date.now() < until) {
         await tick(GIF_TAB_POLL_MS);
         const tab = site.gifTab && site.gifTab();
@@ -1118,6 +1160,15 @@
       unhidden.forEach((el) => { if (el.style.visibility === 'visible') el.style.visibility = ''; });
     }
   };
+
+  // How long to wait for the site to say it took the message, how often to
+  // look, and when to try the Enter once more. The site emptying its own box
+  // is the only acknowledgement either of them gives, and how long that takes
+  // is not ours to decide: an ordinary line is gone within a frame or two,
+  // while a Cheer waits on Twitch validating the Bits on its own server.
+  const SENT_WAIT_MS = 2500;
+  const SENT_POLL_MS = 100;
+  const SENT_RETRY_MS = 300;
 
   function readComposer(box) {
     if (box.tagName === 'TEXTAREA' || box.tagName === 'INPUT') return box.value || '';
@@ -1234,11 +1285,20 @@
    * changes nothing they will read back. So each insertion strategy is tried in
    * turn and the box is read back afterwards to see whether it took.
    *
-   * @returns {Promise<{ok: boolean, reason: string}>}
+   * @param {object} [opts] { cheer, waitMs } — whether this message spends
+   *   Bits, and how long to watch for the site to take it. A Cheer is the one
+   *   message that must never be submitted twice, and the one the site takes
+   *   longest to accept, so it is watched rather than nudged. The wait is an
+   *   argument only so a test need not spend the whole of it.
+   * @returns {Promise<{ok: boolean, reason: string}>} `reason` is 'sent', or
+   *   'cheer-unconfirmed' for a Cheer the site never said it took, or one of
+   *   the ways it could not be typed at all.
    */
-  FCM.sendViaNativeComposer = async function (site, text) {
+  FCM.sendViaNativeComposer = async function (site, text, opts) {
     const message = String(text || '').trim();
     if (!message) return { ok: false, reason: 'empty' };
+    const cheering = !!(opts && opts.cheer);
+    const waitMs = Number((opts && opts.waitMs) || 0) || SENT_WAIT_MS;
 
     const box = site.composer();
     if (!box) return { ok: false, reason: 'no-composer' };
@@ -1291,15 +1351,30 @@
       // not keep the caret in the page's chat box any longer than necessary.
       restoreFocus(previousFocus);
 
-      await tick(140);
       // A composer that emptied itself is the site telling us it accepted the
-      // message. Anything still sitting there means it did not go out.
-      if (readComposer(box).trim()) {
-        pressEnter(box);
-        await tick(160);
-        if (readComposer(box).trim()) return { ok: false, reason: 'not-submitted' };
+      // message. Anything still sitting there means it has not gone out — but
+      // "yet" is the word the old fixed 140ms deadline was missing. Twitch
+      // validates a Cheer on its own server before it clears its box, and
+      // calling that a failure put the Bits message back into the panel's own
+      // box and told the viewer it had not been sent, for a Cheer that had.
+      // So the box is watched until it empties rather than glanced at once.
+      const deadline = Date.now() + waitMs;
+      const retryAt = Date.now() + SENT_RETRY_MS;
+      let retried = false;
+      for (;;) {
+        if (!readComposer(box).trim()) return { ok: true, reason: 'sent' };
+        if (Date.now() >= deadline) break;
+        // One more Enter, once, for a composer that took the text and never
+        // acted on it. Never for a Cheer: a second Enter on a message that
+        // spends Bits can spend them twice, and a Cheer nobody is sure about
+        // is worth reporting rather than risking.
+        if (!retried && !cheering && Date.now() >= retryAt) {
+          retried = true;
+          pressEnter(box);
+        }
+        await tick(SENT_POLL_MS);
       }
-      return { ok: true, reason: 'sent' };
+      return { ok: false, reason: cheering ? 'cheer-unconfirmed' : 'not-submitted' };
     } catch (e) {
       return { ok: false, reason: 'error' };
     } finally {

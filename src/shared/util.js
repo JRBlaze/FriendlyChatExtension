@@ -14,6 +14,29 @@
     return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   };
 
+  /**
+   * Takes one leading `@name` off a message, for the platform that writes it
+   * back in itself.
+   *
+   * A threaded reply on Twitch comes back down the socket with `@name ` already
+   * on the front of it — Twitch puts it there, the same as it does for its own
+   * client — so the `@name ` the reply menu typed into the box would be the
+   * second one, and everyone in the channel would read the name twice.
+   *
+   * Only the first, only at the very front, and only that one name: a reply
+   * that goes on to mention somebody else keeps every other name it carries,
+   * and a message that does not start with the name is handed back untouched.
+   * A message that is nothing but the name is also handed back untouched —
+   * stripping it would leave an empty message, which is not a reply at all.
+   */
+  FCM.dropLeadingMention = function (text, name) {
+    const who = String(name || '').trim();
+    const body = String(text == null ? '' : text);
+    if (!who) return body;
+    const out = body.replace(new RegExp(`^\\s*@${FCM.escapeRegExp(who)}\\b[,:]?\\s*`, 'i'), '');
+    return out.trim() ? out : body;
+  };
+
   FCM.normalizeChannel = function (name) {
     return String(name || '')
       .trim()
