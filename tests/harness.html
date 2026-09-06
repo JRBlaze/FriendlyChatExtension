@@ -504,6 +504,7 @@ const SOURCES = [
   '/src/content/native-events.js',
   '/src/content/overlay.js',
   '/src/content/sites.js',
+  '/src/content/gif-errand.js',
 ];
 function loadSources(bust) {
   return SOURCES.reduce((chain, src) => chain.then(() => new Promise((resolve, reject) => {
@@ -967,6 +968,11 @@ function loadSources(bust) {
       onCommand: () => {},
     });
     await overlay.mount();
+    // The same seeding the page does on load. It matters on the Kick side as
+    // well as the Twitch one now: a joined Twitch chat is what puts the GIF
+    // button on a Kick page, because it is the only thing that gives a GIF
+    // somewhere to land.
+    overlay.setStatus('twitch', 'connected', 'examplestreamer');
     window.overlay = overlay;
     return id;
   };

@@ -19,6 +19,18 @@
   }
   if (isAuthFlowPage()) return;
 
+  // A window the panel opened to fetch a GIF is not a place for a chat panel
+  // either. It is Twitch's own popout chat, opened from a Kick page because
+  // Twitch's keyboard is the only thing that can post a GIF, and it is here to
+  // press that keyboard and stand back. Returning is what keeps it from drawing
+  // a second merged panel over the composer the viewer came to use — and from
+  // opening a port, which would give the worker a second session and with it a
+  // second Twitch socket for a channel this browser is already reading.
+  if (FCM.isGifErrand(site, location, window.name)) {
+    FCM.runGifErrand(site);
+    return;
+  }
+
   let overlay = null;
   let currentChannel = null;
   let port = null;

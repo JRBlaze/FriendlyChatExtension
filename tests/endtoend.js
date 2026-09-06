@@ -231,9 +231,11 @@ function bootPair(startPath, opts = {}) {
   [
     'src/shared/namespace.js', 'src/shared/constants.js', 'src/shared/util.js',
     'src/shared/irc.js', 'src/shared/emote-parsers.js', 'src/shared/kick-events.js', 'src/shared/clips.js',
-    // render.js before sites.js, the order the manifest loads them in: boot.js
-    // calls into render.js when a channel is left.
-    'src/content/render.js', 'src/content/sites.js',
+    // render.js before sites.js before gif-errand.js, the order the manifest
+    // loads them in: boot.js calls into render.js when a channel is left, and
+    // asks gif-errand.js whether this page is a window opened to fetch a GIF
+    // before it mounts anything at all.
+    'src/content/render.js', 'src/content/sites.js', 'src/content/gif-errand.js',
   ].forEach((rel) => {
     vm.runInContext(fs.readFileSync(path.join(ROOT, rel), 'utf8'), contentSandbox, { filename: rel });
   });

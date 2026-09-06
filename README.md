@@ -15,7 +15,7 @@ feed. Open a Kick channel and it works the other way round.
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.18.5.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.19.0.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and an extra folder named `FriendlyChatExtension-main`
@@ -163,11 +163,13 @@ so its button is always visible for quick settings.
   something you can still read. And on the message itself: point at a row in a chat you moderate
   and a strip of delete, a ten-minute timeout and ban appears on it, so the ordinary actions are
   one click rather than three. Ban takes two presses on purpose. See [Moderating](#moderating).
-- **GIFs in Twitch chat.** A Tier 2 or Tier 3 subscriber's GIF is drawn as the picture it is,
-  from the tag Twitch attaches to the message, and a **GIF** button beside the emote button opens
-  Twitch's own GIF keyboard — the one place a GIF can be sent from, and the place Twitch applies
-  its own rules about who may. The overlay knows your tier here and says so. See
-  [GIFs in chat](#gifs-in-chat).
+- **GIFs in Twitch chat, from either page.** A Tier 2 or Tier 3 subscriber's GIF is drawn as the
+  picture it is, from the tag Twitch attaches to the message, and a **GIF** button beside the
+  emote button opens Twitch's own GIF keyboard — the one place a GIF can be sent from, and the
+  place Twitch applies its own rules about who may. Watching on Kick, the button is still there:
+  it opens that keyboard in a small Twitch window beside the stream, the GIF posts to Twitch, and
+  it lands back in the merged feed you were already reading. The overlay knows your tier and says
+  so. See [GIFs in chat](#gifs-in-chat).
 - **Clip previews.** When somebody links a Twitch or Kick clip, the clip's thumbnail, title,
   channel and length appear as a card under the message, the whole card a link to the clip. A
   slug is four random words and a Kick id is a string of letters, so the address alone says
@@ -314,6 +316,15 @@ and shows a **Replying to** bar above the box saying who and where.
   rerouting** to the other platform.
 - The scope lasts for one message. It clears when the message goes out, when you empty the box,
   on Escape, on the bar's `×`, or as soon as you touch the target chips yourself.
+- Replying to the same person twice names them once. Appending is for addressing a *second*
+  person; the menu is easy to reach twice, because the only sign the first press worked is the
+  bar above the box.
+- **The name is written once, whoever writes it.** A threaded reply on Twitch comes back down the
+  socket with `@name` already on the front — Twitch puts it there, the same as it does for its own
+  client — so the `@name` the menu typed into your box is taken off the copy Twitch is sent, and
+  off nothing else. Your box keeps what you typed, and so does the text put back if the send
+  fails. Kick's chat endpoint has no reply field at all, so there the mention *is* the reply and
+  it stays.
 
 ### Sending to one platform or both
 
@@ -584,6 +595,24 @@ send one at all. So the **GIF** button beside the emote button does what the Che
 it opens Twitch's own emote picker on its GIFs tab, over Twitch's own chat, and the panel steps
 aside for as long as the picker is open. The button appears wherever Twitch is showing its
 picker; if the channel has turned GIFs off there is no tab to land on, and the button says so.
+
+**Sending one from Kick.** The merged panel already posts to Twitch from a kick.com page, but only
+text, and a GIF is not text. The keyboard is the only thing that sends one and it only exists
+inside a twitch.tv document, so the button opens one: Twitch's own popout chat for the Twitch
+channel this panel is joined to, in a small window beside the stream, marked ↗ to say so before
+you press it. That window presses Twitch's picker for you, lands on the GIFs tab, and says across
+its top what it is for and which account it will post as — **whoever this browser is signed in to
+on Twitch**, which is not necessarily the account you connected here. Nothing else happens in it:
+no merged panel, no second chat socket. Pick a GIF, Twitch sends it under Twitch's rules, and it
+arrives in the feed on your Kick page as a picture, down the Twitch socket that was already open.
+Close the window, or press **GIF** again to bring it back to the front. The Kick page is never
+navigated and the stream never stops.
+
+The button is there whenever Twitch chat is connected in the panel, and it never refuses: the tier
+this panel knows is the connected account's, the account that actually sends is the browser's, and
+they are not required to be the same person. What is known is said in the tooltip; Twitch gives
+the real answer in its own words, in its own keyboard. There is no trip the other way — Kick has
+no GIFs in chat.
 
 **Your tier.** Twitch reports your own subscription on the channel in the badges it sends with
 `USERSTATE` — a Tier 2 badge is numbered 2000 plus the months, Tier 3 is 3000 plus — and, for a
@@ -985,14 +1014,49 @@ which the overlay is sitting on top of, and the next thing you type goes somewhe
 see. The overlay's input is refocused after every send for the same reason, including when you
 click the Send button rather than pressing Enter.
 
-It then clicks the site's send button if there is one, or presses Enter, and checks that the
-composer emptied itself. An empty composer is the site confirming it accepted the message;
-anything left sitting there means it did not go out, and the overlay says which of those
-happened rather than reporting a silent success. Failed text is put back in the overlay's input
-so it is not lost.
+It then clicks the site's send button if there is one, or presses Enter, and watches the composer
+until it empties. An empty composer is the site confirming it accepted the message; anything still
+sitting there after two and a half seconds means it did not go out, and the overlay says which of
+those happened rather than reporting a silent success. Failed text is put back in the overlay's
+input so it is not lost. An ordinary message that has not moved after the first third of a second
+gets one more Enter, in case the box took the text and did nothing with it.
+
+**A Cheer is watched, never nudged.** Twitch validates the Bits on its own server before it clears
+its box, which takes longer than words do — a fixed fifth of a second used to call that a failure,
+put the Cheer back in the overlay's box and say it had not been sent, for a Cheer that had. So a
+Cheer gets the full wait and no second Enter, because a second Enter on a message that spends Bits
+can spend them twice. If Twitch still has not said, the feed says so and the text is *not* put back:
+pressing Send again on a Cheer that may already have gone out is the one mistake worth designing
+away, and your own Bits balance is the answer.
 
 If you have turned on *hide the site's own chat*, the composer's subtree is un-hidden for the
 duration of the send and re-hidden afterwards — a hidden element cannot be focused or typed into.
+
+### The GIF errand
+
+A GIF is the one thing that route cannot carry, so it takes a different one. Pressing **GIF** on a
+page that is not Twitch opens `twitch.tv/popout/<channel>/chat#fcm-gif` as a window, named
+`fcm-gif-<channel>`. The extension's own content script is already matched on that address —
+`/popout/<channel>/chat` has always counted as a channel page — and it recognises the window as an
+errand from two places: the mark on the address, and the window's name. The name is the one that
+matters. Twitch is a single-page app whose router may rewrite the address before a content script
+at `document_idle` ever reads it, while a name given by `window.open` survives that and a reload.
+Both are cleared the moment they are read, so reloading the window is an ordinary visit.
+
+Recognising it is a `return` before anything else happens. No port is opened, so the worker never
+makes a session for that tab and never opens a second Twitch socket for a channel this browser is
+already reading; no panel is mounted, so nothing covers the composer the window was opened for. All
+it does is draw one banner in a shadow root of its own, wait up to twenty seconds for Twitch to
+draw a chat box — a window opened from cold is a page load, not a React frame, and pressing at
+mount finds no picker at all — and then call the same `openNativeGifKeyboard` the button on a
+Twitch page calls, with longer to find the GIFs tab.
+
+Nothing comes back. The two windows never talk: one holds a handle on the other only so that a
+second press raises it instead of reloading a GIF out from under you, and no message is ever
+listened for. The GIF returns the way every other subscriber's does — down the Twitch socket the
+original tab's session already holds, as a `PRIVMSG` with a `gifs` tag, drawn by the code that has
+always drawn them. That is the receipt, and it is a better one than a status line: it is the actual
+picture, in the actual merged chat.
 
 ### Several streams at once
 
@@ -1044,7 +1108,8 @@ Run one suite with `node tests/run.js <name>` (
 `irc`, `kick`, `render`, `settings`, `compose`, `favourites`, `reply`, `authpages`,
 `sites`, `discovery`, `twitchEmotes`, `emotes`, `theme`, `native`, `auth`, `send`,
 `states`, `resilience`, `errors`, `feed`, `navigation`, `moderation`, `channelswitch`,
-`endtoend`, `reload`, `linking`, `multitab`, `background`, `pack`, `rowheight`).
+`endtoend`, `reload`, `linking`, `multitab`, `background`, `pack`, `rowheight`, `gifs`,
+`giferrand`, `cheersend`, `replymention`, `giftab`).
 
 The **`native`** suite covers the part of the overlay that reads the page rather than a protocol:
 splitting the message list's siblings into the cards above and the bar below against both sites'
@@ -1182,6 +1247,48 @@ A `false` there is the whole diagnosis. If `twitch_client_id` is false the Twitc
 with a message naming the secret to set, rather than failing silently later on.
 
 ## Bugs this testing found
+
+- **The panel came back over the Channel Points it had just opened.** Pressing the Channel Points
+  chip on Kick stood the panel aside, Kick drew its rewards, and about a second and a half later
+  the panel reappeared on top of them — with no way to get them back, because pressing the chip
+  again only toggled Kick's menu shut. Measured on a live channel: the peek was released at 2.8s
+  with the menu still open, and never returned.
+
+  Two things had to be true at once. Kick's rewards panel is drawn *inside* the chat column and
+  settles upward into place rather than appearing where it lands, so for the first second or so it
+  sits below the messages; and it carries no role, no open state and no portal to the end of
+  `<body>`, so `dialogOver` — the check the panel uses when it is *not* already standing aside —
+  cannot see it at all. The only test that can see it is `coveringChat`, which asks what is
+  actually painted over the chat, and that answers "no" for exactly as long as the panel is still
+  settling. The 1200ms hold expired inside that gap. Once the peek was released there was nothing
+  left that could ever notice the rewards, so the panel stayed over them.
+
+  The hold for a menu the viewer deliberately opened is now four seconds — long enough to bridge
+  the drawing, after which `coveringChat` holds the peek by itself for as long as the menu is up.
+  1200ms was measuring the wrong thing: how long the site takes to *start* drawing, not to finish.
+
+- **The GIFs tab stopped being a tab, and nothing noticed.** The GIF button opened Twitch's emote
+  picker and stopped there, reporting that the channel had probably switched GIFs off — on a
+  channel whose viewers were posting GIFs in that very chat. `gifTab()` asked for
+  `[role="tab"]`, four ways. There is no longer a tab of any kind in that picker: Twitch draws
+  Emotes and GIFs as a two-way segmented control.
+
+  ```
+  div[role="group"][aria-label="Content type"]
+   +- label.tw-segmented-button-option
+   |   +- input[type=radio][name="emote-picker-top-tab"]   <- hidden by the control's own styling
+   |   +- div > div  "Emotes"
+   +- label.tw-segmented-button-option
+       +- input[type=radio][name="emote-picker-top-tab"]
+       +- div > div  "GIFs"                                <- the only thing that says which is which
+  ```
+
+  Not one element in it carries the word "gif" in an attribute — no `data-a-target`, no
+  `aria-label`, no role. Only the label's own words say so, and the radio that carries the state
+  is invisible, so the press has to land on the `<label>` a mouse could actually hit. This is the
+  kind of break no offline test can find: every fixture in the suite was written from the markup
+  as it used to be, and they all still passed. It took opening the real picker on a real signed-in
+  channel to see that the thing being looked for was not there any more.
 
 - **The account menu and the notifications popover were painted straight over.** Every test for
   "is one of the site's menus open" asks what an element *measures*, which is what makes it
@@ -1425,8 +1532,13 @@ was never going to see in a friendly test:
   half of a merged feed generally offers no moderation tools unless you are the broadcaster. Open
   the channel on kick.com and merge Twitch into it instead, and both halves work.
 - **GIFs can only be sent through Twitch's own keyboard.** Twitch offers no endpoint for it, so
-  the GIF button opens Twitch's picker rather than a picker of the overlay's own, and only on a
-  Twitch page. Kick has no GIFs in chat. Seeing GIFs needs nothing: the tag is on the message.
+  the GIF button opens Twitch's picker rather than a picker of the overlay's own — in place on a
+  Twitch page, and in a small twitch.tv window on a Kick one. Either way the picking happens on
+  Twitch, under Twitch's rules and as whoever this browser is signed in to there, and the extension
+  sends nothing itself. The window rests on Twitch's popout chat carrying the same emote picker as
+  its channel page; if Twitch ever moves it, the window says so rather than pretending. Kick has no
+  GIFs in chat, so there is no trip the other way. Seeing GIFs needs nothing: the tag is on the
+  message.
 - **Share reminders are found by their Share button, in English.** Twitch's prompts for you are
   recognised by the button that answers them, and that button is matched on the word *Share*. On
   a Twitch page in another language the prompt is left where it is, and the feed says nothing

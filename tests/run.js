@@ -1883,6 +1883,15 @@ suites.reply = function () {
   eq(inputEl.value, '@KickViewer @TwitchViewer ',
     'reply: a second reply is appended, so both people are addressed');
 
+  // Two different people is the case that appending is for. The same person
+  // twice never is — and the menu is easy to reach twice, because the only sign
+  // the first press worked is a reply bar above the box.
+  compose.insertMention('KickViewer', 'kick');
+  eq(inputEl.value, '@KickViewer @TwitchViewer ',
+    'reply: replying to the same person again does not name them a second time');
+  eq(replies.pop(), { platform: 'kick', name: 'KickViewer' },
+    'reply: though it does point the reply back at them');
+
   // 2. Completing a @name from the suggestion list scopes it the same way.
   FCM.rememberChatter('kick', 'kekwenjoyer');
   inputEl.value = '@kekw';
@@ -6025,10 +6034,13 @@ suites.navigation = function () {
     sandbox.setTimeout = (fn, ms) => { timers.timeouts.push({ fn, ms, cancelled: false }); return timers.timeouts.length; };
     sandbox.clearTimeout = (id) => { if (timers.timeouts[id - 1]) timers.timeouts[id - 1].cancelled = true; };
 
-    // render.js as well as sites.js, because the manifest loads it before
-    // boot.js and boot.js calls into it when a channel is left.
+    // render.js and gif-errand.js as well as sites.js, because the manifest
+    // loads all three before boot.js: boot.js calls into render.js when a
+    // channel is left, and asks gif-errand.js whether this page is a window
+    // opened to fetch a GIF before it mounts anything at all.
     // (stored/changeListeners are declared above the sandbox; see below.)
-    const FCM = load(sandbox, ...SHARED, 'src/content/render.js', 'src/content/sites.js');
+    const FCM = load(sandbox, ...SHARED, 'src/content/render.js', 'src/content/sites.js',
+      'src/content/gif-errand.js');
 
     // A stand-in overlay: boot only needs it to mount, take messages and go away.
     const overlays = [];
@@ -7911,7 +7923,8 @@ suites.watchpress = function () {
     sandbox.setTimeout = (fn, ms) => { timers.timeouts.push({ fn, ms, cancelled: false }); return timers.timeouts.length; };
     sandbox.clearTimeout = (id) => { if (timers.timeouts[id - 1]) timers.timeouts[id - 1].cancelled = true; };
 
-    const FCM = load(sandbox, ...SHARED, 'src/content/render.js', 'src/content/sites.js');
+    const FCM = load(sandbox, ...SHARED, 'src/content/render.js', 'src/content/sites.js',
+      'src/content/gif-errand.js');
 
     // The adapter's own answer is covered by the watchnow suite; what this one
     // needs is control over when there is a button and when there is not.
@@ -8689,7 +8702,8 @@ suites.recovery = function () {
       sandbox.setTimeout = (fn, ms) => { timers.timeouts.push({ fn, ms, cancelled: false }); return timers.timeouts.length; };
       sandbox.clearTimeout = (id) => { if (timers.timeouts[id - 1]) timers.timeouts[id - 1].cancelled = true; };
 
-      const F = load(sandbox, ...SHARED, 'src/content/render.js', 'src/content/sites.js');
+      const F = load(sandbox, ...SHARED, 'src/content/render.js', 'src/content/sites.js',
+      'src/content/gif-errand.js');
       const overlays = [];
       F.createOverlay = (opts) => {
         const o = {
@@ -10481,6 +10495,571 @@ suites.kickmodworker = function () {
       } finally { w.teardown(); }
     }
   })();
+};
+
+// ── The GIF errand ───────────────────────────────────────────────────────────
+//
+// Twitch has no endpoint that sends a GIF, so the only thing that can post one
+// is Twitch's own keyboard inside a twitch.tv document. On a Kick page there is
+// no such document, so the GIF button opens one: Twitch's own popout chat for
+// the channel the panel is joined to, in a window of its own, which presses the
+// keyboard and stands back. Nothing here sends anything, decides anybody's
+// tier, or reads a Twitch cookie — the window does what a viewer pressing the
+// same button on twitch.tv would have done.
+suites.giferrand = function () {
+  const FCM = load(makeSandbox(), ...SHARED, 'src/content/gif-errand.js');
+
+  // ── The address, and the name it is opened under ──
+  {
+    eq(FCM.gifErrandUrl('SomeStreamer'),
+      'https://www.twitch.tv/popout/somestreamer/chat#fcm-gif',
+      'giferrand: the address is Twitch\'s own popout chat, marked');
+    eq(FCM.gifErrandUrl('#somestreamer'), 'https://www.twitch.tv/popout/somestreamer/chat#fcm-gif',
+      'giferrand: an IRC channel name is a channel name');
+    eq(FCM.gifErrandWindowName('SomeStreamer'), 'fcm-gif-somestreamer',
+      'giferrand: the window is named for the channel, so a second press finds it');
+
+    // The name is going into an address. normalizeChannel only trims and
+    // lowercases, so anything that is not a login Twitch could have issued is
+    // refused here rather than pasted into a URL and hoped for.
+    [null, '', '  ', 'a', 'has space', 'slash/es', '../evil', 'quote"mark',
+      'somestreamer?x=1', 'ünicode', 'x'.repeat(31)].forEach((bad) => {
+      eq(FCM.gifErrandUrl(bad), null, `giferrand: ${JSON.stringify(bad)} is not a channel to open`);
+      eq(FCM.gifErrandWindowName(bad), '', `giferrand: and gets no window name either`);
+    });
+  }
+
+  // ── Whether this document is one of those windows ──
+  {
+    const site = (id, channel) => ({ id, channelFromUrl: () => channel });
+    const at = (hash) => ({ hash });
+
+    ok(FCM.isGifErrand(site('twitch', 'somestreamer'), at('#fcm-gif'), ''),
+      'giferrand: the mark on the address says this window is an errand');
+    ok(FCM.isGifErrand(site('twitch', 'somestreamer'), at(''), 'fcm-gif-somestreamer'),
+      'giferrand: and so does the name, which is what survives Twitch rewriting the address');
+    ok(!FCM.isGifErrand(site('twitch', 'somestreamer'), at(''), ''),
+      'giferrand: an ordinary popout chat is an ordinary popout chat');
+    ok(!FCM.isGifErrand(site('twitch', 'somestreamer'), at('#chat'), 'something-else'),
+      'giferrand: a mark somebody else left is not an instruction');
+    ok(!FCM.isGifErrand(site('kick', 'somestreamer'), at('#fcm-gif'), 'fcm-gif-somestreamer'),
+      'giferrand: and the errand only ever runs on Twitch');
+    ok(!FCM.isGifErrand(site('twitch', null), at('#fcm-gif'), 'fcm-gif-somestreamer'),
+      'giferrand: a Twitch page that is not a channel has no keyboard to press');
+    ok(!FCM.isGifErrand(null, at('#fcm-gif'), 'fcm-gif-somestreamer'),
+      'giferrand: and a page that is neither site is not one either');
+  }
+
+  // ── Where the window goes ──
+  {
+    const screen = { availLeft: 0, availTop: 0, availWidth: 1920, availHeight: 1080 };
+    const view = (screenX, outerWidth) => ({ screenX, screenY: 100, outerWidth, outerHeight: 900 });
+
+    // Room to the right: just outside the edge, overlapping by a few pixels so
+    // it reads as attached to the window that asked.
+    eq(FCM.gifWindowPlacement(view(100, 1000), screen).left, 1094,
+      'giferrand: the window opens beside the one that asked for it');
+    // No room to the right, room to the left.
+    eq(FCM.gifWindowPlacement(view(1400, 500), screen).left, 986,
+      'giferrand: and on the other side when that side is off the screen');
+    // A window filling the screen: the left, which is the side neither site
+    // puts its chat on and the side the merged panel is not.
+    eq(FCM.gifWindowPlacement(view(0, 1920), screen).left, 0,
+      'giferrand: a window with no room either side puts it clear of the chat column');
+    // Never off the edge, whatever it was told.
+    const off = FCM.gifWindowPlacement(view(1900, 1900), screen);
+    ok(off.left >= 0 && off.left + off.width <= 1920,
+      'giferrand: the window is always inside the screen');
+    ok(off.top >= 0 && off.top + off.height <= 1080,
+      'giferrand: top and bottom as well');
+    // A screen smaller than the window it was asked for.
+    const small = FCM.gifWindowPlacement(view(0, 480),
+      { availLeft: 0, availTop: 0, availWidth: 480, availHeight: 400 });
+    eq([small.width, small.height], [420, 400],
+      'giferrand: and the window shrinks to a screen too small for it');
+    // A second monitor to the left of the first has negative coordinates, and
+    // clamping to zero would have thrown the window onto the wrong screen.
+    const leftScreen = { availLeft: -1920, availTop: 0, availWidth: 1920, availHeight: 1080 };
+    const secondary = FCM.gifWindowPlacement(view(-1800, 1000), leftScreen);
+    ok(secondary.left < 0, 'giferrand: a monitor left of the main one keeps its own coordinates');
+
+    contains(FCM.gifWindowFeatures(view(100, 1000), screen), 'popup=1',
+      'giferrand: it is asked for as a window, not as a tab');
+    contains(FCM.gifWindowFeatures(view(100, 1000), screen), 'width=420,height=640',
+      'giferrand: tall and narrow, because it is a chat column and nothing else');
+  }
+
+  // ── The button, on both kinds of page ──
+  {
+    const tier2 = { subscribed: true, tier: 2, months: 14 };
+    const tier1 = { subscribed: true, tier: 1, months: 3 };
+    const none = { subscribed: false, tier: 0, months: 0 };
+
+    // On Twitch nothing has changed: the button follows the site's own picker
+    // and says the same things it always said.
+    eq(FCM.gifButtonState({ hostPlatform: 'twitch', pageHasGifs: true, subscription: tier2 }),
+      {
+        show: true,
+        cross: false,
+        tier: 2,
+        title: 'Send a GIF — you are a Tier 2 subscriber here (14 months)',
+      },
+      'giferrand: on Twitch the button is what it has always been');
+    eq(FCM.gifButtonState({ hostPlatform: 'twitch', pageHasGifs: false, subscription: tier2 }).show,
+      false, 'giferrand: and is gone when Twitch is not showing its picker');
+    contains(FCM.gifButtonState({ hostPlatform: 'twitch', pageHasGifs: true, subscription: tier1 }).title,
+      'you are Tier 1', 'giferrand: a Tier 1 viewer on Twitch is told where they stand');
+    contains(FCM.gifButtonState({ hostPlatform: 'twitch', pageHasGifs: true, subscription: null }).title,
+      "Twitch's own GIF keyboard", 'giferrand: and a viewer nothing is known about still gets the button');
+
+    // On Kick there is no picker to follow. What has to be true instead is that
+    // Twitch chat is joined, because that is the only thing that gives the GIF
+    // somewhere to land.
+    const onKick = (extra) => FCM.gifButtonState({
+      hostPlatform: 'kick', pageHasGifs: false, twitchChannel: 'somestreamer', ...extra,
+    });
+    eq(onKick({ subscription: tier2 }).show, true,
+      'giferrand: on Kick the button follows the Twitch chat this panel joined');
+    eq(FCM.gifButtonState({ hostPlatform: 'kick', twitchChannel: null, subscription: tier2 }).show,
+      false, 'giferrand: with no Twitch chat joined there is nowhere to send a GIF, and no button');
+    contains(FCM.gifButtonState({ hostPlatform: 'kick', twitchChannel: null, subscription: tier2 }).title,
+      'no Twitch chat is connected',
+      'giferrand: and no sentence built around a channel that is not there');
+    eq(onKick({ subscription: tier2 }).cross, true,
+      'giferrand: and it is marked as reaching the other site');
+    eq(onKick({ subscription: tier2 }).tier, 2,
+      'giferrand: the tier still lights it, because Twitch still said it');
+    contains(onKick({ subscription: tier2 }).title, 'Send a GIF to somestreamer on Twitch',
+      'giferrand: the title names where the GIF is going');
+    contains(onKick({ subscription: tier2 }).title, 'Tier 2 subscriber there (14 months)',
+      'giferrand: "there", because the perk is not on this page');
+    contains(onKick({ subscription: tier2 }).title, 'whoever this browser is signed in to on Twitch',
+      'giferrand: and says which account will send it, before the press rather than after');
+    contains(onKick({ subscription: none }).title, 'Opens Twitch\'s own GIF keyboard',
+      'giferrand: a viewer who does not subscribe is offered it anyway, for Twitch to answer');
+    contains(onKick({ subscription: tier2, windowOpen: true }).title, 'bring it to the front',
+      'giferrand: and while the window is open the button says what a press will do');
+  }
+
+  // ── What a press does ──
+  {
+    const plan = (extra) => FCM.gifClickPlan({ twitchChannel: 'somestreamer', ...extra });
+
+    eq(plan({ subscription: { subscribed: true, tier: 3, months: 2 } }).act, 'open',
+      'giferrand: a Tier 3 press opens the window');
+    eq(plan({ subscription: { subscribed: true, tier: 3 } }).url,
+      'https://www.twitch.tv/popout/somestreamer/chat#fcm-gif',
+      'giferrand: at the marked address');
+    eq(plan({ subscription: { subscribed: true, tier: 3 } }).name, 'fcm-gif-somestreamer',
+      'giferrand: under the name a second press will find');
+
+    // Never a refusal. The tier this panel knows is the connected account's,
+    // and the account that sends is whichever one the browser is signed in to,
+    // so turning a viewer away on the strength of the wrong account's tier
+    // would be worse than opening the window and letting Twitch answer.
+    eq(plan({ subscription: { subscribed: true, tier: 1 } }).act, 'open',
+      'giferrand: a Tier 1 press opens it too, because Twitch is the one that decides');
+    contains(plan({ subscription: { subscribed: true, tier: 1 } }).note,
+      'Tier 2 and Tier 3 perk', 'giferrand: and is told what Twitch is likely to say');
+    eq(plan({ subscription: { subscribed: false, tier: 0 } }).act, 'open',
+      'giferrand: so does a press from somebody who does not subscribe at all');
+    eq(plan({ subscription: null }).act, 'open',
+      'giferrand: and one from a viewer whose standing was never reported');
+
+    // The one thing that is genuinely nothing to do.
+    eq(plan({ twitchChannel: null, subscription: null }).act, 'none',
+      'giferrand: with no Twitch chat joined there is nothing to open');
+    contains(plan({ twitchChannel: null }).note, 'nowhere to go',
+      'giferrand: and the viewer is told why rather than watching nothing happen');
+
+    // A window already open is raised, never reloaded: a reload would throw
+    // away the GIF being picked in it.
+    eq(plan({ windowOpen: true, subscription: null }).act, 'focus',
+      'giferrand: a second press brings the open window to the front');
+    eq(plan({ windowOpen: true, subscription: null }).url, '',
+      'giferrand: and opens no address, so nothing is reloaded under the picker');
+  }
+
+  // ── The window at the other end ──
+  return (async () => {
+    // Only what the errand touches. There is no jsdom here, and a banner in a
+    // shadow root is four elements and one listener.
+    function fakeDoc() {
+      const made = [];
+      const node = (tag) => {
+        const el = {
+          tag,
+          children: [],
+          style: {},
+          textContent: '',
+          innerHTML: '',
+          listeners: {},
+          removed: false,
+          attachShadow() { el.shadow = node('#shadow'); return el.shadow; },
+          appendChild(child) { el.children.push(child); return child; },
+          addEventListener(type, fn) { el.listeners[type] = fn; },
+          remove() { el.removed = true; },
+        };
+        made.push(el);
+        return el;
+      };
+      const body = node('body');
+      return { doc: { createElement: node, body }, made, body };
+    }
+    const bannerLine = (made) => made.find((el) => el.tag === 'span');
+
+    function fakeWin(loc) {
+      return {
+        name: 'fcm-gif-somestreamer',
+        closed: false,
+        closeCalls: 0,
+        close() { this.closeCalls++; this.closed = true; },
+        location: { pathname: loc || '/popout/somestreamer/chat', search: '', hash: '#fcm-gif' },
+        history: { replaced: [], replaceState(a, b, url) { this.replaced.push(url); } },
+      };
+    }
+
+    // A picker that is not there yet, which is what a window that has only just
+    // loaded looks like. Pressing at mount is why the errand waits at all.
+    function slowSite(appearAfter, opts = {}) {
+      let asked = 0;
+      let pickerOpen = false;
+      const button = { clicks: 0, click() { this.clicks++; pickerOpen = true; }, parentElement: null };
+      const tab = { clicks: 0, click() { this.clicks++; }, parentElement: null };
+      return {
+        button,
+        tab,
+        asked: () => asked,
+        id: 'twitch',
+        channelFromUrl: () => 'somestreamer',
+        emotePickerButton() { asked++; return asked > appearAfter ? button : null; },
+        gifTab() { return pickerOpen && !opts.noTab ? tab : null; },
+      };
+    }
+
+    // sites.js supplies openNativeGifKeyboard, which is the half that is shared
+    // with the button on a Twitch page and is not rewritten for this.
+    const F = load(makeSandbox({
+      location: { hostname: 'www.twitch.tv', pathname: '/popout/somestreamer/chat' },
+      document: { body: {}, querySelector: () => null, querySelectorAll: () => [] },
+      window: {},
+    }), ...SHARED, 'src/content/sites.js', 'src/content/gif-errand.js');
+
+    {
+      const { doc, made } = fakeDoc();
+      const win = fakeWin();
+      const site = slowSite(2);
+      const result = await F.runGifErrand(site, { document: doc, window: win });
+
+      eq(result, { ok: true, reason: 'gifs' },
+        'giferrand: the errand ends on the GIFs tab, which is the whole errand');
+      eq(site.button.clicks, 1, 'giferrand: Twitch\'s own picker button is pressed, once');
+      eq(site.tab.clicks, 1, 'giferrand: and then its GIFs tab');
+      ok(site.asked() > 2,
+        'giferrand: after waiting for a picker a freshly loaded window had not drawn yet');
+
+      // Both marks are spent, so a reload of this window is an ordinary visit.
+      eq(win.name, '', 'giferrand: the window name is cleared, so nothing presses twice');
+      eq(win.history.replaced, ['/popout/somestreamer/chat'],
+        'giferrand: and the mark is taken off the address');
+
+      const line = bannerLine(made);
+      contains(line.innerHTML, 'Pick a GIF',
+        'giferrand: the window says what it is for, on the window rather than behind it');
+      contains(line.innerHTML, 'somestreamer', 'giferrand: and names the channel it will post to');
+      const note = made.find((el) => el.tag === 'small');
+      contains(note.textContent, 'signed in to on Twitch',
+        'giferrand: and says which account is about to post, where it can be read');
+    }
+
+    // A window Twitch never draws a chat box in — signed out, most often.
+    {
+      const { doc, made } = fakeDoc();
+      const win = fakeWin();
+      const result = await F.runGifErrand(slowSite(0, {}), {
+        document: doc, window: win, pickerWaitMs: 40,
+      });
+      eq(result.ok, true, 'giferrand: a picker that is there is pressed straight away');
+      const { doc: doc2, made: made2 } = fakeDoc();
+      const gone = { id: 'twitch', channelFromUrl: () => 'somestreamer', emotePickerButton: () => null };
+      const out = await F.runGifErrand(gone, { document: doc2, window: fakeWin(), pickerWaitMs: 40 });
+      eq(out, { ok: false, reason: 'no-picker' },
+        'giferrand: a window with no chat box in it gives up rather than waiting forever');
+      contains(bannerLine(made2).innerHTML, 'Signing in to Twitch',
+        'giferrand: and says the thing that is usually wrong');
+      ok(made.length > 0 && made2.length > 0, 'giferrand: both windows still drew their banner');
+    }
+
+    // The picker opens, and there is no GIFs tab on it. That is what a channel
+    // with GIFs switched off looks like — and also what a tab that was slow
+    // looks like, so it is never stated as the channel's setting.
+    {
+      const { doc, made } = fakeDoc();
+      const result = await F.runGifErrand(slowSite(0, { noTab: true }), {
+        document: doc, window: fakeWin(), pickerWaitMs: 40,
+      });
+      eq(result.reason, 'picker', 'giferrand: the picker opening is still the picker opening');
+      contains(bannerLine(made).innerHTML, 'looks like this too',
+        'giferrand: and a missing GIFs tab is never reported as the channel having switched them off');
+    }
+
+    // The Close button. A window this script opened closes; a tab reached some
+    // other way cannot be closed by a script, and says so rather than looking
+    // broken.
+    {
+      const { doc, made } = fakeDoc();
+      const win = fakeWin();
+      await F.runGifErrand(slowSite(0), { document: doc, window: win, pickerWaitMs: 40 });
+      const close = made.find((el) => el.tag === 'button');
+      close.listeners.click();
+      eq(win.closeCalls, 1, 'giferrand: Close closes the window the panel opened');
+
+      const { doc: doc2, made: made2 } = fakeDoc();
+      const stuck = fakeWin();
+      stuck.close = () => {};
+      await F.runGifErrand(slowSite(0), { document: doc2, window: stuck, pickerWaitMs: 40 });
+      made2.find((el) => el.tag === 'button').listeners.click();
+      await new Promise((r) => setTimeout(r, 220));
+      contains(bannerLine(made2).innerHTML, 'cannot close',
+        'giferrand: and a tab that cannot be closed by script says so instead');
+    }
+
+    // ── The two things the packaging has to keep true ──
+    {
+      const boot = fs.readFileSync(path.join(ROOT, 'src/content/boot.js'), 'utf8');
+      const asks = boot.indexOf('isGifErrand');
+      const connects = boot.indexOf('chrome.runtime.connect');
+      ok(asks > 0 && connects > 0 && asks < connects,
+        'giferrand: boot.js asks whether this is an errand before it opens a port');
+
+      const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8'));
+      const js = manifest.content_scripts[0].js;
+      ok(js.indexOf('src/content/gif-errand.js') > -1
+        && js.indexOf('src/content/gif-errand.js') < js.indexOf('src/content/boot.js'),
+        'giferrand: and the manifest loads it before boot.js, so there is something to ask');
+    }
+  })();
+};
+
+// ── Cheering through the site's own chat box ─────────────────────────────────
+//
+// Twitch has no endpoint that spends Bits, so a Cheer is typed into Twitch's
+// own composer and submitted there. The only acknowledgement either site gives
+// is emptying that box, and a Cheer is the slowest thing to get one: Twitch
+// validates the Bits on its own server first. A fixed 140ms glance called that
+// a failure, put the Bits message back in the panel's box and told the viewer
+// it had not gone out — for a Cheer that had. And the Enter it pressed again to
+// hurry things along was a second submit of a message that spends money.
+suites.cheersend = function () {
+  return (async () => {
+    // A textarea, because that path needs no editor faking: the real Twitch
+    // composer is a Slate contenteditable, and both are read by readComposer.
+    function page({ clearAfter = 0, sendButton = true } = {}) {
+      const proto = {};
+      Object.defineProperty(proto, 'value', {
+        configurable: true,
+        get() { return this._v || ''; },
+        set(v) { this._v = v; },
+      });
+      const events = [];
+      const box = {
+        tagName: 'TEXTAREA',
+        _v: '',
+        disabled: false,
+        isContentEditable: false,
+        style: {},
+        parentElement: null,
+        get value() { return this._v; },
+        set value(v) { this._v = v; },
+        focus() { doc.activeElement = box; },
+        click() {},
+        setSelectionRange() {},
+        dispatchEvent(e) { events.push(e.type); return true; },
+      };
+      const button = {
+        disabled: false,
+        clicks: 0,
+        click() {
+          button.clicks++;
+          // The site takes its own time to clear its box, which is the only way
+          // it ever says yes.
+          if (clearAfter >= 0) setTimeout(() => { box._v = ''; }, clearAfter);
+        },
+      };
+      const doc = { activeElement: null, body: {} };
+      const sandbox = makeSandbox({
+        document: doc,
+        window: { HTMLTextAreaElement: { prototype: proto }, HTMLInputElement: { prototype: proto } },
+        Event: function (type) { this.type = type; },
+        KeyboardEvent: function (type) { this.type = type; },
+      });
+      const F = load(sandbox, ...SHARED, 'src/content/sites.js');
+      const site = {
+        composer: () => box,
+        sendButton: () => (sendButton ? button : null),
+      };
+      return { F, site, box, button, events, enters: () => events.filter((t) => t === 'keydown').length };
+    }
+
+    // ── A Cheer Twitch takes its time over ──
+    {
+      // 400ms: past the 140 + 160 the old check allowed, and the whole of the
+      // reported bug.
+      const p = page({ clearAfter: 400 });
+      const r = await p.F.sendViaNativeComposer(p.site, 'Cheer100 nice play', { cheer: true });
+      eq(r, { ok: true, reason: 'sent' },
+        'cheersend: a Cheer the site clears its box for after 400ms is a Cheer that was sent');
+      eq(p.button.clicks, 1, 'cheersend: submitted once');
+      eq(p.enters(), 0, 'cheersend: and never nudged with a second Enter');
+    }
+
+    // ── A Cheer Twitch never says anything about ──
+    {
+      const p = page({ clearAfter: -1 });
+      const r = await p.F.sendViaNativeComposer(p.site, 'Cheer100 nice play',
+        { cheer: true, waitMs: 300 });
+      eq(r, { ok: false, reason: 'cheer-unconfirmed' },
+        'cheersend: a Cheer the site never took is reported as unconfirmed, not as refused');
+      eq(p.enters(), 0,
+        'cheersend: and is still never submitted twice — Bits pressed again are Bits spent again');
+    }
+
+    // ── An ordinary message the site never took ──
+    {
+      const p = page({ clearAfter: -1 });
+      const r = await p.F.sendViaNativeComposer(p.site, 'hello everyone', { waitMs: 900 });
+      eq(r, { ok: false, reason: 'not-submitted' },
+        'cheersend: an ordinary message that never went out still reports not-submitted');
+      eq(p.enters(), 1,
+        'cheersend: and does get the one extra Enter, which costs nothing when it is only words');
+    }
+
+    // ── An ordinary message the site takes at once ──
+    {
+      const p = page({ clearAfter: 0 });
+      const r = await p.F.sendViaNativeComposer(p.site, 'hello everyone');
+      eq(r, { ok: true, reason: 'sent' }, 'cheersend: the ordinary quick send is unchanged');
+      eq(p.enters(), 0, 'cheersend: and needs no Enter at all when the button did the work');
+    }
+  })();
+};
+
+// ── Replying without saying the name twice ───────────────────────────────────
+//
+// Twitch writes the name in itself on a threaded reply: what comes back down
+// the socket already begins "@name ". So the "@name " the reply menu typed into
+// the composer is the second one, and everyone in the channel reads it twice.
+// It comes off the copy Twitch is sent and off nothing else — Kick's endpoint
+// has no reply field at all, so there the mention is the only thing addressing
+// anybody, and the box keeps what the viewer actually typed.
+suites.replymention = function () {
+  const FCM = load(makeSandbox(), ...SHARED);
+
+  eq(FCM.dropLeadingMention('@Bob nice clip', 'Bob'), 'nice clip',
+    'replymention: the name Twitch will write in again comes off the front');
+  eq(FCM.dropLeadingMention('@bob nice clip', 'Bob'), 'nice clip',
+    'replymention: whatever case it was typed in');
+  eq(FCM.dropLeadingMention('  @Bob   nice clip', 'Bob'), 'nice clip',
+    'replymention: and whatever spacing');
+  eq(FCM.dropLeadingMention('@Bob, nice clip', 'Bob'), 'nice clip',
+    'replymention: a comma after the name goes with it');
+  eq(FCM.dropLeadingMention('@Bob: nice clip', 'Bob'), 'nice clip',
+    'replymention: and so does a colon');
+
+  // Only the first, only at the front, and only that one name.
+  eq(FCM.dropLeadingMention('@Bob nice clip @Bob', 'Bob'), 'nice clip @Bob',
+    'replymention: a name said again later in the message is the viewer\'s own words');
+  eq(FCM.dropLeadingMention('@Bob @Carol look at this', 'Bob'), '@Carol look at this',
+    'replymention: and the second person is still addressed');
+  eq(FCM.dropLeadingMention('nice clip @Bob', 'Bob'), 'nice clip @Bob',
+    'replymention: a name that is not at the front is left where it is');
+  eq(FCM.dropLeadingMention('@Bobby nice clip', 'Bob'), '@Bobby nice clip',
+    'replymention: and a longer name that merely starts the same is a different person');
+
+  // Never leave nothing behind: Twitch will not take an empty message.
+  eq(FCM.dropLeadingMention('@Bob', 'Bob'), '@Bob',
+    'replymention: a reply that is only the name keeps it, because nothing is not a message');
+  eq(FCM.dropLeadingMention('@Bob   ', 'Bob'), '@Bob   ',
+    'replymention: with nothing but space after it, the same');
+
+  eq(FCM.dropLeadingMention('@Bob nice clip', ''), '@Bob nice clip',
+    'replymention: with nobody named, nothing is taken off');
+  eq(FCM.dropLeadingMention('@Bob nice clip', null), '@Bob nice clip',
+    'replymention: and the same for no name at all');
+  eq(FCM.dropLeadingMention('', 'Bob'), '', 'replymention: an empty message stays empty');
+
+  // A name is a name, not a pattern.
+  eq(FCM.dropLeadingMention('@a.b nice clip', 'a.b'), 'nice clip',
+    'replymention: a name with a dot in it is matched as itself, not as any character');
+};
+
+// ── Twitch's GIFs control, whatever shape it is this month ───────────────────
+//
+// It stopped being a tab. Twitch draws Emotes and GIFs as a two-way segmented
+// control now — a role="group" of <label>s, each wrapping a hidden radio — and
+// nothing in it carries the word "gif" in any attribute; only the label's own
+// words say which is which. Asking for role="tab" found nothing at all, so the
+// GIF button opened the picker, never reached the GIFs on it, and told the
+// viewer the channel had probably switched them off. Verified against a live
+// signed-in Twitch chat, which is where the markup below was read.
+suites.giftab = function () {
+  // Only the shape gifTab() reads: the option inputs, the labels around them,
+  // and whether each label is laid out.
+  function picker({ gifs = true, laidOut = true, oldTab = false } = {}) {
+    const label = (text, shown) => {
+      const el = { tagName: 'LABEL', textContent: text, getClientRects: () => (shown ? [{}] : []) };
+      el.input = { closest: (sel) => (sel === 'label' ? el : null) };
+      return el;
+    };
+    const emotes = label('Emotes', true);
+    const gifLabel = gifs ? label('GIFs', laidOut) : null;
+    const inputs = [emotes.input].concat(gifLabel ? [gifLabel.input] : []);
+    const tab = oldTab
+      ? {
+        tagName: 'DIV', textContent: 'GIFs',
+        getAttribute: (k) => (k === 'aria-label' ? 'GIFs' : null),
+        getClientRects: () => [{}],
+      }
+      : null;
+    const doc = {
+      querySelector: (sel) => (tab && sel.includes('aria-label*="gif"') ? tab : null),
+      querySelectorAll: (sel) => {
+        if (sel.includes('emote-picker-top-tab')) return inputs;
+        if (sel.includes('role="tab"')) return tab ? [tab] : [];
+        return [];
+      },
+    };
+    const FCM = load(makeSandbox({ document: doc, window: {} }), ...SHARED, 'src/content/sites.js');
+    return { site: FCM.SITES.twitch, gifLabel, tab };
+  }
+
+  {
+    const p = picker();
+    const found = p.site.gifTab();
+    ok(found === p.gifLabel, 'giftab: the GIFs half of the segmented control is found');
+    eq(found && found.tagName, 'LABEL',
+      'giftab: and it is the label, not the radio inside it, because the radio is not on screen');
+  }
+
+  // A channel that has switched GIFs off draws no second option at all, and
+  // that has to stay a clean "no", never a guess at the Emotes one.
+  {
+    const p = picker({ gifs: false });
+    eq(p.site.gifTab(), null, 'giftab: a picker offering only Emotes has no GIFs to reach');
+  }
+
+  // Present but not laid out is the site having finished with it.
+  {
+    const p = picker({ laidOut: false });
+    eq(p.site.gifTab(), null, 'giftab: an option with no box on screen is not pressed');
+  }
+
+  // The shape that used to be there is still answered first, so an older
+  // Twitch — or one they put back — keeps working.
+  {
+    const p = picker({ oldTab: true });
+    ok(p.site.gifTab() === p.tab, 'giftab: a real tab, where there is one, still wins');
+  }
 };
 
 // ── Runner ────────────────────────────────────────────────────────────────────
