@@ -973,6 +973,14 @@
 .fcm-native[data-platform="kick"] .fcm-native-chip { border-color: var(--kick-border); }
 .fcm-native[data-platform="kick"] .fcm-native-chip:hover { background: var(--kick-dim); }
 
+/* Drops: the site's own crate, in the site's own colour, because the whole
+   point of the chip is that it reads as the button it is standing in for. The
+   icon leads and the word follows it, which is the other way round from the
+   balances — those are a label and a number, and this is a thing to press. */
+.fcm-native-drops svg { width: 12px; height: 12px; display: block; flex-shrink: 0; }
+.fcm-native[data-platform="twitch"] .fcm-native-drops { color: var(--twitch-text); }
+.fcm-native[data-platform="twitch"] .fcm-native-drops .fcm-native-key { color: inherit; }
+
 /* A bonus that is sitting there waiting is worth looking like a thing to press,
    rather than another read-out. */
 .fcm-native-claim {
@@ -1405,6 +1413,24 @@
 }
 .fcm-msg:hover .fcm-modbar,
 .fcm-modbar:focus-within { display: inline-flex; }
+
+/* Standing aside for whatever it is covering, while the pointer is on it.
+   See "Standing aside for the message underneath" in compose.js.
+
+   display, not opacity and not pointer-events. A strip that is painted but
+   takes no clicks still reads as a thing to press, and the press it swallows
+   lands on whatever is underneath — which over a username is the user menu
+   opening, Ban and all, in answer to a press of a moderation button. Gone is
+   both honest and safe, and it is what lets the emote underneath be hovered at
+   all: an element that is not laid out is not in the way of the pointer. */
+.fcm-modbar[data-yield="1"] { display: none !important; }
+
+/* The strip follows its setting on the rows already drawn, not only on the ones
+   hovered after the switch. Strips are built on first hover and kept, so
+   turning the tools off used to leave every row that had been pointed at still
+   carrying one. */
+.fcm-root[data-modtools="false"] .fcm-modbar { display: none !important; }
+
 .fcm-modbar-btn {
   height: 20px; min-width: 24px; padding: 0 7px; border-radius: 4px;
   border: 1px solid var(--border); background: var(--surface2);

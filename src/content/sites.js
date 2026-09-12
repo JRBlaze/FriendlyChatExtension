@@ -642,6 +642,38 @@
           'button[data-a-target="bits-button"]',
           'button[aria-label="Cheer"]',
         ]),
+        // Twitch's drops crate, at the foot of its own chat.
+        //
+        // There is nothing to read off this one. Twitch draws the button only
+        // while the channel is running a campaign the viewer is earning in, and
+        // everything worth knowing — which reward, how far in, how long is left,
+        // what is waiting to be claimed — lives in a panel that is not in the
+        // page at all until the button is pressed. So its presence is the whole
+        // signal, and pressing it is the whole feature.
+        //
+        // Verified against a signed-in channel page: the button carries
+        // `data-a-target="drops-button"` and an accessible name of "Drops", and
+        // sits in the same buttons container as Cheer and the emote picker.
+        //
+        // Named matches only, and no "whichever button is spare" fallback of the
+        // kind the points summary gets. That container also holds the gear, the
+        // emote picker and Send, and a drops chip that pressed one of those
+        // would be worse than no chip at all — so this control either says what
+        // it is or is not offered.
+        //
+        // Scoped to the footer, unlike Cheer above, and for a reason Cheer does
+        // not have: the channel page carries `a[data-a-target="DropsEnabled"]`
+        // as well — the tag under the stream — so a loose match on the word
+        // "drops" asked of the whole document finds that link, and a chip that
+        // followed it would navigate out of the stream the viewer is watching.
+        // The exact test hook is the one thing safe to ask for anywhere, because
+        // it names a button and names it exactly.
+        drops: firstIn(bar, [
+          'button[data-a-target="drops-button"]',
+          'button[data-a-target*="drops" i]',
+          'button[aria-label="Drops"]',
+          'button[aria-label*="drops" i]',
+        ]) || firstMatch(['button[data-a-target="drops-button"]']),
         claim: named || spare || null,
         // Whether that came from Twitch's own words or from a guess. The guess
         // is "whichever other button the summary has grown", which is fair to

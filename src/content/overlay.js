@@ -73,6 +73,11 @@
     fit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>',
     popout: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 4H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/><path d="M21 3h-7M21 3v7M21 3l-9 9"/></svg>',
     popin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 4H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/><path d="M14 10h7M21 10V3M21 10l-9-9"/></svg>',
+    // A crate with something dropping into it. Drawn in the same stroked style
+    // as the rest of this set rather than lifted from Twitch, but deliberately
+    // the same shape Twitch uses at the foot of its chat: the point of the chip
+    // is that someone who has seen that icon there recognises this one here.
+    drops: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v3M6.6 4l1 2M17.4 4l-1 2"/><path d="M3 21v-8l2.4-4h13.2L21 13v8z"/><path d="M3 13h18"/><path d="M10 13v2h4v-2"/></svg>',
   };
 
   FCM.createOverlay = function (options) {
@@ -912,7 +917,7 @@
       const stats = settings.showNativeStats === false ? null : read;
       const signature = (stats
         ? `${stats.points}|${stats.bits}|${stats.hasPoints}|${stats.hasBits}`
-          + `|${stats.canClaim}|${stats.hasMenu}|${stats.hasIdentity}`
+          + `|${stats.canClaim}|${stats.hasMenu}|${stats.hasIdentity}|${stats.hasDrops}`
         : 'off') + `|gif:${read.hasGifs}`;
       if (signature === statsSignature) return;
       statsSignature = signature;
@@ -921,7 +926,8 @@
       updateGifButton();
 
       const show = !!stats
-        && !!(stats.hasPoints || stats.hasBits || stats.canClaim || stats.hasIdentity);
+        && !!(stats.hasPoints || stats.hasBits || stats.canClaim || stats.hasIdentity
+          || stats.hasDrops);
       nativeEl.classList.toggle('fcm-hidden', !show);
       nativeEl.replaceChildren();
       if (!show) return;
@@ -944,6 +950,36 @@
           stats.bits
             ? `${stats.bits} ${labels.bits} — click to open ${meta.name}'s own ${labels.bits} menu`
             : `Open ${meta.name}'s own ${labels.bits} menu`);
+      }
+      // Drops, which is the one chip on this row that carries no number.
+      //
+      // It cannot. Twitch keeps the progress — the reward, the bar, the minutes
+      // still to watch, the count waiting to be claimed — inside a panel that is
+      // not in the page until its button is pressed, so there is nothing to read
+      // while the chip is being drawn, and a number remembered from the last
+      // time the panel was open would be a number that stopped being true the
+      // moment it was written down. This row reads balances off the page for
+      // exactly that reason, and drops is the case where the page has not
+      // written the figure down yet.
+      //
+      // So the chip says the one thing that is true whenever Twitch is drawing
+      // that button — there are drops running here, and you are earning them —
+      // and pressing it opens Twitch's own panel, where all of it is Twitch's
+      // to draw and Twitch's to keep current.
+      if (stats.hasDrops) {
+        const drops = document.createElement('button');
+        drops.className = 'fcm-native-chip fcm-native-drops';
+        drops.dataset.kind = 'drops';
+        drops.innerHTML = ICONS.drops;
+        const dropsKey = document.createElement('span');
+        dropsKey.className = 'fcm-native-key';
+        dropsKey.textContent = 'Drops';
+        drops.appendChild(dropsKey);
+        drops.title = `${meta.name} is running drops on this channel `
+          + '— click to open its own drops panel, with what you are earning '
+          + 'and how much longer you have to watch';
+        drops.addEventListener('click', () => openNative('drops'));
+        nativeEl.appendChild(drops);
       }
       if (stats.canClaim) {
         const claim = document.createElement('button');
@@ -2141,6 +2177,7 @@
       root.dataset.badges = String(settings.showBadges !== false);
       root.dataset.gifs = String(settings.showGifs !== false);
       root.dataset.clips = String(settings.showClipPreviews !== false);
+      root.dataset.modtools = String(settings.modHoverTools !== false);
       root.style.setProperty('--fcm-size', `${FCM.clampNumber(settings.fontSize, 10, 22, FCM.DEFAULT_SETTINGS.fontSize)}px`);
       panel.style.opacity = String(FCM.clampNumber(settings.opacity, 50, 100, 96) / 100);
       applyNativeChatVisibility();
