@@ -418,7 +418,7 @@ that pressed one of those would be worse than no chip at all.
 
 Everything the extension draws is measured against WCAG AA — 4.5:1 for text, 3:1 for large text —
 and the measurement is taken from what is *rendered*, not from reading the stylesheet. That
-distinction turned out to matter twice over.
+distinction turned out to matter three times over — the third time to the auditor itself.
 
 **Sizes follow the Text size setting.** Event and system rows, timestamps and the little tags on
 them used to be pinned at 10px, 9.5px and 8.5px however large the messages were set. They are now
@@ -436,6 +436,19 @@ toward whatever is behind it and was quietly taking values that computed as 4.79
 The palette is chosen with that margin built in. Turning the *Opacity* slider down further will
 erode contrast — that is the point of the setting, and it is your call, but it is worth knowing
 the default is the level the palette is designed around.
+
+**A glyph inside an icon is painted, not styled.** The auditor read every element’s CSS `color`
+and compared it against the CSS backgrounds behind it, which is right for HTML text and wrong
+inside an SVG twice over. The letters cut out of Kick’s OG shield are filled with the panel’s own
+surface colour while inheriting a `color` they are never drawn in, and what sits behind them is
+not a background at all — it is the shield, a sibling shape. So the audit was reporting a figure
+for a colour nothing on screen was using, against a surface those letters are not on, and
+failing the badge at **4.38:1** on the strength of it.
+
+It now reads `fill` for anything inside an SVG and composites the siblings painted under it, in
+document order, which is paint order. The readable question — can you tell the letters from the
+shield they are cut out of — measures **5.02:1** on the light theme and **9.62:1** on the dark
+one. Nothing about the badge changed; the thing measuring it was wrong.
 
 **Nothing is said in colour alone.** Whether a chat is connecting, connected, disconnected or not
 connected at all was a coloured dot and nothing else — amber, green, red or grey — which is no
