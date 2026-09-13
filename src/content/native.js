@@ -435,6 +435,7 @@
           return {
             points: '', bits: '', hasPoints: false, hasBits: false,
             canClaim: false, claimNamed: false, hasMenu: false, hasGifs: false,
+            hasDrops: false,
           };
         }
         const hasPoints = onScreen(c.pointsValue) || onScreen(c.openBalances);
@@ -449,6 +450,11 @@
           // Only a named one is pressed without being asked.
           claimNamed: onScreen(c.claim) && c.claimNamed !== false,
           hasIdentity: onScreen(c.chatIdentity),
+          // Whether the site is drawing a drops control. There is no value to
+          // go with it — see the adapter — so this is reported on its own, and
+          // the answer is the same question every other control here is asked:
+          // is it on screen, underneath the panel, right now.
+          hasDrops: onScreen(c.drops),
           // The site's own emote picker, which is where its GIF keyboard lives.
           hasGifs: onScreen(c.gifPicker),
           hasMenu: hasPoints || hasBits || onScreen(c.chatIdentity),
@@ -461,7 +467,7 @@
        * token that could, and standing between a viewer and their balance is
        * not a thing to get subtly wrong.
        *
-       * @param {'points'|'bits'|'claim'|'identity'} kind
+       * @param {'points'|'bits'|'claim'|'identity'|'drops'} kind
        * @returns {boolean} whether there was a control to click
        */
       activate(kind) {
@@ -469,8 +475,9 @@
         if (!c) return false;
         const el = kind === 'claim' ? c.claim
           : kind === 'identity' ? c.chatIdentity
-            : kind === 'bits' ? (c.cheer || c.openBalances)
-              : (c.openBalances || c.cheer);
+            : kind === 'drops' ? c.drops
+              : kind === 'bits' ? (c.cheer || c.openBalances)
+                : (c.openBalances || c.cheer);
         if (!onScreen(el)) return false;
         try { press(el); } catch (e) { return false; }
         return true;

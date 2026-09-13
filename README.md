@@ -15,7 +15,7 @@ feed. Open a Kick channel and it works the other way round.
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.19.0.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.20.0.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and an extra folder named `FriendlyChatExtension-main`
@@ -392,11 +392,33 @@ rules are duplicated: the platform owns them.
 Claiming a bonus is the one exception, because it is a single click with no menu behind it, so
 the overlay just clicks it and tells you it did.
 
+**Twitch drops get a chip on the same row.** When a channel is running a drop campaign you are
+earning in, Twitch draws a crate at the foot of its own chat — which the overlay covers. So the
+crate is carried across as a *Drops* chip, and clicking it opens Twitch’s own *Drops & More*
+panel over its own chat, with the reward, the progress bar, the minutes still to watch and
+anything waiting to be claimed. The overlay steps aside while that panel is up, the same way it
+does for the rewards menu.
+
+The chip carries no number, and that is deliberate rather than an omission. Every other figure
+on this row is read straight off the page; drops progress is not on the page — Twitch keeps it
+inside a panel it does not draw until the crate is pressed. A number remembered from the last
+time that panel was open would stop being true the moment it was written down, so the chip says
+the one thing that is true whenever the crate is there — drops are running here — and the
+figures stay Twitch’s to draw and Twitch’s to keep current.
+
+The chip appears and disappears with the crate, so it is also how you find out a campaign has
+started on a channel you are already watching. Kick has no drops, and no chip appears there.
+
+This control takes named matches only — `data-a-target="drops-button"`, then the accessible name
+“Drops” — with none of the “whichever button is spare” fallback the points summary gets. Cheer,
+the emote picker, the settings gear and Send all sit in that same container, and a drops chip
+that pressed one of those would be worse than no chip at all.
+
 ## Readability
 
 Everything the extension draws is measured against WCAG AA — 4.5:1 for text, 3:1 for large text —
 and the measurement is taken from what is *rendered*, not from reading the stylesheet. That
-distinction turned out to matter twice over.
+distinction turned out to matter three times over — the third time to the auditor itself.
 
 **Sizes follow the Text size setting.** Event and system rows, timestamps and the little tags on
 them used to be pinned at 10px, 9.5px and 8.5px however large the messages were set. They are now
@@ -414,6 +436,19 @@ toward whatever is behind it and was quietly taking values that computed as 4.79
 The palette is chosen with that margin built in. Turning the *Opacity* slider down further will
 erode contrast — that is the point of the setting, and it is your call, but it is worth knowing
 the default is the level the palette is designed around.
+
+**A glyph inside an icon is painted, not styled.** The auditor read every element’s CSS `color`
+and compared it against the CSS backgrounds behind it, which is right for HTML text and wrong
+inside an SVG twice over. The letters cut out of Kick’s OG shield are filled with the panel’s own
+surface colour while inheriting a `color` they are never drawn in, and what sits behind them is
+not a background at all — it is the shield, a sibling shape. So the audit was reporting a figure
+for a colour nothing on screen was using, against a surface those letters are not on, and
+failing the badge at **4.38:1** on the strength of it.
+
+It now reads `fill` for anything inside an SVG and composites the siblings painted under it, in
+document order, which is paint order. The readable question — can you tell the letters from the
+shield they are cut out of — measures **5.02:1** on the light theme and **9.62:1** on the dark
+one. Nothing about the badge changed; the thing measuring it was wrong.
 
 **Nothing is said in colour alone.** Whether a chat is connecting, connected, disconnected or not
 connected at all was a coloured dot and nothing else — amber, green, red or grey — which is no
@@ -464,6 +499,21 @@ box, because replacing its contents on every keystroke would take the caret with
 different provider tomorrow. Starring one puts it in a row of its own at the top of the picker,
 newest first, and sorts it ahead of the alphabet in `:` autocomplete — which is the point of
 starring it, rather than scrolling past everything else sharing its first two letters.
+
+**The picker stays open until you send.** Picking an emote used to close it, so a message with
+two emotes in it meant opening the picker again and finding your place in the grid again for
+every emote after the first — on a surface whose whole job is browsing. Now a pick inserts at
+the caret and leaves the grid up, and typing beside it leaves it up too, because words and
+emotes get mixed in one message all the time. Sending closes it, along with Escape, the picker
+button and a click anywhere in the panel outside it.
+
+Focus is left wherever you put it. Searching the grid and then clicking a result keeps the caret
+in the search box, so the second search is no harder than the first; if you had clicked into the
+message box, that is where the caret goes back to, and Enter still sends.
+
+The typed `:` autocomplete is the opposite case and still closes on a pick: it was completing
+one word, and the word is now complete. Typing a `:` while the picker is open hands the popup
+over to it, which is what asking for it looks like.
 
 ## Where the emotes come from
 
@@ -526,6 +576,23 @@ needs most are a single click. Ban takes two presses: the first arms the button 
 turned off in the settings (*Moderation strip on messages*); the username menu carries everything
 either way, including the full timeout ladder and unban.
 
+**The strip stands aside for the message underneath it.** It is drawn over the top-right corner of
+the row, which on a short message is exactly where its emotes are — and an emote under the strip
+could not be pointed at, so holding still over one to see it larger simply did not work for
+moderators. Now, for as long as the pointer is on something the strip is covering — an emote, a
+link, a GIF, a clip card, a username — the strip goes, and it comes back the moment the pointer
+leaves. Nothing moves and nothing is reserved: the buttons stay exactly where they have always
+been, on every part of every row that is not covering something.
+
+It goes rather than merely becoming unclickable. A strip that is still painted but takes no
+clicks still reads as something to press, and the press falls through to whatever is beneath it
+— which over a username is the menu opening, Ban and all, in answer to a press of a moderation
+button.
+
+An armed *Ban?* never stands aside, whatever it is over: the press that confirms it has to stay
+deliverable. When the arm runs out on its own, the question is asked again there and then rather
+than waiting for a pointer that may never move again.
+
 - The tools appear **per platform**, and only where the platform itself says you hold the badge.
   Moderating Twitch does not put Kick buttons in a Kick viewer's menu. How each platform is asked
   is below, because the two are not alike.
@@ -535,6 +602,8 @@ either way, including the full timeout ladder and unban.
   so the 1s purge is not offered there — it would quietly cost the viewer a full minute.
 - The worker re-checks the permission before acting, so a stale overlay cannot act on a badge
   you no longer hold.
+- Turning the strip off now clears the rows you have already pointed at, too. Strips are built on
+  first hover and kept, so the setting used to apply only to rows hovered after the switch.
 - Every outcome is written into the feed in plain words, including refusals and why.
 
 Connecting an account is what makes this possible, and the scopes are requested at sign-in

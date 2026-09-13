@@ -82,6 +82,46 @@ window.__auditContrast = function (roots) {
     return t.replace(/\s+/g, ' ').trim();
   }
 
+  // ── Glyphs drawn inside an SVG ──────────────────────────────────────────────
+  //
+  // Two of the assumptions above are HTML's, and both are wrong in here.
+  //
+  // A glyph in an SVG is painted with `fill`, not with `color` — and the one in
+  // this overlay is a cut-out: the OG letters in Kick's shield are filled with
+  // the panel's own surface colour while inheriting a `color` they are never
+  // drawn in. Reading `color` measured a figure for a colour nothing on screen
+  // was using, and reported the badge as failing on the strength of it.
+  //
+  // And what is behind that glyph is not a CSS background. SVG shapes have none;
+  // what is behind it is what its siblings painted first. The shield is the
+  // element immediately before the letters, so the readable question — can you
+  // tell the letters from the shield they are cut out of — is a question about
+  // two fills, and neither of them is anywhere in the CSS box model.
+  function svgOwner(el) {
+    return el.ownerSVGElement || null;
+  }
+
+  /**
+   * What the siblings painted under this element, composited bottom-up and then
+   * over whatever the CSS backdrop is.
+   *
+   * Document order is paint order in SVG, so this runs forwards from the first
+   * sibling and stops at the element itself: anything after it is painted on
+   * top and is not behind anything.
+   */
+  function paintedUnder(el, base, op) {
+    let under = base;
+    const parent = el.parentElement;
+    if (!parent) return under;
+    for (let sib = parent.firstElementChild; sib && sib !== el; sib = sib.nextElementSibling) {
+      const f = parse(getComputedStyle(sib).fill);
+      // The sibling is inside the same faded subtree as the glyph, so it reaches
+      // the screen through the same opacity.
+      if (f && f.a > 0) under = over({ ...f, a: f.a * op }, under);
+    }
+    return under;
+  }
+
   /**
    * Stops every transition and animation in a root for the duration of the
    * measurement, and hands back the undo.
@@ -119,11 +159,14 @@ window.__auditContrast = function (roots) {
       if (!text) return;
       if (!visible(el)) return;
       const cs = getComputedStyle(el);
-      const col = parse(cs.color);
+      const svg = svgOwner(el);
+      const col = parse(svg ? cs.fill : cs.color);
       if (!col) return;
       const op = cumulativeOpacity(el);
       if (op < 0.06) return;              // effectively invisible, not a contrast issue
-      const bg = backdrop(el);
+      // What this glyph is read against: the shapes drawn under it inside the
+      // SVG, or the CSS backdrop for ordinary text.
+      const bg = svg ? paintedUnder(el, backdrop(el), op) : backdrop(el);
       const fg = over({ ...col, a: col.a * op }, bg);
       const size = parseFloat(cs.fontSize);
       const weight = parseInt(cs.fontWeight, 10) || 400;
@@ -139,7 +182,10 @@ window.__auditContrast = function (roots) {
         weight,
         got: +got.toFixed(2),
         need,
-        color: cs.color,
+        // What it is painted with, which inside an SVG is not `color`. Reporting
+        // the property rather than the paint is how the OG badge came to be
+        // blamed for a colour it is never drawn in.
+        color: svg ? cs.fill : cs.color,
         opacity: +op.toFixed(2),
       });
     });

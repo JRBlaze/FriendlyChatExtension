@@ -413,7 +413,16 @@
         if (val[i] === ' ') break;
       }
 
-      if (!triggerChar || !query.length) { closePopup(); return; }
+      // Typing beside an open picker leaves the picker alone.
+      //
+      // This is the other half of letting more than one emote be picked. Words
+      // and emotes get mixed in one message all the time, and a picker that
+      // came down on the first letter typed after a pick would have to be
+      // reopened to reach the second emote — which is the thing being fixed.
+      // The one keystroke that does take the popup back is a trigger, and that
+      // is not this branch: it falls through to the list below, which fills in
+      // items and clears `browse` itself.
+      if (!triggerChar || !query.length) { if (!AC.browse) closePopup(); return; }
 
       let items = [];
 
@@ -456,7 +465,10 @@
           .map((c) => ({ type: 'mention', name: c.name, platform: c.platform }));
       }
 
-      if (!items.length) { closePopup(); return; }
+      // A trigger that matches nothing is no reason to take the picker down
+      // either — ":xy" while browsing is a search that has not landed yet, not
+      // a decision to close the grid.
+      if (!items.length) { if (!AC.browse) closePopup(); return; }
 
       AC.items = items;
       AC.index = 0; // pre-select, so Tab always has something to complete
@@ -523,8 +535,29 @@
         if (item.type === 'mention') onReplyTo(item.platform, item.name);
       }
 
-      closePopup();
-      inputEl.focus();
+      // The typed autocomplete has finished its job: it was completing one
+      // word, and the word is now complete. So it goes away, as it always has.
+      if (!AC.browse) {
+        closePopup();
+        inputEl.focus();
+        return;
+      }
+
+      // The picker has not. Two emotes in a message is the ordinary case, and
+      // closing on the first pick meant opening the picker again and finding
+      // the place in the grid again for every emote after it — on a surface
+      // whose whole job is browsing. So it stays up, and what closes it is what
+      // always closed it: Escape, its own button, a click in the panel outside
+      // it, and sending, which goes through closeAll.
+      //
+      // Focus is left wherever the viewer put it. Someone searching the grid is
+      // still searching it, and pulling the caret into the message box on every
+      // pick would make the second search harder than the first. Enter still
+      // sends, because the only way focus is in the message box is that the
+      // viewer put it there.
+      const search = popup.querySelector('.fcm-ac-input');
+      const doc = panel.ownerDocument;
+      if (!search || !doc || doc.activeElement !== search) inputEl.focus();
     }
 
     function highlight() {
@@ -996,37 +1029,145 @@
         if (btn.dataset.armed === '1') {
           clearTimeout(armTimer);
           btn.dataset.armed = '';
+          // Marked on the strip as well as the button, so the question "is
+          // anything armed in here" is a property read on the element already in
+          // hand rather than a query, on an event that arrives per pixel.
+          bar.dataset.armed = '';
           btn.textContent = 'Ban';
           onModerate(platform, 'ban', Object.assign({}, target));
           return;
         }
         btn.dataset.armed = '1';
+        bar.dataset.armed = '1';
         btn.textContent = 'Ban?';
         btn.title = `Press again to ban ${target.username}`;
         clearTimeout(armTimer);
         armTimer = setTimeout(() => {
           btn.dataset.armed = '';
+          bar.dataset.armed = '';
           btn.textContent = 'Ban';
           btn.title = `Ban ${target.username} from ${meta.name} chat`;
+          // Arming held the strip in place whatever it was covering, so the
+          // question has to be put again now that it is no longer armed. Nothing
+          // else will ask it: the arm running out is not a pointer event, and a
+          // pointer that has not moved for three seconds may not move again.
+          recheckYield(row, bar);
         }, BAN_ARM_MS);
       }, 'fcm-modbar-ban'));
 
       return bar;
     }
 
-    function ensureModBar(row) {
+    // ── Standing aside for the message underneath ─────────────────────────────
+    //
+    // The strip is drawn over the top-right corner of the row, which on a short
+    // message is where its emotes are. An emote under the strip cannot be
+    // pointed at, and pointing at one — holding still over it for a second — is
+    // how the overlay shows it larger. So the strip does here what the whole
+    // panel does for the site's own menus: it gets out of the way of the thing
+    // the viewer is actually trying to reach, for exactly as long as they are
+    // reaching for it.
+    //
+    // Everything the strip can cover that a viewer would want to reach. A link
+    // and a clip card have to be clickable, and an emote and a GIF have to be
+    // pointable, or the strip has quietly taken something away from every
+    // moderator that every other viewer still has.
+    const COVERABLE = '.fcm-emote,.fcm-gif,.fcm-link,.fcm-clip,.fcm-author';
+
+    // Where the pointer was last seen in the feed. Kept because two of the
+    // moments this has to be reconsidered are not pointer events at all — a ban
+    // disarming itself, a strip being built — and both need an answer to "what
+    // is under the pointer" when the pointer is not moving.
+    let pointerX = NaN;
+    let pointerY = NaN;
+
+    // Whether this feed has ever grown a strip. A viewer who moderates neither
+    // chat never does, and for them the pointer handler below is a boolean and
+    // nothing else — it is the one listener here that arrives per pixel.
+    let anyStrip = false;
+
+    /**
+     * Whether the pointer is inside something the strip is drawn over.
+     *
+     * The strip's own box is tested first, and it is nearly always the answer:
+     * a pointer somewhere else in the row is covering nothing, and that check is
+     * one rectangle rather than one per emote.
+     */
+    function coveringAt(row, bar, x, y) {
+      const box = bar.getBoundingClientRect();
+      if (x < box.left || x > box.right || y < box.top || y > box.bottom) return false;
+      for (const el of row.querySelectorAll(COVERABLE)) {
+        const r = el.getBoundingClientRect();
+        if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return true;
+      }
+      return false;
+    }
+
+    /**
+     * Puts the strip aside, or brings it back.
+     *
+     * Hidden outright rather than made click-through. A strip that is still
+     * painted but takes no clicks is worse than one that is gone: it still looks
+     * like a thing to press, and the press falls through to whatever is beneath
+     * it — which on a username is the user menu opening, carrying Ban and the
+     * timeout presets, in answer to a press of a moderation button.
+     *
+     * Never while one of its buttons is armed or holds focus. A Ban waiting for
+     * its second press must not be able to vanish out from under the pointer,
+     * and a strip reached by keyboard is not one the pointer is anywhere near.
+     */
+    function updateYield(row, bar, x, y) {
+      if (bar.dataset.armed === '1') { bar.dataset.yield = ''; return; }
+      const active = panel.ownerDocument && panel.ownerDocument.activeElement;
+      if (active && bar.contains(active)) { bar.dataset.yield = ''; return; }
+      bar.dataset.yield = coveringAt(row, bar, x, y) ? '1' : '';
+    }
+
+    // The same question, asked from somewhere that has no event to read the
+    // pointer off. A strip that has never seen the pointer stays as it is.
+    function recheckYield(row, bar) {
+      if (!row || !bar || !Number.isFinite(pointerX)) return;
+      updateYield(row, bar, pointerX, pointerY);
+    }
+
+    function ensureModBar(row, x, y) {
       if (!row || row.querySelector('.fcm-modbar')) return;
       if (!modTools()) return;
       const bar = modBarFor(row);
-      if (bar) row.appendChild(bar);
+      if (!bar) return;
+      row.appendChild(bar);
+      anyStrip = true;
+      // Decided before the pointer has moved again, because it may never move
+      // again: someone who brought the pointer to rest on an emote and stopped
+      // would otherwise have the strip drawn straight over it, and the preview
+      // they were waiting for cancelled by the strip arriving. Which is the bug,
+      // one frame later.
+      if (Number.isFinite(x)) updateYield(row, bar, x, y);
     }
 
     // mouseover rather than mouseenter, because only the former bubbles — one
     // listener on the feed, not one per row.
     feedEl.addEventListener('mouseover', (e) => {
       const row = e.target.closest ? e.target.closest('.fcm-msg') : null;
-      if (row) ensureModBar(row);
+      if (row) ensureModBar(row, e.clientX, e.clientY);
     });
+
+    // mousemove as well as mouseover, because moving *within* the Ban button
+    // raises no mouseover at all — and a pointer travelling across the strip
+    // towards an emote underneath it is doing exactly that. This is the event
+    // that has the coordinates while the strip is the thing being pointed at.
+    //
+    // The work is a rectangle test against the strip, and only on a row that
+    // has one; the per-element pass beyond it runs on the few rows where the
+    // pointer is genuinely over the strip.
+    feedEl.addEventListener('mousemove', (e) => {
+      pointerX = e.clientX;
+      pointerY = e.clientY;
+      if (!anyStrip) return;
+      const row = e.target.closest ? e.target.closest('.fcm-msg') : null;
+      const bar = row && row.querySelector('.fcm-modbar');
+      if (bar) updateYield(row, bar, e.clientX, e.clientY);
+    }, { passive: true });
 
     // One delegated listener for every username in the feed, rather than a
     // handler on each of the hundreds of rendered rows.

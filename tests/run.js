@@ -69,6 +69,91 @@ function load(sandbox, ...relPaths) {
   return sandbox.FCM;
 }
 
+// A DOM stub with just enough selector support for the adapter lookups that
+// read the page by name: attribute and class selectors, descendant combinators,
+// and closest(). Shared by the suites that check which control an adapter
+// picks out of markup copied off a signed-in page.
+function buildDomStub(html) {
+  const nodes = [];
+  function el(tag, attrs, kids) {
+    const node = {
+      tagName: tag.toUpperCase(),
+      _attrs: attrs || {},
+      children: [],
+      parentElement: null,
+      textContent: (attrs && attrs._text) || '',
+      id: (attrs && attrs.id) || '',
+      get className() { return this._attrs.class || ''; },
+      getAttribute(k) { return k in this._attrs ? this._attrs[k] : null; },
+      getClientRects() { return this._attrs._hidden ? [] : [{ width: 24, height: 24 }]; },
+      getBoundingClientRect() {
+        const on = !this._attrs._hidden;
+        return { width: on ? 24 : 0, height: on ? 24 : 0, top: 0, left: 0, right: 24, bottom: 24 };
+      },
+      closest(sel) {
+        for (let n = this; n; n = n.parentElement) if (matchesList(n, sel)) return n;
+        return null;
+      },
+      querySelectorAll(sel) { return descendants(this).filter((n) => matchesList(n, sel)); },
+      querySelector(sel) { return this.querySelectorAll(sel)[0] || null; },
+      contains(other) { for (let n = other; n; n = n.parentElement) if (n === this) return true; return false; },
+    };
+    (kids || []).forEach((k) => { k.parentElement = node; node.children.push(k); });
+    nodes.push(node);
+    return node;
+  }
+  function descendants(root) {
+    const out = [];
+    (function down(n) { n.children.forEach((c) => { out.push(c); down(c); }); })(root);
+    return out;
+  }
+  // One selector: tag, .class, [attr], [attr="v"], [attr*="v" i], and
+  // "a b" descendant pairs.
+  function matches(node, sel) {
+    sel = String(sel).trim();
+    if (sel.includes(' ')) {
+      const parts = sel.split(/\s+/);
+      const last = parts.pop();
+      if (!matches(node, last)) return false;
+      let n = node.parentElement;
+      const want = parts.pop();
+      while (n) { if (matches(n, want)) return true; n = n.parentElement; }
+      return false;
+    }
+    let m = /^([a-zA-Z]+)?\[([a-zA-Z-]+)(\*)?=?"?([^"\]]*)"?( i)?\]$/.exec(sel);
+    if (m) {
+      if (m[1] && node.tagName !== m[1].toUpperCase()) return false;
+      const v = node.getAttribute(m[2]);
+      if (v == null) return false;
+      if (!m[4]) return true;
+      return m[3] ? v.toLowerCase().includes(m[4].toLowerCase()) : v === m[4];
+    }
+    m = /^([a-zA-Z]+)?\.([\w-]+)$/.exec(sel);
+    if (m) {
+      if (m[1] && node.tagName !== m[1].toUpperCase()) return false;
+      return String(node.className).split(/\s+/).includes(m[2]);
+    }
+    m = /^([a-zA-Z]+)?#([\w-]+)$/.exec(sel);
+    if (m) {
+      if (m[1] && node.tagName !== m[1].toUpperCase()) return false;
+      return node.id === m[2];
+    }
+    if (/^[a-zA-Z]+$/.test(sel)) return node.tagName === sel.toUpperCase();
+    return false;
+  }
+  function matchesList(node, sel) {
+    return String(sel).split(',').some((one) => matches(node, one));
+  }
+  const body = html(el);
+  const doc = {
+    querySelectorAll: (sel) => [body, ...descendants(body)].filter((n) => matchesList(n, sel)),
+    querySelector(sel) { return this.querySelectorAll(sel)[0] || null; },
+    body,
+    documentElement: body,
+  };
+  return makeSandbox({ document: doc, window: {} });
+}
+
 const SHARED = [
   'src/shared/namespace.js',
   'src/shared/constants.js',
@@ -3267,7 +3352,7 @@ suites.native = function () {
 
   // ── Driving the site's own controls ─────────────────────────────────────────
 
-  function controlPage({ claim = true, identity = false } = {}) {
+  function controlPage({ claim = true, identity = false, drops = false } = {}) {
     const points = el({ rect: [620, 32], text: '4,201' });
     const bits = el({ rect: [620, 32], text: '350' });
     const open = el({ rect: [620, 32], attrs: { 'aria-label': 'Bits and Points Balances' } });
@@ -3276,22 +3361,28 @@ suites.native = function () {
     const ident = identity
       ? el({ rect: [620, 32], attrs: { 'aria-label': 'Chat Identity' } })
       : null;
+    // Twitch's drops crate is 32px square and carries no text at all, which is
+    // the point of it: there is no balance to read, only a button to press.
+    const crate = drops
+      ? el({ rect: [32, 32], attrs: { 'aria-label': 'Drops' } })
+      : null;
     const body = el({ rect: [262, 401] });
     const site = {
       messageList: () => container,
       nativeChatBody: () => body,
       nativeControls: () => ({
         pointsValue: points, bitsValue: bits, openBalances: open, cheer, claim: chest,
-        chatIdentity: ident,
+        chatIdentity: ident, drops: crate,
       }),
     };
-    return { site, points, bits, open, cheer, chest, body, ident };
+    return { site, points, bits, open, cheer, chest, body, ident, crate };
   }
 
   const withClaim = controlPage();
   const cb = bridgeFor(page(content), withClaim.site).bridge;
   eq(cb.stats(), { points: '4,201', bits: '350', hasPoints: true, hasBits: true,
-    canClaim: true, claimNamed: true, hasIdentity: false, hasGifs: false, hasMenu: true },
+    canClaim: true, claimNamed: true, hasIdentity: false, hasDrops: false, hasGifs: false,
+    hasMenu: true },
     'native: both balances and a waiting bonus are reported');
 
   ok(cb.activate('points'), 'native: the rewards control is there to click');
@@ -3330,6 +3421,37 @@ suites.native = function () {
   }
   eq(withClaim.chest.clicks, 1, 'native: and that click goes to the chest');
 
+  // ── Drops ──
+  //
+  // The one control on the row with nothing to read off it. Twitch draws the
+  // crate only while the channel is running a campaign the viewer is earning
+  // in, and keeps the progress in a panel that is not in the page until the
+  // crate is pressed — so presence is the whole signal, and the press is the
+  // whole feature.
+  {
+    const running = controlPage({ drops: true });
+    const db = bridgeFor(page(content), running.site).bridge;
+    eq(db.stats().hasDrops, true, 'native: a drops control the site shows is reported');
+    ok(db.activate('drops'), 'native: and it is there to press');
+    eq(running.crate.clicks, 1, 'native: the press goes to the site’s own button');
+    eq(running.crate.events, ['pointerdown', 'mousedown', 'pointerup', 'mouseup'],
+      'native: pressed the way a mouse presses it, not just clicked');
+    // The crate has no balance and must not be mistaken for one, or a chip
+    // would appear on the row showing a number nothing on the page said.
+    eq(db.stats().points, '4,201', 'native: drops leaves the balances alone');
+    eq(db.stats().bits, '350', 'native: both of them');
+  }
+  {
+    const quiet = controlPage({ drops: false });
+    const qb = bridgeFor(page(content), quiet.site).bridge;
+    eq(qb.stats().hasDrops, false,
+      'native: a channel with no drops running reports none');
+    eq(qb.activate('drops'), false,
+      'native: and nothing is pressed, rather than the gear or Send being guessed at');
+    eq(quiet.open.clicks, 0, 'native: in particular, not the balances button');
+    eq(quiet.chest.clicks, 0, 'native: and not the chest either');
+  }
+
   const noClaim = controlPage({ claim: false });
   const nb = bridgeFor(page(content), noClaim.site).bridge;
   eq(nb.stats().canClaim, false, 'native: an unrendered chest is no bonus');
@@ -3338,7 +3460,7 @@ suites.native = function () {
 
   const bare = bridgeFor(page(content), { messageList: () => container }).bridge;
   eq(bare.stats(), { points: '', bits: '', hasPoints: false, hasBits: false,
-    canClaim: false, claimNamed: false, hasMenu: false, hasGifs: false },
+    canClaim: false, claimNamed: false, hasMenu: false, hasGifs: false, hasDrops: false },
     'native: a site with no controls of its own reports nothing');
   ok(!bare.activate('points'), 'native: and offers nothing to click');
 
@@ -3348,7 +3470,7 @@ suites.native = function () {
     nativeControls: () => { throw new Error('selectors moved'); },
   }).bridge;
   eq(angry.stats(), { points: '', bits: '', hasPoints: false, hasBits: false,
-    canClaim: false, claimNamed: false, hasMenu: false, hasGifs: false },
+    canClaim: false, claimNamed: false, hasMenu: false, hasGifs: false, hasDrops: false },
     'native: a throwing adapter reads as no controls');
 
   // Kick's Kicks button is labelled "Get KICKs" and shows no balance. A control
@@ -8165,6 +8287,55 @@ suites.twitchmenus = function () {
     ok(found !== parts.modalOverlay, 'twitchmenus: not the 1x1 fixed overlay');
   }
 
+  // ── The drops panel ──
+  //
+  // Worth its own case because it is a different shape from the account menu.
+  // Measured off a signed-in channel page running a campaign: "Drops & More" is
+  // a role="dialog" that carries its own box — 326x335 — and Twitch anchors it
+  // inside the chat column, above the buttons container the crate sits in,
+  // rather than portalling it to the end of <body>. So it is found by its role
+  // and returned as itself with no descent, and it is found several levels
+  // inside the footer rather than as a child of the body. Both halves are worth
+  // pinning: the crate is a chip on the overlay's own row, so the overlay is
+  // what the viewer clicks, and it has to be out of the way by the time Twitch
+  // finishes drawing.
+  {
+    const p = page();
+    const panel = el({
+      w: 326, h: 335, x: 1110, y: 520,
+      attrs: { role: 'dialog', 'aria-label': 'Drops & More' },
+      position: 'absolute',
+    });
+    const crate = el({ w: 32, h: 32, x: 1340, y: 864, attrs: { 'data-a-target': 'drops-button' } });
+    // Twitch's popper host: a sizeless sibling of the button, holding the panel.
+    const host = el({ w: 0, h: 0, x: 1340, y: 864, kids: [panel] });
+    const buttons = el({ w: 340, h: 40, x: 1100, y: 856, kids: [crate, host] });
+    p.open({ layer: buttons });
+    // Asked once. A second ask would find the panel already noted as open and
+    // correctly answer "nothing has just opened", which is the bridge working
+    // and not the question this is putting.
+    const found = p.bridge.dialogOver(CHAT_BOX);
+    ok(found === panel,
+      'twitchmenus: the drops panel is found where Twitch draws it, inside the chat column');
+    ok(found !== host,
+      'twitchmenus: and it is the panel, not the sizeless host it hangs off');
+    ok(p.bridge.dialogStillOpen(), 'twitchmenus: and it holds the panel aside while it is up');
+    panel.isConnected = false;
+    ok(!p.bridge.dialogStillOpen(),
+      'twitchmenus: closing the drops panel brings the overlay straight back');
+  }
+
+  // The crate on its own is not a menu. It is on the page for as long as the
+  // campaign runs, and standing aside for a 32px button would hide the overlay
+  // for the whole stream.
+  {
+    const p = page();
+    const crate = el({ w: 32, h: 32, x: 1340, y: 864, attrs: { 'data-a-target': 'drops-button' } });
+    p.open({ layer: el({ w: 340, h: 40, x: 1100, y: 856, kids: [crate] }) });
+    eq(p.bridge.dialogOver(CHAT_BOX), null,
+      'twitchmenus: a drops button with nothing open is not something to hide for');
+  }
+
   // ── A menu somewhere else is not in the way ──
   //
   // Twitch's player settings menu is the same machinery over the video. The
@@ -9142,88 +9313,7 @@ suites.emoterouting = function () {
 // Twitch it is not in the container every other control in that footer lives
 // in. The markup below is copied off a signed-in channel page on each site.
 suites.chatidentity = function () {
-  // A DOM stub with just enough selector support for these lookups: attribute
-  // and class selectors, descendant combinators, and closest().
-  function build(html) {
-    const nodes = [];
-    function el(tag, attrs, kids) {
-      const node = {
-        tagName: tag.toUpperCase(),
-        _attrs: attrs || {},
-        children: [],
-        parentElement: null,
-        textContent: (attrs && attrs._text) || '',
-        id: (attrs && attrs.id) || '',
-        get className() { return this._attrs.class || ''; },
-        getAttribute(k) { return k in this._attrs ? this._attrs[k] : null; },
-        getClientRects() { return this._attrs._hidden ? [] : [{ width: 24, height: 24 }]; },
-        getBoundingClientRect() {
-          const on = !this._attrs._hidden;
-          return { width: on ? 24 : 0, height: on ? 24 : 0, top: 0, left: 0, right: 24, bottom: 24 };
-        },
-        closest(sel) {
-          for (let n = this; n; n = n.parentElement) if (matchesList(n, sel)) return n;
-          return null;
-        },
-        querySelectorAll(sel) { return descendants(this).filter((n) => matchesList(n, sel)); },
-        querySelector(sel) { return this.querySelectorAll(sel)[0] || null; },
-        contains(other) { for (let n = other; n; n = n.parentElement) if (n === this) return true; return false; },
-      };
-      (kids || []).forEach((k) => { k.parentElement = node; node.children.push(k); });
-      nodes.push(node);
-      return node;
-    }
-    function descendants(root) {
-      const out = [];
-      (function down(n) { n.children.forEach((c) => { out.push(c); down(c); }); })(root);
-      return out;
-    }
-    // One selector: tag, .class, [attr], [attr="v"], [attr*="v" i], and
-    // "a b" descendant pairs.
-    function matches(node, sel) {
-      sel = String(sel).trim();
-      if (sel.includes(' ')) {
-        const parts = sel.split(/\s+/);
-        const last = parts.pop();
-        if (!matches(node, last)) return false;
-        let n = node.parentElement;
-        const want = parts.pop();
-        while (n) { if (matches(n, want)) return true; n = n.parentElement; }
-        return false;
-      }
-      let m = /^([a-zA-Z]+)?\[([a-zA-Z-]+)(\*)?=?"?([^"\]]*)"?( i)?\]$/.exec(sel);
-      if (m) {
-        if (m[1] && node.tagName !== m[1].toUpperCase()) return false;
-        const v = node.getAttribute(m[2]);
-        if (v == null) return false;
-        if (!m[4]) return true;
-        return m[3] ? v.toLowerCase().includes(m[4].toLowerCase()) : v === m[4];
-      }
-      m = /^([a-zA-Z]+)?\.([\w-]+)$/.exec(sel);
-      if (m) {
-        if (m[1] && node.tagName !== m[1].toUpperCase()) return false;
-        return String(node.className).split(/\s+/).includes(m[2]);
-      }
-      m = /^([a-zA-Z]+)?#([\w-]+)$/.exec(sel);
-      if (m) {
-        if (m[1] && node.tagName !== m[1].toUpperCase()) return false;
-        return node.id === m[2];
-      }
-      if (/^[a-zA-Z]+$/.test(sel)) return node.tagName === sel.toUpperCase();
-      return false;
-    }
-    function matchesList(node, sel) {
-      return String(sel).split(',').some((one) => matches(node, one));
-    }
-    const body = html(el);
-    const doc = {
-      querySelectorAll: (sel) => [body, ...descendants(body)].filter((n) => matchesList(n, sel)),
-      querySelector(sel) { return this.querySelectorAll(sel)[0] || null; },
-      body,
-      documentElement: body,
-    };
-    return makeSandbox({ document: doc, window: {} });
-  }
+  const build = buildDomStub;
 
   // ── Twitch ──
   //
@@ -9294,6 +9384,103 @@ suites.chatidentity = function () {
     eq(found && found.id, 'kick-identity',
       'identity: and it is that one, not the subscriber or verified badge beside it');
     ok(found && found.id !== 'send-message-button', 'identity: never the button that sends');
+  }
+};
+
+// ── Twitch drops ────────────────────────────────────────────────
+//
+// Twitch draws a crate at the foot of its own chat while a channel is running a
+// drop campaign the viewer is earning in. The overlay covers that corner of the
+// page, so the crate has to be carried across — and the one thing that must not
+// happen while carrying it is picking up the wrong button. The crate shares its
+// container with the emote picker, the settings gear and Send.
+suites.drops = function () {
+  // The chat input row, copied off a signed-in channel page that was running a
+  // campaign. The crate carries `data-a-target="drops-button"` and an
+  // accessible name of "Drops", and nothing else in the row mentions drops.
+  const row = (extra) => (el) => el('div', {}, [
+    el('div', { class: 'chat-input' }, [
+      el('div', { class: 'chat-input__buttons-container', 'data-test-selector': 'chat-input-buttons-container' }, [
+        el('button', { 'data-a-target': 'bits-button', 'aria-label': 'Cheer' }),
+        el('button', { 'data-a-target': 'emote-picker-button', 'aria-label': 'Emote picker' }),
+        ...(extra ? [extra(el)] : []),
+        el('button', { 'data-a-target': 'chat-settings', 'aria-label': 'Chat settings' }),
+        el('button', { 'data-a-target': 'chat-send-button', 'aria-label': 'Send Chat', _text: 'Chat' }),
+      ]),
+    ]),
+  ]);
+
+  const twitchDrops = (extra) => {
+    const FCM = load(buildDomStub(row(extra)), ...SHARED,
+      'src/content/native.js', 'src/content/sites.js');
+    return FCM.SITES.twitch.nativeControls().drops;
+  };
+
+  {
+    const found = twitchDrops((el) => el('button', { 'data-a-target': 'drops-button', 'aria-label': 'Drops' }));
+    ok(found, 'drops: twitch’s crate is found');
+    eq(found && found.getAttribute('data-a-target'), 'drops-button',
+      'drops: and it is the crate, by the name Twitch actually gives it');
+  }
+
+  // The whole reason this control takes named matches only, with none of the
+  // "whichever button is spare" fallback the points summary gets. Cheer, the
+  // emote picker, the settings gear and Send all sit in this same container, and
+  // a drops chip that pressed one of them would be worse than no chip at all —
+  // Send most of all, which would put whatever the viewer had half-typed into
+  // chat. Asking for null here is what rules out every one of them at once.
+  {
+    eq(twitchDrops(null), null,
+      'drops: a channel with no campaign running offers nothing, rather than a neighbour');
+  }
+
+  // The crate carries no text and Twitch does not always label it, so the test
+  // hook has to stand on its own.
+  {
+    const found = twitchDrops((el) => el('button', { 'data-a-target': 'drops-button' }));
+    eq(found && found.getAttribute('data-a-target'), 'drops-button',
+      'drops: an unlabelled crate is still found by its test hook');
+  }
+
+  // The channel page carries a second thing named for drops: the tag under the
+  // stream, `a[data-a-target="DropsEnabled"]`. It is a link to Twitch's drops
+  // directory, so a chip that found it would navigate out of the stream the
+  // viewer is watching — which is why the loose matches are scoped to the
+  // footer and only the exact hook is asked of the whole page.
+  {
+    const FCM = load(buildDomStub((el) => el('div', {}, [
+      el('a', { 'data-a-target': 'DropsEnabled', _text: 'DropsEnabled' }),
+      el('div', { class: 'chat-input' }, [
+        el('div', { class: 'chat-input__buttons-container', 'data-test-selector': 'chat-input-buttons-container' }, [
+          el('button', { 'data-a-target': 'chat-send-button', 'aria-label': 'Send Chat', _text: 'Chat' }),
+        ]),
+      ]),
+    ])), ...SHARED, 'src/content/native.js', 'src/content/sites.js');
+    eq(FCM.SITES.twitch.nativeControls().drops, null,
+      'drops: the DropsEnabled tag under the stream is not the crate');
+  }
+
+  // Twitch has renamed controls in this row before, which is why the accessible
+  // name is kept behind the test hook rather than instead of it.
+  {
+    const found = twitchDrops((el) => el('button', { 'aria-label': 'Drops' }));
+    ok(found, 'drops: a renamed test hook still leaves the accessible name to find it by');
+    eq(found && found.getAttribute('aria-label'), 'Drops',
+      'drops: and that is what was found');
+  }
+
+  // Kick has no drops. The adapter names no control for them, so the bridge
+  // reports none and the chip never appears on a Kick page.
+  {
+    const FCM = load(buildDomStub((el) => el('div', {}, [
+      el('div', { id: 'chatroom-footer' }, [
+        el('button', { id: 'send-message-button', _text: 'Chat' }),
+      ]),
+    ])), ...SHARED, 'src/content/native.js', 'src/content/sites.js');
+    const controls = FCM.SITES.kick.nativeControls();
+    ok(!controls.drops, 'drops: Kick names no drops control');
+    const bridge = FCM.createNativeBridge(FCM.SITES.kick);
+    eq(bridge.stats().hasDrops, false, 'drops: so a Kick page reports none');
   }
 };
 
@@ -9637,7 +9824,13 @@ suites.modstrip = function () {
         for (let n = this; n; n = n.parentElement) if (n.matchesClass(sel)) return n;
         return null;
       },
-      matchesClass(sel) { return sel.startsWith('.') && classes.has(sel.slice(1)); },
+      // A selector list, because the strip asks what it is covering with one.
+      matchesClass(sel) {
+        return String(sel).split(',').some((one) => {
+          const s = one.trim();
+          return s.startsWith('.') && classes.has(s.slice(1));
+        });
+      },
       querySelector(sel) {
         for (const c of this.children) {
           if (c.matchesClass(sel)) return c;
@@ -9658,7 +9851,16 @@ suites.modstrip = function () {
       },
       fire(type, event) { (handlers[type] || []).forEach((fn) => fn(event)); },
       setSelectionRange(a) { this.selectionStart = a; },
-      getBoundingClientRect() { return { left: 0, top: 0, width: 240, height: 120 }; },
+      // Overridable per node, and complete: the strip compares a pointer
+      // against right and bottom as well as left and top.
+      getBoundingClientRect() {
+        const r = this.rect || { left: 0, top: 0, width: 240, height: 120 };
+        return {
+          left: r.left, top: r.top, width: r.width, height: r.height,
+          right: r.right !== undefined ? r.right : r.left + r.width,
+          bottom: r.bottom !== undefined ? r.bottom : r.top + r.height,
+        };
+      },
     };
     node.classList = {
       add: (c) => classes.add(c),
@@ -9798,6 +10000,76 @@ suites.modstrip = function () {
   ok(hovered.querySelector('.fcm-modbar'), 'modstrip: pointing at a row grows its strip');
   feedEl.fire('mouseover', { target: author });
   eq(hovered.querySelectorAll('.fcm-modbar').length, 1, 'modstrip: and only one');
+
+  // ── Standing aside for the message underneath ──
+  //
+  // The strip is drawn over the top-right corner of the row, which on a short
+  // message is exactly where its emotes are. An emote under the strip cannot be
+  // pointed at, and pointing at one is how the overlay shows it larger — so the
+  // strip goes for as long as the pointer is on something it is covering.
+  //
+  // The geometry here is the real thing measured in Chrome: a 340px row, the
+  // strip 101px wide at top: 2px; right: 6px, and a 26px emote at the end of
+  // the line, half under it.
+  {
+    const r = row('twitch');
+    r.rect = { left: 0, top: 0, width: 340, height: 26 };
+    const emote = fakeEl('img');
+    emote.className = 'fcm-emote';
+    emote.rect = { left: 245, top: 3, width: 26, height: 20 };
+    r.appendChild(emote);
+
+    feedEl.fire('mouseover', { target: r.querySelector('.fcm-author') });
+    const strip = r.querySelector('.fcm-modbar');
+    ok(strip, 'modstrip: the row grew a strip to stand aside with');
+    strip.rect = { left: 233, top: 2, width: 101, height: 20 };
+
+    const move = (x, y) => feedEl.fire('mousemove', { target: strip, clientX: x, clientY: y });
+
+    feedEl.fire('mousemove', { target: r, clientX: 60, clientY: 13 });
+    eq(strip.dataset.yield, '', 'modstrip: a pointer elsewhere in the row covers nothing');
+
+    // Inside the strip, but over one of its own buttons with nothing under it.
+    move(320, 12);
+    eq(strip.dataset.yield, '', 'modstrip: and inside the strip over nothing, it holds its ground');
+
+    // Inside the strip and inside the emote it is drawn over.
+    move(258, 12);
+    eq(strip.dataset.yield, '1', 'modstrip: over an emote it is covering, it stands aside');
+
+    move(320, 12);
+    eq(strip.dataset.yield, '', 'modstrip: and comes straight back when the pointer leaves');
+
+    // An armed Ban must not be able to vanish out from under the pointer: the
+    // press that confirms it has to stay deliverable.
+    const armed = strip.children[strip.children.length - 1];
+    armed.click();
+    eq(armed.textContent, 'Ban?', 'modstrip: armed');
+    move(258, 12);
+    eq(strip.dataset.yield, '', 'modstrip: an armed strip does not stand aside, whatever it covers');
+
+    // And when the arm runs out on its own, the question is put again rather
+    // than waiting for a pointer that may never move again.
+    const fuse = timers.filter((t) => t.fn).pop();
+    ok(fuse && fuse.ms === 3000, 'modstrip: the arm has its usual fuse');
+    fuse.fn();
+    eq(armed.textContent, 'Ban', 'modstrip: which disarms it');
+    eq(strip.dataset.yield, '1',
+      'modstrip: and it stands aside again without the pointer having moved');
+    eq(actions.length, 0, 'modstrip: none of which banned anybody');
+  }
+
+  // A row with nothing under the strip never stands aside, so a moderator on an
+  // ordinary line of text keeps all three buttons wherever they point.
+  {
+    const plain = row('twitch');
+    plain.rect = { left: 0, top: 0, width: 340, height: 26 };
+    feedEl.fire('mouseover', { target: plain.querySelector('.fcm-author') });
+    const strip = plain.querySelector('.fcm-modbar');
+    strip.rect = { left: 233, top: 2, width: 101, height: 20 };
+    feedEl.fire('mousemove', { target: strip, clientX: 258, clientY: 12 });
+    eq(strip.dataset.yield, '', 'modstrip: a row with nothing underneath keeps its strip');
+  }
 
   FCM.setViewSettings({ ...FCM.DEFAULT_SETTINGS, modHoverTools: false });
   const quiet = row('twitch');

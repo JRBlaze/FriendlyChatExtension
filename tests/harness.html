@@ -162,6 +162,13 @@
             </button>
             <button id="native-claim" aria-label="Claim Bonus" hidden>+50</button>
             <button id="native-cheer" data-a-target="bits-button" aria-label="Cheer">Cheer</button>
+            <!-- Twitch’s drops crate. It is in the page only while the channel is
+                 running a campaign the viewer is earning in, so the control below
+                 toggles it rather than leaving it there: the chip appearing and
+                 going with it is the behaviour worth watching. Nothing can be read
+                 off it — the progress lives in a panel Twitch does not draw until
+                 the crate is pressed — so the mock opens one, as the real one does. -->
+            <button id="native-drops" data-a-target="drops-button" aria-label="Drops" hidden>&#128230;</button>
           </div>
         </div>
       </section>
@@ -243,6 +250,7 @@
     <button data-act="bonus">toggle claim bonus</button>
     <button data-act="no-rewards">toggle rewards row</button>
     <button data-act="no-identity">toggle identity button</button>
+    <button data-act="drops">toggle drops crate</button>
     <button data-act="auth-both">fake: both accounts</button>
     <button data-act="auth-none">fake: no accounts</button>
     <button data-act="long">+ long message</button>
@@ -409,6 +417,10 @@ mockComposer(document.querySelector('.kickcol .editor-input'), document.getEleme
   });
   document.getElementById('native-identity').addEventListener('click',
     () => open('Chat Identity', 'Twitch draws its own name-colour and badge picker here.'));
+  // Twitch’s “Drops & More”: a role="dialog" carrying its own box, anchored
+  // inside the chat column above the crate rather than portalled to <body>.
+  document.getElementById('native-drops').addEventListener('click',
+    () => open('Drops &amp; More', 'Twitch draws the reward, the bar and the minutes left here.'));
   // Kick's is Radix like the rest of its footer, so it opens on pointerdown.
   document.getElementById('kick-identity').addEventListener('pointerdown',
     () => openKickPanel('Chat Identity', 'Kick draws its own identity panel here.'));
@@ -898,6 +910,11 @@ function loadSources(bust) {
       row.style.display = row.style.display === 'none' ? '' : 'none';
     },
     // A site that is not showing the control at all: the chip must not appear.
+    // The crate comes and goes with the campaign, and the chip has to follow it.
+    drops: () => {
+      const crate = document.getElementById('native-drops');
+      crate.hidden = !crate.hidden;
+    },
     'no-identity': () => {
       ['native-identity', 'kick-identity'].forEach((id) => {
         const b = document.getElementById(id);
