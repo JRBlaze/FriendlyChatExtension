@@ -69,6 +69,34 @@ function load(sandbox, ...relPaths) {
   return sandbox.FCM;
 }
 
+// The Cloudflare worker, for the suites that have to agree with it.
+//
+// It is an ES module whose one export is the handler, and the vm runs scripts,
+// so the export is made a global instead. The allow-list and decodeTarget are
+// lifted out beside it, so a suite asks the worker itself what it will forward
+// a sign-in to, rather than keeping a copy of the pattern that could drift from
+// the one deployed. Request and Response are Node's, which are the same fetch
+// classes a Worker has.
+function loadWorker() {
+  const source = fs.readFileSync(path.join(ROOT, 'cloudflare-worker.js'), 'utf8');
+  const script = source.replace(/^export default /m, 'globalThis.__worker = ');
+  if (script === source) throw new Error('cloudflare-worker.js no longer has an `export default` to run');
+  const sandbox = makeSandbox({
+    Request, Response, Headers, atob, btoa,
+    // Only the token exchange reaches out, and nothing that loads the worker
+    // here goes near it.
+    fetch: async () => { throw new Error('the worker tried to reach the network'); },
+  });
+  vm.runInContext(`${script}\nglobalThis.__decodeTarget = decodeTarget;\n`
+    + 'globalThis.__EXTENSION_REDIRECTS = EXTENSION_REDIRECTS;\n', sandbox, { filename: 'cloudflare-worker.js' });
+  return {
+    // One request, answered the way the deployed worker would answer it.
+    fetch: (url, init, env) => sandbox.__worker.fetch(new Request(url, init), env || {}),
+    decodeTarget: sandbox.__decodeTarget,
+    EXTENSION_REDIRECTS: sandbox.__EXTENSION_REDIRECTS,
+  };
+}
+
 // A DOM stub with just enough selector support for the adapter lookups that
 // read the page by name: attribute and class selectors, descendant combinators,
 // and closest(). Shared by the suites that check which control an adapter
@@ -262,7 +290,10 @@ suites.pack = function () {
   // The repo suite checks these exist on disk. This checks they were packed,
   // which is a different question and the one that decides whether the download
   // loads.
-  const referenced = [manifest.background.service_worker];
+  // Both shapes of background, since the Firefox package lists scripts where
+  // Chrome's names one worker.
+  const bg = manifest.background || {};
+  const referenced = [bg.service_worker, ...(bg.scripts || [])].filter(Boolean);
   (manifest.content_scripts || []).forEach((entry) => {
     (entry.js || []).forEach((f) => referenced.push(f));
     (entry.css || []).forEach((f) => referenced.push(f));
@@ -298,6 +329,8 @@ suites.pack = function () {
   // at something the workflow did not build.
   eq(pack.assetName(), `FriendlyChatExtension-v${manifest.version}.zip`,
     'pack: the asset is named for the version in the manifest');
+  eq(pack.assetName(ROOT, 'chrome'), `FriendlyChatExtension-v${manifest.version}.zip`,
+    'pack: and asked for by name, the Chrome asset is still called exactly that');
 
   // A round trip through the bytes: one file out of the archive, uncompressed,
   // matching what is on disk. Headers that describe the wrong thing are the way
@@ -305,6 +338,149 @@ suites.pack = function () {
   const feed = readZipFile(buf, 'src/content/feed.js');
   eq(feed.toString('utf8'), fs.readFileSync(path.join(ROOT, 'src/content/feed.js'), 'utf8'),
     'pack: and a file read back out of it is byte-for-byte what was packed');
+
+  // ── The Chrome package is exactly what it was ──
+  //
+  // Building a second package must not change the first. Asked for by name or
+  // not, Chrome's is the same archive, and every entry in it — the manifest
+  // included — is still the file on disk byte for byte, so nothing done for
+  // Firefox can have reached into what Chrome users download.
+  eq(pack.build(ROOT, { target: 'chrome' }).equals(buf), true,
+    'pack: the Chrome build is unchanged by the Firefox target');
+  ok(readZipFile(buf, 'manifest.json').equals(fs.readFileSync(path.join(ROOT, 'manifest.json'))),
+    'pack: and its manifest.json is the file on disk, byte for byte');
+  const rewritten = entries.filter((n) => !readZipFile(buf, n).equals(fs.readFileSync(path.join(ROOT, n))));
+  eq(rewritten, [], `pack: as is every other file in it (${rewritten.join(', ')})`);
+
+  // ── The Firefox package ──
+  //
+  // The same files under a manifest generated from Chrome's; tools/pack.js says
+  // why the two cannot share one. Everything here is read back out of the
+  // archive rather than asked of the function that made it, since the archive
+  // is what Firefox will actually be handed.
+  const sw = fs.readFileSync(path.join(ROOT, manifest.background.service_worker), 'utf8');
+  const ff = pack.build(ROOT, { target: 'firefox' });
+  const ffEntries = readZipNames(ff);
+  eq(ffEntries.slice().sort(), names.slice().sort(), 'pack: firefox: the archive holds exactly the same list');
+  eq([...new Set(ffEntries.map((n) => n.split('/')[0]))].sort(),
+    ['LICENSE', 'README.md', 'icons', 'manifest.json', 'src'],
+    'pack: firefox: and it opens onto the extension');
+  const ffChanged = ffEntries.filter((n) => n !== 'manifest.json'
+    && !readZipFile(ff, n).equals(fs.readFileSync(path.join(ROOT, n))));
+  eq(ffChanged, [], `pack: firefox: and only the manifest differs from what is on disk (${ffChanged.join(', ')})`);
+
+  const ffText = readZipFile(ff, 'manifest.json').toString('utf8');
+  const fm = JSON.parse(ffText);
+  eq(ffText, `${JSON.stringify(pack.firefoxManifest(manifest, sw), null, 2)}\n`,
+    'pack: firefox: its manifest is the one firefoxManifest makes, two-space indented and ending in a newline');
+
+  const fbg = fm.background || {};
+  ok(!('service_worker' in fbg) && Array.isArray(fbg.scripts) && fbg.scripts.length > 0,
+    'pack: firefox: no service worker, only background.scripts');
+  eq(fbg.scripts, [...pack.backgroundScripts(sw), manifest.background.service_worker],
+    'pack: firefox: background.scripts is the importScripts list, then service-worker.js');
+  const scriptsUnpacked = (fbg.scripts || []).filter((f) => !ffEntries.includes(f));
+  eq(scriptsUnpacked, [], `pack: firefox: every background script is packed (${scriptsUnpacked.join(', ')})`);
+
+  const gecko = (fm.browser_specific_settings || {}).gecko || {};
+  ok(gecko.id === pack.GECKO_ID && gecko.strict_min_version === '140.0',
+    'pack: firefox: gecko id and strict_min_version 140.0 are set');
+  // Firefox's own pattern for an email-style ID, and addons.mozilla.org's limit
+  // on how long one may be.
+  ok(/^[a-zA-Z0-9-._]*@[a-zA-Z0-9-._]+$/.test(gecko.id || '') && gecko.id.length <= 80,
+    'pack: firefox: and the id is one Firefox and addons.mozilla.org will take');
+  const collection = gecko.data_collection_permissions || {};
+  const required = Array.isArray(collection.required) ? collection.required : [];
+  ok(required.length > 0 && (!required.includes('none') || required.length === 1),
+    'pack: firefox: data_collection_permissions is declared, and "none" is not combined with anything');
+  // Firefox's schema names these and nothing else; a category spelt any other
+  // way would only be caught when Mozilla refused to sign the package.
+  const CATEGORIES = [
+    'authenticationInfo', 'bookmarksInfo', 'browsingActivity', 'financialAndPaymentInfo', 'healthInfo',
+    'locationInfo', 'personalCommunications', 'personallyIdentifyingInfo', 'searchTerms',
+    'websiteActivity', 'websiteContent', 'none',
+  ];
+  const unknown = required.filter((c) => !CATEGORIES.includes(c));
+  eq(unknown, [], `pack: firefox: every data-collection category is one Firefox knows (${unknown.join(', ')})`);
+  // Which categories is the owner's decision, not a matter of taste, so it is
+  // written out here to the letter — and read out of the archive, not asked of
+  // pack.DATA_COLLECTION, which verify-packages already compares the package
+  // with and so could never catch the constant itself losing one. Dropping
+  // personalCommunications would still pass every check above, and Firefox's
+  // install prompt would stop saying that typed messages leave the browser.
+  eq(gecko.data_collection_permissions,
+    { required: ['authenticationInfo', 'personalCommunications', 'browsingActivity'] },
+    'pack: firefox: the data Firefox tells the user about at install is the three categories the owner decided on, in order');
+  eq(pack.DATA_COLLECTION, { required: ['authenticationInfo', 'personalCommunications', 'browsingActivity'] },
+    'pack: firefox: and so is the constant every Firefox manifest is made from');
+  ok(!('has_previous_consent' in collection),
+    'pack: firefox: and has_previous_consent, which is not ours to set, is left out');
+  // Every signed install goes on asking this one address for newer versions for
+  // as long as it is installed, so the address is held to the letter: changed,
+  // it would leave every install already out there on the version it has.
+  eq(pack.UPDATE_URL, 'https://github.com/JRBlaze/FriendlyChatExtension/releases/latest/download/updates.json',
+    'pack: firefox: the update address is the one every install has been given, unchanged');
+  eq(gecko.update_url, pack.UPDATE_URL, 'pack: firefox: and the package names it as gecko.update_url');
+  ok(/^https:\/\/[^/]+\//.test(String(gecko.update_url)),
+    'pack: firefox: over https, without which Firefox disables the add-on and Mozilla will not sign it');
+  ok(!('key' in fm) && !('minimum_chrome_version' in fm), 'pack: firefox: key and minimum_chrome_version are gone');
+
+  const ported = (fm.host_permissions || []).filter((p) => /:\/\/[^/]+:\d+\//.test(p));
+  eq(ported, [], `pack: firefox: no host permission names a port (${ported.join(', ')})`);
+  ok((fm.host_permissions || []).includes('http://localhost/*'),
+    'pack: firefox: localhost is permitted without a port');
+  const dropped = (manifest.host_permissions || [])
+    .filter((p) => !/:\/\/[^/]+:\d+\//.test(p) && p !== pack.GITHUB_API_ORIGIN && !(fm.host_permissions || []).includes(p));
+  eq(dropped, [], `pack: firefox: and every other host permission but GitHub's API is still there (${dropped.join(', ')})`);
+
+  // GitHub's API is asked for by the update check alone, which a package
+  // naming an update_url never makes, so the package Firefox updates does not
+  // ask for it — and one built without an update_url, which checks GitHub
+  // itself, still does. Chrome's manifest is not touched either way.
+  eq(pack.GITHUB_API_ORIGIN, 'https://api.github.com/*', "pack: firefox: (GitHub's API, as manifest.json writes it)");
+  ok((manifest.host_permissions || []).includes(pack.GITHUB_API_ORIGIN),
+    "pack: Chrome's manifest still asks for GitHub's API, which its update check needs");
+  ok(!(fm.host_permissions || []).includes(pack.GITHUB_API_ORIGIN),
+    "pack: firefox: the package Firefox updates by itself does not ask for GitHub's API, which only the check it switches off uses");
+  const checksGithub = pack.firefoxManifest(manifest, sw, { updateUrl: null });
+  ok(checksGithub.host_permissions.includes(pack.GITHUB_API_ORIGIN),
+    'pack: firefox: while a package built without an update_url, which still checks GitHub itself, keeps it');
+  eq(checksGithub.host_permissions.filter((p) => p !== pack.GITHUB_API_ORIGIN), fm.host_permissions,
+    'pack: firefox: and that is the only host the two differ in');
+  // Nor does anything else in the extension reach GitHub's API, which would
+  // leave it without the host on a signed build. Comments are left out, since
+  // naming the host is not reaching it.
+  const reachesGithub = names
+    .filter((n) => /^src\/.*\.js$/.test(n))
+    .filter((n) => fs.readFileSync(path.join(ROOT, n), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:\\])\/\/.*$/gm, '$1')
+      .includes('api.github.com'));
+  eq(reachesGithub, ['src/background/updates.js'],
+    "pack: firefox: nothing but the update check, which a signed build switches off, reaches GitHub's API");
+
+  eq(fm.version, manifest.version, 'pack: firefox: version matches');
+  const copied = ['content_scripts', 'action', 'options_ui', 'icons', 'web_accessible_resources'];
+  eq(copied.map((k) => fm[k]), copied.map((k) => manifest[k]),
+    'pack: firefox: content_scripts, action, options_ui, icons, web_accessible_resources are copied unchanged');
+  missing(ffText, 'browser_style', 'pack: firefox: no browser_style');
+  eq(pack.assetName(ROOT, 'firefox'), `FriendlyChatExtension-v${manifest.version}-firefox-unsigned.xpi`,
+    'pack: firefox: asset name, which says it is unsigned and does not end in .zip');
+  eq(pack.assetName(ROOT, 'firefox-xpi'), `FriendlyChatExtension-v${manifest.version}-firefox.xpi`,
+    'pack: firefox: and the signed add-on the release carries is the same name without "unsigned"');
+  eq(['chrome', 'firefox', 'firefox-xpi'].map((kind) => pack.releaseAssetName('7.8.9', kind)),
+    ['FriendlyChatExtension-v7.8.9.zip', 'FriendlyChatExtension-v7.8.9-firefox-unsigned.xpi',
+      'FriendlyChatExtension-v7.8.9-firefox.xpi'],
+    'pack: releaseAssetName names each kind of file for any version, not only the one in the manifest');
+  // Every Chrome build from v1.11.0 to v1.20.1 takes the first .zip on the
+  // latest release as its update. The release suite runs that very matcher
+  // over a release's files; this is the rule it rests on.
+  eq(Object.keys(pack.ASSET_SUFFIXES).filter((kind) => /\.zip$/i.test(pack.releaseAssetName('7.8.9', kind))), ['chrome'],
+    "pack: and Chrome's is the only file a release carries whose name ends in .zip");
+  let unknownKind = '';
+  try { pack.assetName(ROOT, 'firefox-signed'); } catch (e) { unknownKind = e.message; }
+  contains(unknownKind, 'unknown release file "firefox-signed"',
+    'pack: and a kind of file no release carries is refused rather than given a made-up name');
 };
 
 // A minimal reader, written against the format rather than against pack.js, so
@@ -382,9 +558,39 @@ suites.repo = function () {
   eq(hardcoded.length, 0,
     `repo: no hand-written version badge is left to go stale (${hardcoded.join(', ')})`);
 
+  // Firefox is installed from a different file, and signs in through a
+  // different address, and the README is where both are read off. Each is asked
+  // of tools/pack.js rather than typed out again here, because pack.js is what
+  // names the file a release carries and the ID Firefox derives the address
+  // from — so a README that names last version's add-on, or an address for an
+  // ID the package no longer carries, fails here instead of in somebody's
+  // browser. The unsigned package is named too, for the about:debugging note.
+  // None of these ends in `.zip`, so the count of Chrome download links above
+  // is still one, and still Chrome's; every one of them does start with the
+  // asset prefix, so the check that each named asset is this version's covers
+  // them as well.
+  const pack = require(path.join(ROOT, 'tools', 'pack.js'));
+  ok(readme.includes(pack.assetName(ROOT, 'firefox-xpi')),
+    `repo: the README names the signed Firefox add-on for this version (${pack.assetName(ROOT, 'firefox-xpi')})`);
+  ok(readme.includes(pack.assetName(ROOT, 'firefox')),
+    `repo: and the unsigned Firefox package for a temporary load (${pack.assetName(ROOT, 'firefox')})`);
+  // (Not missing(): this suite has a `missing` of its own further down.)
+  ok(!readme.includes(`FriendlyChatExtension-v${version}-firefox.zip`),
+    'repo: and no longer the Firefox .zip a release must never carry beside Chrome\'s');
+  ok(readme.includes(pack.firefoxRedirectUrl()),
+    `repo: the README names the Firefox redirect URL for this add-on ID (${pack.firefoxRedirectUrl()})`);
+  ok(readme.includes(pack.GECKO_ID),
+    `repo: the README names the Firefox add-on ID (${pack.GECKO_ID})`);
+  // The one address every signed install asks for its updates, which the
+  // release rules in the README exist to protect, so it is written there in
+  // full and has to be the one the package carries.
+  ok(readme.includes(pack.UPDATE_URL),
+    `repo: the README names the update address every signed Firefox install asks (${pack.UPDATE_URL})`);
+
   // Every script the manifest names has to exist, or the packaged extension
   // fails to load with nothing to say about why.
-  const referenced = [manifest.background.service_worker];
+  const bg = manifest.background || {};
+  const referenced = [bg.service_worker, ...(bg.scripts || [])].filter(Boolean);
   manifest.content_scripts.forEach((entry) => {
     (entry.js || []).forEach((f) => referenced.push(f));
     (entry.css || []).forEach((f) => referenced.push(f));
@@ -401,6 +607,2327 @@ suites.repo = function () {
     const js = entry.js || [];
     eq(js.length, new Set(js).size, `repo: content script entry ${i} lists each file once`);
   });
+};
+
+// ── The Firefox build ─────────────────────────────────────────────────────────
+//
+// Firefox runs the same background files as Chrome, but not the same way. It
+// has no extension service workers, and so no importScripts: it runs an event
+// page, which is a window, and loads each file the generated manifest lists in
+// turn. Every other suite boots the background the Chrome way, so this is where
+// the Firefox way is shown to arrive at the same place — and where the three
+// things that make it do so are held to what they claim: the manifest pack.js
+// generates, the guard in front of importScripts, and the switch that says
+// which browser the extension is running in.
+//
+// It is also where what that switch changes is checked from Firefox's side: the
+// update check asking for Firefox's own package, a heartbeat that comes often
+// enough to keep an event page up, an overlay that says nothing assuming
+// Chrome, and harnesses that can pretend to be Firefox.
+suites.firefox = function () {
+  const pack = require(path.join(ROOT, 'tools', 'pack.js'));
+  const { bootWorker, wait, patternCovers } = require('./background.js');
+  const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8'));
+  const swPath = manifest.background.service_worker;
+  const sw = fs.readFileSync(path.join(ROOT, swPath), 'utf8');
+  const fm = pack.firefoxManifest(manifest, sw);
+  const thrown = (fn) => { try { fn(); return ''; } catch (e) { return String(e.message); } };
+
+  // ── firefoxManifest, on shapes the real manifest does not have ──
+  {
+    const chromeShaped = () => ({
+      manifest_version: 3,
+      name: 'Shape',
+      version: '1.2.3',
+      minimum_chrome_version: '116',
+      key: 'KEY',
+      host_permissions: [
+        'http://localhost:8080/*',
+        'http://localhost/*',
+        'http://localhost:3000/*',
+        'https://api.example.org/*',
+        'https://api.example.org:8443/*',
+      ],
+      background: { service_worker: 'src/background/service-worker.js' },
+      content_scripts: [{ matches: ['*://*.example.org/*'], js: ['a.js'] }],
+    });
+
+    const given = chromeShaped();
+    const out = pack.firefoxManifest(given, sw);
+    eq(out.host_permissions, ['http://localhost/*', 'https://api.example.org/*'],
+      'firefox: a port is taken off each host permission, and patterns that leaves identical are listed once');
+    eq(given, chromeShaped(), 'firefox: the manifest it was given is left exactly as it was');
+    eq(Object.keys(out),
+      ['manifest_version', 'name', 'version', 'host_permissions', 'background', 'content_scripts',
+        'browser_specific_settings'],
+      'firefox: nothing is added but browser_specific_settings, and nothing that stays moves');
+    eq(out.content_scripts, given.content_scripts,
+      'firefox: and a key it has no reason to touch is copied as it was');
+
+    ok(/no importScripts list/.test(thrown(() => pack.firefoxManifest(chromeShaped(), '// imports nothing'))),
+      'firefox: a service worker with no importScripts list is refused, not made into an empty background');
+    ok(/empty/.test(thrown(() => pack.backgroundScripts('importScripts();'))),
+      'firefox: and so is an empty list');
+    ok(/single-quoted/.test(thrown(() => pack.backgroundScripts("importScripts('/a.js', \"/b.js\");"))),
+      'firefox: and a path in double quotes, which would otherwise be left out of the Firefox build unannounced');
+    ok(/service worker/.test(thrown(() => pack.firefoxManifest({ manifest_version: 3 }, sw))),
+      'firefox: a manifest with no service worker to convert is refused');
+
+    const guarded = "if (typeof importScripts === 'function') {\r\n  importScripts(\r\n"
+      + "    '/src/a.js',\r\n    '/src/b/c.js'\r\n  );\r\n}\r\n";
+    eq(pack.backgroundScripts(guarded), ['src/a.js', 'src/b/c.js'],
+      'firefox: the typeof guard is not mistaken for the call, CRLF is read, and the leading slash goes');
+
+    const withUpdates = pack.firefoxManifest(chromeShaped(), sw, { updateUrl: 'https://example.org/updates.json' });
+    eq(withUpdates.browser_specific_settings.gecko.update_url, 'https://example.org/updates.json',
+      'firefox: an update address is written into gecko when there is one');
+    ok(!('update_url' in pack.firefoxManifest(chromeShaped(), sw, { updateUrl: null }).browser_specific_settings.gecko),
+      'firefox: and left out entirely when there is not');
+    eq(pack.firefoxManifest(chromeShaped(), sw).browser_specific_settings.gecko.update_url, pack.UPDATE_URL,
+      'firefox: unless told otherwise, every Firefox manifest names the one update address');
+
+    const askingGithub = () => ({ ...chromeShaped(), host_permissions: [...chromeShaped().host_permissions, 'https://api.github.com/*'] });
+    eq(pack.firefoxManifest(askingGithub(), sw).host_permissions, ['http://localhost/*', 'https://api.example.org/*'],
+      "firefox: a manifest naming an update address leaves out GitHub's API, which only the update check it never makes uses");
+    eq(pack.firefoxManifest(askingGithub(), sw, { updateUrl: 'https://example.org/updates.json' }).host_permissions,
+      ['http://localhost/*', 'https://api.example.org/*'], 'firefox: whichever update address it names');
+    eq(pack.firefoxManifest(askingGithub(), sw, { updateUrl: null }).host_permissions,
+      ['http://localhost/*', 'https://api.example.org/*', 'https://api.github.com/*'],
+      'firefox: while one without an update address, which checks GitHub itself, keeps it where it was');
+    missing(JSON.stringify(withUpdates), 'browser_style', 'firefox: browser_style is never written');
+
+    out.browser_specific_settings.gecko.data_collection_permissions.required.push('scribbled');
+    missing(JSON.stringify(pack.firefoxManifest(chromeShaped(), sw)), 'scribbled',
+      'firefox: changing one manifest it made does not change the next');
+    eq(pack.firefoxManifest(chromeShaped(), sw, { id: 'someone-else@example.org' })
+      .browser_specific_settings.gecko.id, 'someone-else@example.org',
+    'firefox: and a fork can build under an ID of its own');
+  }
+
+  // ── updates.json ──
+  //
+  // The file every signed install reads to find its next version. Firefox takes
+  // it exactly as it is written and says nothing when it cannot use it, so it
+  // is checked to the letter; and what it links to has to be the signed file
+  // the release carries, under the name pack.js gives it.
+  {
+    const v = '1.21.0';
+    const u = pack.updatesManifest(v);
+    eq(u, {
+      addons: {
+        'friendly-chat-extension@jrblaze.org': {
+          updates: [{
+            version: '1.21.0',
+            update_link: 'https://github.com/JRBlaze/FriendlyChatExtension/releases/download/v1.21.0/FriendlyChatExtension-v1.21.0-firefox.xpi',
+            applications: { gecko: { strict_min_version: '140.0' } },
+          }],
+        },
+      },
+    }, 'firefox: updates.json: exactly the shape Firefox reads — one entry, for this version, under the add-on ID');
+
+    // eq compares JSON, which quietly drops a key whose value is undefined, so
+    // the object itself is walked for anything unset.
+    const leaves = [];
+    const walk = (value, at) => {
+      if (Array.isArray(value)) value.forEach((item, i) => walk(item, `${at}[${i}]`));
+      else if (value && typeof value === 'object') Object.keys(value).forEach((key) => walk(value[key], `${at}.${key}`));
+      else leaves.push([at, value]);
+    };
+    walk(u, '');
+    const unset = leaves.filter(([, value]) => typeof value !== 'string' || value === '').map(([at]) => at);
+    eq(unset, [], `firefox: updates.json: every value in it is a string with something in it, none undefined or empty (${unset.join(', ')})`);
+    const text = `${JSON.stringify(u, null, 2)}\n`;
+    eq(JSON.parse(text), u, 'firefox: updates.json: written out, it parses back as the same object');
+    missing(text, 'undefined', 'firefox: updates.json: and the text has no undefined in it');
+    ok(/^[\x20-\x7e\n]*$/.test(text), 'firefox: updates.json: plain ASCII, so it is valid UTF-8 whatever it is served as');
+    missing(text, 'update_hash', 'firefox: updates.json: no update_hash, which would pin the exact bytes of the file');
+
+    const entry = u.addons[pack.GECKO_ID].updates[0];
+    ok(entry.update_link.startsWith('https://'), 'firefox: updates.json: the download is https, as Firefox requires');
+    eq(entry.update_link, `${pack.RELEASE_DOWNLOADS}/v${v}/${pack.releaseAssetName(v, 'firefox-xpi')}`,
+      "firefox: updates.json: and it is the signed add-on of the release tagged v<version>, by pack.js's name for it");
+    const repoOf = (url) => (/^https:\/\/github\.com\/([^/]+\/[^/]+)\/releases\//.exec(url) || [])[1];
+    ok(repoOf(pack.UPDATE_URL) && repoOf(pack.UPDATE_URL) === repoOf(entry.update_link),
+      'firefox: updates.json: from the same repository whose latest release the update address reads it from');
+
+    const current = pack.updatesManifest(manifest.version);
+    eq(Object.keys(current.addons), [fm.browser_specific_settings.gecko.id],
+      'firefox: updates.json: for this release, under the ID its manifest gives the add-on');
+    eq([current.addons[pack.GECKO_ID].updates[0].version,
+      current.addons[pack.GECKO_ID].updates[0].applications.gecko.strict_min_version],
+    [fm.version, fm.browser_specific_settings.gecko.strict_min_version],
+    'firefox: updates.json: with the version and the oldest Firefox its manifest says');
+    const forked = pack.updatesManifest(v, { id: 'someone-else@example.org', strictMinVersion: '142.0' });
+    eq([Object.keys(forked.addons), forked.addons['someone-else@example.org'].updates[0].applications.gecko.strict_min_version],
+      [['someone-else@example.org'], '142.0'],
+      'firefox: updates.json: built under another ID or floor, it agrees with a manifest built the same way');
+
+    u.addons[pack.GECKO_ID].updates.push({ version: 'scribbled' });
+    missing(JSON.stringify(pack.updatesManifest(v)), 'scribbled',
+      'firefox: updates.json: changing one it made does not change the next');
+
+    const accepted = ['v1.21.0', '1.21.0-beta.1', '', '1.2.3.4.5', '01.2.3', '1..2', '1.2.3 ', '1234567890', undefined, null]
+      .filter((bad) => !/not a version Firefox can compare/.test(thrown(() => pack.updatesManifest(bad))));
+    eq(accepted, [],
+      `firefox: updates.json: a version Firefox cannot compare — a tag's v, a suffix, nothing at all — is refused (${accepted.join(' | ')})`);
+    eq(['0', '1.21', '1.21.0.4', '10.0.123456789'].map((good) => pack.updatesManifest(good).addons[pack.GECKO_ID].updates[0].version),
+      ['0', '1.21', '1.21.0.4', '10.0.123456789'],
+      'firefox: updates.json: while one to four plain numbers are taken as they are');
+  }
+
+  // ── Which builds the browser updates ──
+  //
+  // FCM.updatedByBrowser is what the background, the popup and the overlay all
+  // ask before they check for, report or offer an update, and it is read off
+  // the running manifest: a Firefox build is only updated by Firefox when it
+  // names an update_url.
+  {
+    const byBrowser = (chrome) => load(makeSandbox(chrome ? { chrome } : {}),
+      'src/shared/namespace.js', 'src/shared/constants.js', 'src/shared/util.js').updatedByBrowser();
+    const running = (m) => ({ runtime: { getManifest: () => JSON.parse(JSON.stringify(m)) } });
+    eq(byBrowser(running(fm)), true, 'firefox: updatedByBrowser: the Firefox manifest a release ships is updated by Firefox');
+    eq(byBrowser(running(manifest)), false, "firefox: updatedByBrowser: Chrome's manifest is not");
+    eq(byBrowser(running(pack.firefoxManifest(manifest, sw, { updateUrl: null }))), false,
+      'firefox: updatedByBrowser: nor is a Firefox manifest without an update_url');
+    eq(byBrowser(running({ browser_specific_settings: { gecko: { update_url: '' } } })), false,
+      'firefox: updatedByBrowser: nor one whose update_url is empty');
+    eq(byBrowser({ runtime: { getManifest: () => { throw new Error('Extension context invalidated.'); } } }), false,
+      'firefox: updatedByBrowser: a manifest that cannot be read answers false, as every build did before');
+    eq(byBrowser(null), false, 'firefox: updatedByBrowser: and so does a page with no extension API at all');
+  }
+
+  // ── The overlay's update strip ──
+  //
+  // The real renderUpdate, lifted out of overlay.js and run over stand-in
+  // elements: the overlay itself cannot be mounted here, but this one function
+  // needs nothing of it but the strip, the close icon and the manifest. A build
+  // Firefox updates by itself is never sent a strip, and one that did arrive
+  // must still offer no file to fetch.
+  {
+    const src = fs.readFileSync(path.join(ROOT, 'src/content/overlay.js'), 'utf8').replace(/\r\n/g, '\n');
+    const start = src.indexOf('\n    function renderUpdate(status) {\n');
+    const end = src.indexOf('\n    }\n', start + 1);
+    ok(start > 0 && end > start, "firefox: strip: (the overlay's renderUpdate is found in overlay.js)");
+    const renderUpdateSource = src.slice(start, end + '\n    }\n'.length);
+    const releases = 'https://github.com/JRBlaze/FriendlyChatExtension/releases';
+    const available = {
+      available: true, version: '9.9.9', url: `${releases}/tag/v9.9.9`,
+      downloadUrl: `${releases}/download/v9.9.9/FriendlyChatExtension-v9.9.9-firefox.xpi`,
+    };
+    const strip = (m, status) => {
+      const sandbox = makeSandbox({
+        chrome: { runtime: { lastError: null, getManifest: () => JSON.parse(JSON.stringify(m)), sendMessage() {} } },
+      });
+      load(sandbox, 'src/shared/namespace.js', 'src/shared/constants.js', 'src/shared/util.js');
+      sandbox.updateEl = stubElement('div', { class: 'fcm-update fcm-hidden' });
+      sandbox.ICONS = { close: '<svg></svg>' };
+      sandbox.document = { createElement: (name) => Object.assign(stubElement(name), { setAttribute() {} }) };
+      vm.runInContext(renderUpdateSource, sandbox, { filename: 'src/content/overlay.js (renderUpdate)' });
+      sandbox.renderUpdate(status);
+      const el = sandbox.updateEl;
+      return {
+        shown: !el.classList.contains('fcm-hidden'),
+        parts: el.children.map((c) => c.className),
+        text: (el.children.find((c) => c.className === 'fcm-update-text') || {}).textContent,
+        links: el.children.filter((c) => c.href).map((c) => c.href),
+      };
+    };
+    for (const [what, m] of [['Chrome', manifest], ['a Firefox package without an update_url', pack.firefoxManifest(manifest, sw, { updateUrl: null })]]) {
+      eq(strip(m, available), {
+        shown: true,
+        parts: ['fcm-update-text', 'fcm-update-link', 'fcm-update-close'],
+        text: 'v9.9.9 is out',
+        links: [available.downloadUrl],
+      }, `firefox: strip: ${what} is shown the version, a link to the file and a way to dismiss it, as before`);
+    }
+    eq(strip(fm, available), {
+      shown: true,
+      parts: ['fcm-update-text', 'fcm-update-close'],
+      text: 'v9.9.9 is out · Firefox updates it by itself',
+      links: [],
+    }, 'firefox: strip: a build Firefox updates by itself says Firefox does it, with no link to any file');
+    eq(strip(fm, { available: false }).shown, false, 'firefox: strip: and with nothing available, shows nothing at all');
+  }
+
+  // ── The real list ──
+  {
+    const list = pack.backgroundScripts(sw);
+    eq(fm.background.scripts, [...list, swPath],
+      "firefox: the event page runs the worker's imports, then the worker");
+    eq(list[0], 'src/shared/namespace.js',
+      'firefox: namespace.js first, so FCM and FCM.BROWSER exist before anything reads them');
+    const absent = list.filter((f) => !fs.existsSync(path.join(ROOT, f)));
+    eq(absent, [], `firefox: every file the worker imports exists (${absent.join(', ')})`);
+    eq(list.length, new Set(list).size, 'firefox: none is imported twice');
+    ok(!list.includes(swPath), 'firefox: and the worker does not import itself');
+    eq(JSON.parse(pack.manifestBytes(ROOT, 'firefox').toString('utf8')), fm,
+      'firefox: the manifest pack.js writes for the tree is the one firefoxManifest makes of it');
+  }
+
+  // ── The redirect the Twitch app has to list ──
+  {
+    const url = pack.firefoxRedirectUrl();
+    const sha1 = require('crypto').createHash('sha1').update(pack.GECKO_ID, 'utf8').digest('hex');
+    eq(url, `https://${sha1}.extensions.allizom.org/`,
+      'firefox: the redirect URL is the SHA-1 of the add-on ID under extensions.allizom.org, as Firefox makes it');
+    ok(/^https:\/\/[0-9a-f]{40}\.extensions\.allizom\.org\/$/.test(url),
+      'firefox: forty lowercase hex characters, and the trailing slash Twitch matches on');
+    ok(pack.firefoxRedirectUrl('another@example.org') !== url,
+      'firefox: and it follows the ID, so a fork gets its own');
+  }
+
+  // ── The command line ──
+  {
+    eq(pack.parseArgs([]), { outDir: null, target: 'all', unpacked: null },
+      'firefox: pack.js with no arguments builds every package');
+    eq(pack.parseArgs(['dist']).target, 'all',
+      'firefox: and so does `node tools/pack.js dist`, which is what the release workflow runs');
+    eq(pack.parseArgs(['out', '--target', 'firefox']), { outDir: 'out', target: 'firefox', unpacked: null },
+      'firefox: --target picks one');
+    eq(pack.parseArgs(['--target=chrome']).target, 'chrome', 'firefox: written with an equals sign as well');
+    eq(pack.parseArgs(['--unpacked', 'dist/firefox']), { outDir: null, target: 'firefox', unpacked: 'dist/firefox' },
+      'firefox: --unpacked on its own writes the Firefox folder, the build that cannot load from the repository');
+    ok(thrown(() => pack.parseArgs(['--unpacked', 'd', '--target', 'all'])),
+      'firefox: --unpacked refuses to put two manifests into one folder');
+    ok(thrown(() => pack.parseArgs(['out', '--unpacked', 'd'])),
+      'firefox: and an output directory it would never use');
+    ok(thrown(() => pack.parseArgs(['--target', 'edge'])),
+      'firefox: an unknown target is refused rather than quietly building Chrome');
+    ok(thrown(() => pack.parseArgs(['--target'])), 'firefox: and so is a flag missing its value');
+    ok(thrown(() => pack.build(ROOT, { target: 'edge' })), 'firefox: build refuses an unknown target too');
+  }
+
+  // ── The unpacked folder ──
+  {
+    const dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'fcm-unpacked-'));
+    try {
+      eq(pack.writeUnpacked(ROOT, dir, 'firefox'), pack.collect(),
+        'firefox: the unpacked folder gets exactly the files the zip does');
+      ok(fs.readFileSync(path.join(dir, 'manifest.json')).equals(pack.manifestBytes(ROOT, 'firefox')),
+        'firefox: under the Firefox manifest');
+      ok(fs.readFileSync(path.join(dir, 'src/content/feed.js'))
+        .equals(fs.readFileSync(path.join(ROOT, 'src/content/feed.js'))),
+      'firefox: with everything else as it is on disk');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+    ok(/refusing/.test(thrown(() => pack.writeUnpacked(ROOT, ROOT, 'firefox'))),
+      "firefox: it will not write Firefox's manifest over the repository's own");
+    contains(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8'), '"service_worker"',
+      "firefox: which is still Chrome's");
+  }
+
+  // ── Top-level names, on a window ──
+  //
+  // On an event page every background script shares one window's global. A
+  // top-level `const location` or `function top` cannot be declared there at
+  // all — the file throws before any of it runs — and the vm sandbox the other
+  // suites boot in has none of those names, so it could never show that. The
+  // rest of the list are names the background reaches through the global, which
+  // a declaration would quietly replace for every file loaded after it.
+  {
+    const CANNOT_REDECLARE = ['window', 'document', 'location', 'top'];
+    const LEANED_ON = [
+      'self', 'globalThis', 'chrome', 'browser', 'fetch', 'WebSocket', 'URL', 'URLSearchParams',
+      'TextEncoder', 'crypto', 'console', 'btoa', 'atob', 'setTimeout', 'clearTimeout', 'setInterval',
+      'clearInterval', 'name', 'status', 'parent', 'frames', 'opener', 'open', 'close', 'origin', 'navigator',
+    ];
+    const declared = [];
+    fm.background.scripts.forEach((rel) => {
+      const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+      const re = /^(?:const|let|var|function|async function|class) +([A-Za-z_$][\w$]*)/gm;
+      let m;
+      while ((m = re.exec(src))) declared.push({ rel, name: m[1] });
+    });
+    ok(declared.some((d) => d.name === 'sessions') && declared.some((d) => d.name === 'syncHeartbeat'),
+      `firefox: the background's top-level declarations were actually found (${declared.length})`);
+    const clashes = declared
+      .filter((d) => CANNOT_REDECLARE.includes(d.name) || LEANED_ON.includes(d.name))
+      .map((d) => `${d.rel}: ${d.name}`);
+    eq(clashes, [], `firefox: no background script declares a name the window already owns (${clashes.join(', ')})`);
+    const counts = {};
+    declared.forEach((d) => { counts[d.name] = (counts[d.name] || 0) + 1; });
+    const twice = Object.keys(counts).filter((n) => counts[n] > 1);
+    eq(twice, [], `firefox: and no name is declared at the top level of two of them (${twice.join(', ')})`);
+  }
+
+  // ── Which browser this is ──
+  {
+    const detect = (globals) => load(makeSandbox(globals), 'src/shared/namespace.js').BROWSER;
+    const served = (origin) => ({ runtime: { getURL: (p) => `${origin}/${p}` } });
+    const MOZ = 'moz-extension://2f9a6c1e-7d4b-4c0e-9a51-3b8e6f0d2c47';
+    const CRX = 'chrome-extension://abcdefghijklmnopabcdefghijklmnop';
+    eq(detect({ chrome: served(MOZ) }), 'firefox',
+      'firefox: an extension served from moz-extension: is running in Firefox');
+    eq(detect({ chrome: served(CRX) }), 'chrome',
+      'firefox: one served from chrome-extension: is running in Chrome');
+    eq(detect({}), 'chrome',
+      'firefox: with no chrome global at all — every sandbox that never stubbed one — the answer is Chrome');
+    eq(detect({ chrome: { storage: {} } }), 'chrome',
+      'firefox: and a stub with no runtime gets an answer rather than an exception');
+    eq(detect({ chrome: { runtime: { getURL: () => { throw new Error('Extension context invalidated.'); } } } }),
+      'chrome', 'firefox: as does an extension context that has gone away');
+    eq(detect({ browser: served(CRX), chrome: served(CRX) }), 'chrome',
+      'firefox: a `browser` global, which Chrome 148 and later have too, does not make it Firefox');
+
+    const again = makeSandbox({ chrome: served(MOZ) });
+    load(again, 'src/shared/namespace.js');
+    again.chrome = served(CRX);
+    eq(load(again, 'src/shared/namespace.js').BROWSER, 'firefox',
+      'firefox: loading namespace.js a second time keeps the answer it already gave');
+
+    const firstScript = (rel) => (/<script src="([^"]+)"/.exec(fs.readFileSync(path.join(ROOT, rel), 'utf8')) || [])[1];
+    eq([firstScript('src/popup/popup.html'), firstScript('src/options/options.html')],
+      ['../shared/namespace.js', '../shared/namespace.js'],
+      'firefox: the popup and the options page load namespace.js before anything else');
+    eq(manifest.content_scripts.map((entry) => (entry.js || [])[0]),
+      manifest.content_scripts.map(() => 'src/shared/namespace.js'),
+      'firefox: and so does every content script entry');
+  }
+
+  // ── What the overlay says and offers, outside Chrome ──
+  //
+  // The overlay cannot be mounted here: it is a shadow root built out of
+  // markup, and there is no DOM to parse that into. So what is held to account
+  // is its source — nothing it shows or logs names Chrome, the pop-out is taken
+  // away where there is nothing to pop out into, and a stylesheet that will not
+  // load is said out loud. tests/harness.html is where each is seen working.
+  {
+    const src = fs.readFileSync(path.join(ROOT, 'src/content/overlay.js'), 'utf8').replace(/\r\n/g, '\n');
+    // Comments name browsers all the time, and should: it is the code that
+    // reaches people. A `//` straight after a colon is an address, not a
+    // comment.
+    const code = src
+      .replace(/(^|\s)\/\*[\s\S]*?\*\//g, '$1')
+      .replace(/(^|[^:\\])\/\/.*$/gm, '$1');
+    // Except to tell Firefox's address apart from it: a Firefox user has to know
+    // that theirs is not the one a Twitch app set up from Chrome already lists.
+    const named = code.split('\n')
+      .filter((l) => /\bChrome\b/.test(l) && !/\bFirefox's address\b/.test(l)).map((l) => l.trim());
+    eq(named, [],
+      `firefox: nothing the overlay shows or logs names Chrome, except to tell Firefox's address from it (${named.join(' | ')})`);
+    contains(code, "toast('This browser cannot open a pop-out window')",
+      'firefox: a browser with no pop-out is told so in words that fit any browser');
+    contains(code, "toast('The browser would not open a pop-out window')",
+      'firefox: and so is one that refuses to open it');
+    contains(code, "[Twitch] The browser would not open the window for Twitch's GIF keyboard. ",
+      "firefox: as is one that refuses the GIF keyboard's window, in the feed");
+    contains(code, "toast('The browser would not open the window — the address is in the feed')",
+      'firefox: and in the toast');
+
+    // Firefox has Document Picture-in-Picture only from 151, so ESR 140 has
+    // none, and a button that can only apologise is not one to offer. It has
+    // to be gone before the viewer can reach it, which is while the overlay is
+    // being built.
+    const built = code.indexOf('FCM.createOverlay = function');
+    const hidden = new RegExp('if \\(!window\\.documentPictureInPicture\\) \\{\\s*'
+      + '\\$\\(\'\\.fcm-actions \\[data-act="([\\w-]+)"\\]\'\\)\\.classList\\.add\\(\'fcm-hidden\'\\);\\s*\\}').exec(code);
+    const wired = code.indexOf("root.querySelectorAll('.fcm-actions [data-act]')");
+    ok(built >= 0 && hidden && hidden.index > built && hidden.index < wired,
+      'firefox: the pop-out button is hidden as the overlay is built, wherever documentPictureInPicture is missing');
+    // And the selector it hides by has to find that button in the overlay's own
+    // markup. `$` is querySelector, so a button renamed in the markup and not
+    // here makes the hide a TypeError that stops the overlay being built at
+    // all — on Firefox 140 to 150 only, since Chrome always has the API and
+    // never runs that line, and no other check here would notice.
+    const act = hidden ? hidden[1] : '';
+    const markupEnd = code.indexOf('const $ = (sel) => root.querySelector(sel);', built);
+    const titleBar = (/<div class="fcm-actions">([\s\S]*?)<\/div>/.exec(code.slice(built, markupEnd)) || [])[1] || '';
+    const buttons = titleBar.match(/<button\b[^>]*>/g) || [];
+    ok(markupEnd > built && buttons.length > 1, `firefox: (the title bar's buttons are found in the overlay's markup: ${buttons.length})`);
+    eq(buttons.filter((b) => b.includes(`data-act="${act}"`)).map((b) => /title="([^"]*)"/.exec(b)[1]),
+      ['Pop out into its own window'],
+      `firefox: the button that hide names (data-act="${act}") is exactly one button in the title bar's markup, the pop-out`);
+    contains(code, `else if (act === '${act}') popOut();`,
+      'firefox: and the one the title bar opens the pop-out for when it is pressed');
+    contains(code, `const btn = $('.fcm-actions [data-act="${act}"]');`,
+      'firefox: and the one refreshPopButton looks after once the panel is popped out');
+
+    const sheet = /fetch\(chrome\.runtime\.getURL\('src\/content\/overlay\.css'\)\)[\s\S]*?\.catch\(\(e\) => \{([\s\S]*?)\n {6}\}\);/
+      .exec(code);
+    ok(sheet && /console\.warn\(/.test(sheet[1]),
+      'firefox: a stylesheet that will not load is reported in the console rather than swallowed');
+    ok(sheet && /if \(stylesheetFailureLogged\) return;/.test(sheet[1])
+      && /^ {2}let stylesheetFailureLogged = false;$/m.test(code),
+    'firefox: once for the page, not once for every channel it goes through');
+
+    // The redirect note. No content script can reach chrome.identity, in either
+    // browser, so the overlay asking it printed an empty box; the address now
+    // comes from the background with the accounts, and so does the browser.
+    missing(code, 'chrome.identity', 'firefox: the overlay no longer asks chrome.identity, which no content script can reach');
+    contains(code, "Twitch must list this browser's redirect URL",
+      "firefox: the note says whose list the redirect URL belongs on");
+    contains(code, '<code class="fcm-code">${FCM.escapeHtml(signInAddress.redirectUri)}</code>',
+      'firefox: and shows the address the background sent');
+    ok(/\$\{signInAddress\.redirectUri \? `<p class="fcm-note">/.test(code),
+      'firefox: leaving the note out until there is an address to show, rather than an empty box');
+    ok(/const onFirefox = signInAddress\.browser === 'firefox';/.test(code),
+      'firefox: telling the browsers apart by what the background said this one is');
+    ok(/\$\{onFirefox\s*\? ` Firefox's address is different from Chrome's; both can be listed on the same app\.` : ''\}/
+      .test(code), "firefox: in Firefox the note adds that it is not Chrome's address, and a Twitch app can list both");
+    ok(new RegExp('onFirefox && authProblem\\.redirectUri && authProblem\\.redirectUri === signInAddress\\.redirectUri'
+      + "\\s*\\? ` This is Firefox's address for the add-on; it is different from Chrome's, and the app can list both\\.`")
+      .test(code), "firefox: and a failed sign-in says the same only of the add-on's own address, not the desktop app's or the proxy's");
+    contains(fs.readFileSync(path.join(ROOT, 'src/content/boot.js'), 'utf8'),
+      'overlay.setAccounts(msg.accounts, { redirectUri: msg.redirectUri, browser: msg.browser });',
+      'firefox: boot.js hands the overlay the address and the browser along with the accounts');
+    eq((sw.match(/type: 'auth'/g) || []).length, 1,
+      'firefox: the background builds an account summary in exactly one place, so none goes out without them');
+  }
+
+  // ── The harnesses, as Firefox ──
+  //
+  // Both HTML harnesses stub the extension API in an inline script. Run here
+  // with the query string a person would add, that stub has to make
+  // namespace.js say Firefox, while every other address the overlay asks for is
+  // still one the harness's own server can answer.
+  {
+    function harness(rel, search) {
+      const html = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+      const script = html.split('<script>').slice(1).map((s) => s.split('</script>')[0])
+        .find((s) => s.includes('window.chrome = {'));
+      const sandbox = makeSandbox({ location: { search }, document: { createElement: () => ({}) } });
+      sandbox.window = sandbox;
+      vm.runInContext(script, sandbox, { filename: rel });
+      load(sandbox, 'src/shared/namespace.js');
+      return sandbox;
+    }
+
+    const asFirefox = harness('tests/harness.html', '?browser=firefox');
+    eq(asFirefox.FCM.BROWSER, 'firefox', 'firefox: tests/harness.html?browser=firefox runs the overlay as Firefox');
+    eq(asFirefox.chrome.runtime.getURL(''), 'moz-extension://harness/',
+      'firefox: by answering for the extension from a moz-extension: address');
+    ok(/^\/src\/content\/overlay\.css\?t=\d+$/.test(asFirefox.chrome.runtime.getURL('src/content/overlay.css')),
+      'firefox: while the stylesheet is still fetched from the server the harness is served by');
+    eq(asFirefox.chrome.identity.getRedirectURL(), pack.firefoxRedirectUrl(),
+      "firefox: and the redirect it shows is this add-on's own, as pack.js works it out");
+
+    const asChrome = harness('tests/harness.html', '');
+    eq(asChrome.FCM.BROWSER, 'chrome', 'firefox: without the switch the harness is Chrome, as it always was');
+    ok(/^\/\?t=\d+$/.test(asChrome.chrome.runtime.getURL(''))
+      && /\.chromiumapp\.org\/$/.test(asChrome.chrome.identity.getRedirectURL()),
+    'firefox: with the same addresses it always gave');
+
+    eq([harness('tests/options-harness.html', '?browser=firefox').FCM.BROWSER,
+      harness('tests/options-harness.html', '?collapsed=1').FCM.BROWSER], ['firefox', 'chrome'],
+    'firefox: tests/options-harness.html takes the same switch, and is Chrome without it');
+  }
+
+  return (async () => {
+    // ── The event page gets to the same place as the worker ──
+    //
+    // One tab through a hello, a join, a message, leaving and closing, booted
+    // each way, with every message posted to the tab compared. Running the same
+    // files in the same order should make the Firefox way indistinguishable from
+    // the Chrome way, and this is what says that it does.
+    async function session(opts) {
+      const w = bootWorker(opts);
+      try {
+        w.connect();
+        w.send({ cmd: 'hello', site: 'twitch', channel: 'somechannel', hints: [] });
+        await wait(80);
+        w.send({ cmd: 'join', platform: 'twitch', channel: 'somechannel' });
+        await wait(60);
+        const irc = w.socketFor('irc-ws.chat.twitch.tv');
+        if (irc) {
+          irc.push('@badges=;color=#00FF00;display-name=Someone;emotes=;id=parity-1;room-id=4242;'
+            + 'tmi-sent-ts=1700000000000;user-id=9 '
+            + ':someone!someone@someone.tmi.twitch.tv PRIVMSG #somechannel :hello from both\r\n');
+        }
+        await wait(80);
+        w.send({ cmd: 'leave', platform: 'twitch' });
+        await wait(40);
+        w.listeners.tabRemoved(1);
+        await wait(20);
+        return { posted: w.posted.map((m) => JSON.stringify(m)), irc: !!irc, loaded: w.loaded };
+      } finally { w.teardown(); }
+    }
+
+    const viaWorker = await session({});
+    const viaScripts = await session({ loadPath: 'scripts' });
+    ok(viaWorker.irc && viaScripts.irc, 'firefox: both boots opened a Twitch socket to push the message into');
+    ok(viaScripts.posted.some((p) => p.includes('"hello from both"')),
+      'firefox: the message reached the tab from the event page');
+    ok(viaScripts.posted.some((p) => p.includes('"type":"ready"'))
+      && viaScripts.posted.some((p) => p.includes('Left Twitch')),
+    "firefox: along with hello's answer and the line saying the chat was left");
+    eq(viaScripts.posted, viaWorker.posted,
+      'firefox: and the event page posted exactly what the service worker did, in the same order');
+    eq(viaScripts.loaded.slice(0, -1), viaWorker.loaded.slice(1),
+      'firefox: having run the same files in the same order');
+
+    // ── The guard in front of importScripts ──
+    {
+      const w = bootWorker({ loadPath: 'scripts', browser: 'firefox' });
+      try {
+        eq(typeof w.sandbox.importScripts, 'undefined', 'firefox: the event page has no importScripts');
+        ok(w.sandbox.window === w.sandbox, 'firefox: and is a window, as an event page is');
+        eq(w.loaded, fm.background.scripts, 'firefox: every file in background.scripts ran, in order');
+        eq(typeof w.listeners.connect, 'function',
+          'firefox: and the worker file still got as far as registering its port listener');
+        ok(['message', 'tabRemoved', 'alarm'].every((k) => typeof w.listeners[k] === 'function'),
+          'firefox: and every other listener it registers at the top level');
+        eq(w.sandbox.FCM.BROWSER, 'firefox', 'firefox: where FCM.BROWSER says Firefox');
+      } finally { w.teardown(); }
+    }
+    {
+      const w = bootWorker();
+      try {
+        eq(w.loaded, [swPath, ...pack.backgroundScripts(sw)],
+          "firefox: Chrome's worker still starts itself and imports the same list");
+        eq(w.sandbox.FCM.BROWSER, 'chrome', 'firefox: where FCM.BROWSER says Chrome');
+      } finally { w.teardown(); }
+    }
+    {
+      // Taken away again, to show the checks above would notice it going: the
+      // same file with an unconditional call dies on its very first statement.
+      const guard = "if (typeof importScripts === 'function') {";
+      ok(sw.includes(guard), 'firefox: the worker guards its importScripts call');
+      let error = null;
+      try {
+        vm.runInContext(sw.replace(guard, 'if (true) {'), makeSandbox(), { filename: swPath });
+      } catch (e) { error = e; }
+      ok(error && /importScripts is not defined/.test(error.message),
+        'firefox: and without the guard an event page throws before a single listener is registered');
+    }
+
+    // ── The real content script, talking to the event page ──
+    {
+      const { bootPair } = require('./endtoend.js');
+      const t = bootPair('/alpha', { loadPath: 'scripts', browser: 'firefox' });
+      try {
+        await wait(300);
+        eq(t.joins(), ['JOIN #alpha'],
+          'firefox: the content script and the event page between them join the channel the tab opened on');
+      } finally { t.teardown(); }
+    }
+
+    // ── The update check asks for this browser's own package ──
+    //
+    // A release carries a file for each browser. The check used to take the
+    // first .zip, which was whichever one GitHub listed first: Chrome could be
+    // offered Firefox's package, and Firefox Chrome's. Each build now asks for
+    // its own by name, and a release without it offers the release page.
+    {
+      const version = '99.0.0';
+      const download = (name) => `https://github.com/JRBlaze/FriendlyChatExtension/releases/download/v${version}/${name}`;
+      const CHROME_ZIP = pack.releaseAssetName(version, 'chrome');
+      const FIREFOX_UNSIGNED = pack.releaseAssetName(version, 'firefox');
+      const FIREFOX_XPI = pack.releaseAssetName(version, 'firefox-xpi');
+      // A Firefox package built without an update_url, which is the only kind
+      // that still asks GitHub: a signed release names one, and Firefox updates
+      // it by itself (the next block).
+      const FIREFOX = { loadPath: 'scripts', browser: 'firefox', updateUrl: null };
+
+      async function offered(opts, names) {
+        const w = bootWorker({
+          ...opts,
+          fetchImpl: async (url) => (String(url).includes('api.github.com')
+            ? {
+              ok: true,
+              json: async () => ({
+                tag_name: `v${version}`,
+                html_url: `https://github.com/JRBlaze/FriendlyChatExtension/releases/tag/v${version}`,
+                assets: names.map((name) => ({ name, browser_download_url: download(name) })),
+              }),
+            }
+            : { ok: false, status: 404, json: async () => ({}) }),
+        });
+        try { return await w.sandbox.FCM.checkForUpdate(true); } finally { w.teardown(); }
+      }
+
+      // Firefox's files first, and a Firefox .zip among them: the order and the
+      // name that caught Chrome out. (No release carries a Firefox .zip any
+      // more — the Chrome builds that took the first .zip are still installed,
+      // and the release suite holds releases to that — but this build must not
+      // take one even if it did.)
+      const both = [`FriendlyChatExtension-v${version}-firefox.zip`, FIREFOX_UNSIGNED, FIREFOX_XPI, CHROME_ZIP];
+      const toChrome = await offered({}, both);
+      const toFirefox = await offered(FIREFOX, both);
+      eq(toChrome.downloadUrl, download(CHROME_ZIP),
+        'firefox: from a release carrying both packages, Chrome is offered its own zip, not the first one listed');
+      eq(toFirefox.downloadUrl, download(FIREFOX_XPI),
+        "firefox: and Firefox the signed add-on, not the unsigned package beside it or Chrome's");
+      ok(toChrome.available && toFirefox.available, 'firefox: both being told there is an update');
+
+      const noAddOn = await offered(FIREFOX, [FIREFOX_UNSIGNED, CHROME_ZIP]);
+      eq(noAddOn.downloadUrl, '', 'firefox: a release without the Firefox add-on gives Firefox no download at all');
+      ok(noAddOn.available && noAddOn.url.endsWith(`/releases/tag/v${version}`),
+        'firefox: only the release page, with the update still announced');
+      eq((await offered({}, [FIREFOX_UNSIGNED, FIREFOX_XPI])).downloadUrl, '',
+        "firefox: and a release without Chrome's zip never hands Chrome one of Firefox's");
+      eq((await offered({}, ['FriendlyChatExtension-v98.0.0.zip'])).downloadUrl, '',
+        'firefox: nor a file named for some other version');
+
+      // Asked for by the names tools/pack.js gives a release's files, which is
+      // also the file updates.json sends every signed install to. For the
+      // version in the manifest and for one that is not, so neither side can be
+      // taking the version from somewhere the other is not; and for a signed
+      // build as well, whose check is off but whose name still has to agree.
+      const chromeWorker = bootWorker();
+      const firefoxWorker = bootWorker(FIREFOX);
+      const signedWorker = bootWorker({ loadPath: 'scripts', browser: 'firefox' });
+      try {
+        for (const v of [manifest.version, version]) {
+          eq(chromeWorker.sandbox.FCM.releaseAssetName(v), pack.releaseAssetName(v, 'chrome'),
+            `firefox: for v${v}, the file Chrome's update check looks for is the one pack.js names for Chrome`);
+          eq(firefoxWorker.sandbox.FCM.releaseAssetName(v), pack.releaseAssetName(v, 'firefox-xpi'),
+            `firefox: for v${v}, Firefox's is the signed add-on pack.js names`);
+          eq(signedWorker.sandbox.FCM.releaseAssetName(v), pack.releaseAssetName(v, 'firefox-xpi'),
+            `firefox: for v${v}, on a build with an update_url too`);
+        }
+        eq(chromeWorker.sandbox.FCM.releaseAssetName(manifest.version), pack.assetName(ROOT, 'chrome'),
+          'firefox: the file Chrome looks for is the one pack.js builds for Chrome');
+        eq(firefoxWorker.sandbox.FCM.releaseAssetName(manifest.version), pack.assetName(ROOT, 'firefox-xpi'),
+          "firefox: and Firefox's is pack.js's Firefox archive, signed, under the same name");
+        eq(pack.updatesManifest(manifest.version).addons[pack.GECKO_ID].updates[0].update_link.split('/').pop(),
+          firefoxWorker.sandbox.FCM.releaseAssetName(manifest.version),
+          'firefox: which is the very file updates.json sends every signed install to');
+      } finally {
+        chromeWorker.teardown();
+        firefoxWorker.teardown();
+        signedWorker.teardown();
+      }
+    }
+
+    // ── A signed build leaves updating to Firefox ──
+    //
+    // A Firefox manifest that names an update_url is updated by Firefox, from
+    // that address, so the extension's own check has nothing to do there: no
+    // alarm, not one request to GitHub, nothing reported, no dot. An update a
+    // build without an update_url found and stored, and the alarm it left
+    // scheduled, must not bring any of it back. Chrome, and a Firefox package
+    // without an update_url, go on exactly as they did.
+    {
+      const version = '99.0.0';
+      const XPI = `FriendlyChatExtension-v${version}-firefox.xpi`;
+      const releases = 'https://github.com/JRBlaze/FriendlyChatExtension/releases';
+      const UPDATE = load(makeSandbox(), 'src/shared/namespace.js', 'src/shared/constants.js').STORAGE_KEYS.update;
+      const stored = () => ({
+        local: {
+          [UPDATE]: { latest: version, url: `${releases}/tag/v${version}`, downloadUrl: `${releases}/download/v${version}/${XPI}` },
+        },
+      });
+      const leftScheduled = { 'fcm-update-check': { periodInMinutes: 360, delayInMinutes: 1 } };
+      // Every address the background fetches, and a GitHub that would answer
+      // with a newer release if it were asked.
+      const booted = (opts) => {
+        const requests = [];
+        const w = bootWorker({
+          ...opts,
+          fetchImpl: async (url) => {
+            requests.push(String(url));
+            return String(url).includes('api.github.com')
+              ? {
+                ok: true,
+                json: async () => ({
+                  tag_name: `v${version}`,
+                  html_url: `${releases}/tag/v${version}`,
+                  assets: [{ name: XPI, browser_download_url: `${releases}/download/v${version}/${XPI}` }],
+                }),
+              }
+              : { ok: false, status: 404, json: async () => ({}) };
+          },
+        });
+        return { w, github: () => requests.filter((u) => u.includes('api.github.com')) };
+      };
+      const asked = (w, msg) => new Promise((resolve) => { w.listeners.message(msg, {}, resolve); });
+      const SIGNED = { loadPath: 'scripts', browser: 'firefox' };
+
+      {
+        const { w, github } = booted({ ...SIGNED, seed: stored(), alarms: leftScheduled });
+        try {
+          eq(w.manifest.browser_specific_settings.gecko.update_url, pack.UPDATE_URL,
+            'firefox: self-updating: (booted under the Firefox manifest a release ships, update_url and all)');
+          ok(w.sandbox.FCM.updatedByBrowser(), 'firefox: self-updating: the background can tell Firefox updates it');
+          await wait(60);
+          ok(!w.alarms.has('fcm-update-check'),
+            'firefox: self-updating: the update check an earlier build left scheduled is taken away');
+          w.sandbox.FCM.watchForUpdates();
+          await wait(20);
+          ok(!w.alarms.has('fcm-update-check'), 'firefox: self-updating: and a later start schedules none');
+
+          const status = await w.sandbox.FCM.updateStatus();
+          eq([status.available, status.version, status.downloadUrl, status.installed], [false, '', '', manifest.version],
+            'firefox: self-updating: nothing is reported as available, even with a newer release stored');
+          const checked = await w.sandbox.FCM.checkForUpdate(true);
+          eq([checked.available, checked.checked, checked.downloadUrl], [false, false, ''],
+            'firefox: self-updating: a check asked for directly makes none, says it made none, and finds nothing');
+          const popupAsked = await asked(w, { cmd: 'updateCheck' });
+          eq([popupAsked.available, popupAsked.checked], [false, false],
+            "firefox: self-updating: and so does the popup's 'updateCheck' message");
+          eq((await asked(w, { cmd: 'updateStatus' })).available, false,
+            "firefox: self-updating: as does its 'updateStatus'");
+
+          const tab = w.makeTab(1).connect();
+          tab.send({ cmd: 'hello', site: 'twitch', channel: 'alpha', hints: [] });
+          w.listeners.alarm({ name: 'fcm-update-check' });
+          await wait(80);
+          eq(github(), [],
+            'firefox: self-updating: not one request goes to api.github.com — at start, when asked, or when the old alarm fires');
+          eq(tab.of('update'), [], 'firefox: self-updating: no tab is told about an update');
+          eq(w.badge.text, '', 'firefox: self-updating: and no dot is painted on the toolbar icon');
+          await w.sandbox.FCM.dismissUpdate(version);
+          await wait(20);
+          eq(w.badge.text, '', 'firefox: self-updating: nor by dismissing one');
+        } finally { w.teardown(); }
+      }
+      {
+        const { w } = booted({ ...SIGNED });
+        try {
+          await wait(60);
+          eq([...w.alarms.keys()].filter((name) => name === 'fcm-update-check'), [],
+            'firefox: self-updating: a fresh install never schedules an update check');
+        } finally { w.teardown(); }
+      }
+
+      for (const [what, opts] of [
+        ['Chrome', {}],
+        ['a Firefox package without an update_url', { ...SIGNED, updateUrl: null }],
+      ]) {
+        {
+          const { w, github } = booted({ ...opts, seed: stored() });
+          try {
+            ok(!w.sandbox.FCM.updatedByBrowser(), `firefox: ${what}: is not updated by the browser`);
+            await wait(60);
+            ok(w.alarms.has('fcm-update-check'), `firefox: ${what}: still schedules the update check`);
+            ok((await w.sandbox.FCM.updateStatus()).available, `firefox: ${what}: still reports the stored update`);
+            eq(w.badge.text, '●', `firefox: ${what}: still paints the dot`);
+            const tab = w.makeTab(1).connect();
+            tab.send({ cmd: 'hello', site: 'twitch', channel: 'alpha', hints: [] });
+            w.listeners.alarm({ name: 'fcm-update-check' });
+            await wait(80);
+            eq(github().length, 1, `firefox: ${what}: and the alarm still asks GitHub`);
+            ok(tab.of('update').length > 0, `firefox: ${what}: with the tab told about the update`);
+          } finally { w.teardown(); }
+        }
+        {
+          const { w } = booted({ ...opts, alarms: leftScheduled });
+          try {
+            await wait(60);
+            eq(w.alarms.get('fcm-update-check'), leftScheduled['fcm-update-check'],
+              `firefox: ${what}: an update check already scheduled is left alone`);
+          } finally { w.teardown(); }
+        }
+      }
+    }
+
+    // ── A heartbeat that keeps an event page up ──
+    //
+    // Firefox puts an idle event page away after thirty seconds, and an open
+    // socket does not count as activity; an alarm firing does. So there the
+    // alarm has to come well inside those thirty seconds, while Chrome keeps the
+    // thirty-second beat it has always had.
+    {
+      const periods = {};
+      for (const [name, opts] of [
+        ['firefox', { loadPath: 'scripts', browser: 'firefox' }],
+        ['chrome', {}],
+        ['chrome, from background.scripts', { loadPath: 'scripts' }],
+      ]) {
+        const w = bootWorker(opts);
+        try {
+          const tab = w.makeTab(1).connect();
+          tab.send({ cmd: 'hello', site: 'twitch', channel: 'alpha', hints: [] });
+          await wait(40);
+          tab.send({ cmd: 'join', platform: 'twitch', channel: 'alpha' });
+          await wait(40);
+          const alarm = w.alarms.get('fcm-heartbeat');
+          periods[name] = alarm ? alarm.periodInMinutes : null;
+        } finally { w.teardown(); }
+      }
+      eq(periods.firefox, 0.25, 'firefox: with a tab joined, the event page gets a heartbeat every fifteen seconds');
+      ok(periods.firefox * 60 < 30,
+        'firefox: which is inside the thirty seconds Firefox lets an idle event page live, not level with them');
+      eq(periods.chrome, 0.5, "firefox: Chrome's service worker keeps its heartbeat every thirty");
+      eq(periods['chrome, from background.scripts'], 0.5,
+        'firefox: and the period follows the browser, not the way the files were loaded');
+    }
+
+    // ── The sign-in address, sent with every account summary ──
+    //
+    // The overlay shows the redirect URL a platform has to list and cannot ask
+    // for it: chrome.identity is not there for content scripts. So the
+    // background sends it with the accounts, with the browser it belongs to.
+    for (const [browser, opts] of [['chrome', {}], ['firefox', { loadPath: 'scripts', browser: 'firefox' }]]) {
+      const w = bootWorker(opts);
+      try {
+        const address = w.sandbox.chrome.identity.getRedirectURL();
+        const tab = w.makeTab(1).connect();
+        tab.send({ cmd: 'authStatus' });
+        await wait(30);
+        tab.send({ cmd: 'disconnectAccount', platform: 'twitch' });
+        await wait(30);
+        await w.sandbox.FCM.auth.onCleared('kick');
+        const summaries = tab.of('auth');
+        eq(summaries.length, 3,
+          `firefox: ${browser}: asking, signing out, and an account the store gave up on each send the tab a summary`);
+        eq(summaries.map((m) => [m.redirectUri, m.browser]), summaries.map(() => [address, browser]),
+          `firefox: ${browser}: and every one carries the extension's sign-in address and the browser`);
+        ok(browser === 'firefox'
+          ? address === pack.firefoxRedirectUrl()
+          : /^https:\/\/[a-z]+\.chromiumapp\.org\/$/.test(address),
+        `firefox: ${browser}: which is ${browser === 'firefox' ? "the add-on's allizom.org address" : "Chrome's chromiumapp.org one"}`);
+      } finally { w.teardown(); }
+    }
+
+    // ── A Firefox sign-in's own explanation reaches the tab as written ──
+    //
+    // Both refusals a Firefox Kick sign-in can now make before opening anything
+    // name the proxy, and the explainer reads anything naming the proxy as the
+    // proxy being unreachable — the wrong problem, and the wrong fix, for both.
+    for (const [what, settings, extra, words] of [
+      ['an old proxy', { kickRedirect: 'proxy', kickProxyUrl: 'https://proxy.example' }, {}, 'Redeploy it'],
+      ['no leave to read localhost', {}, { grants: [] }, 'under Site access'],
+    ]) {
+      const w = bootWorker({
+        loadPath: 'scripts',
+        browser: 'firefox',
+        ...extra,
+        fetchImpl: async (url) => (String(url).includes('/kick-config')
+          ? { ok: true, json: async () => ({ client_id: 'kick-cid' }) }
+          : { ok: false, status: 404, json: async () => ({}) }),
+      });
+      try {
+        w.storage.local[w.sandbox.FCM.STORAGE_KEYS.settings] = { ...settings, savedAt: Date.now() };
+        const tab = w.makeTab(1).connect();
+        tab.send({ cmd: 'connectAccount', platform: 'kick' });
+        await wait(40);
+        const failure = tab.last('authError');
+        contains(failure && failure.message, words, `firefox: ${what}: the tab is told what to do about it`);
+        missing(failure && failure.message, 'Could not reach the Kick proxy',
+          `firefox: ${what}: not that the proxy could not be reached`);
+        eq(failure && failure.needsRedirectSetup, false, `firefox: ${what}: and is not sent to register a redirect`);
+      } finally { w.teardown(); }
+    }
+
+    // ── What the worker forwards a sign-in to, and how it starts one ──
+    //
+    // /kick-callback hands Kick's code on to whatever address the state names,
+    // so its allow-list is all that stands between it and an open redirect. It
+    // now holds Firefox's addresses as well as Chrome's, and each has to be
+    // exactly the shape a browser makes, not something that merely resembles
+    // one.
+    {
+      const worker = loadWorker();
+      const encode = (text) => Buffer.from(text, 'binary').toString('base64')
+        .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+      const stateFor = (target) => `n0nce~${encode(target)}`;
+      const CHROME_ID = 'bbjieacidkcngofgddlfipiajcchdaik';
+      const HASH = /^https:\/\/([0-9a-f]{40})\./.exec(pack.firefoxRedirectUrl())[1];
+      const CHROME = `https://${CHROME_ID}.chromiumapp.org/`;
+      const FIREFOX = `https://${HASH}.extensions.allizom.org/`;
+
+      [
+        [CHROME, "a Chrome extension's address"],
+        [CHROME.slice(0, -1), "a Chrome extension's address without its trailing slash"],
+        [FIREFOX, "a Firefox add-on's address"],
+        [FIREFOX.slice(0, -1), "a Firefox add-on's address without its trailing slash"],
+      ].forEach(([target, what]) => {
+        eq(worker.decodeTarget(stateFor(target)), target, `firefox: worker: forwards to ${what}`);
+      });
+
+      [
+        [`https://${HASH.toUpperCase()}.extensions.allizom.org/`, 'a hash in uppercase'],
+        [`https://${HASH.slice(1)}.extensions.allizom.org/`, 'a hash of 39 characters'],
+        [`https://${HASH}a.extensions.allizom.org/`, 'a hash of 41'],
+        [`https://${HASH.slice(0, -1)}g.extensions.allizom.org/`, 'a hash with a character that is not hex'],
+        [`https://${HASH}.extensions.allizom.org.evil.com/`, "the allizom.org host with somebody else's domain after it"],
+        [`https://x.${HASH}.extensions.allizom.org/`, 'an extra label in front of the hash'],
+        [`http://${HASH}.extensions.allizom.org/`, 'plain http'],
+        [`${FIREFOX}path`, 'a path'],
+        [`${FIREFOX}?q`, 'a query'],
+        [`${FIREFOX}#f`, 'a fragment'],
+        [`https://user@${HASH}.extensions.allizom.org/`, 'userinfo in front of the host'],
+        [`https://${HASH}.extensions.allizom.org:443/`, 'a port, even the one https uses anyway'],
+        [`http://127.0.0.1/mozoauth2/${HASH}`, "Firefox's loopback form, which the extension never uses"],
+        [`${FIREFOX}\n`, 'a trailing newline'],
+        [`https://${CHROME_ID.slice(1)}.chromiumapp.org/`, 'a Chrome ID of 31 letters'],
+        [`https://${CHROME_ID}a.chromiumapp.org/`, 'a Chrome ID of 33'],
+        [`https://${CHROME_ID.slice(0, -1)}q.chromiumapp.org/`, 'a letter no Chrome ID uses'],
+        [`https://${CHROME_ID}.chromiumapp.org.evil.com/`, "the chromiumapp.org host with somebody else's domain after it"],
+        [`${CHROME}#f`, 'a Chrome address with a fragment'],
+        ['https://evil.example/', 'anywhere else at all'],
+      ].forEach(([target, what]) => {
+        eq(worker.decodeTarget(stateFor(target)), null, `firefox: worker: refuses ${what}`);
+      });
+      eq(worker.decodeTarget('n0nce~!!!!'), null, 'firefox: worker: refuses a target that is not base64');
+      eq(worker.decodeTarget(encode(FIREFOX)), null, 'firefox: worker: and a state with no ~ to find a target after');
+      eq(worker.decodeTarget('n0nce~'), null, 'firefox: worker: or nothing after it');
+
+      // A deployment can pin the hosts it serves. Unset, which is the default,
+      // it serves every extension's address.
+      const pinned = { ALLOWED_REDIRECT_HOSTS: ` ${HASH}.extensions.allizom.org , ` };
+      eq(worker.decodeTarget(stateFor(FIREFOX), pinned), FIREFOX,
+        'firefox: worker: ALLOWED_REDIRECT_HOSTS still forwards to a host it lists');
+      eq(worker.decodeTarget(stateFor(CHROME), pinned), null,
+        'firefox: worker: and to no other, however well-formed');
+      eq(worker.decodeTarget(stateFor('https://evil.example/'), { ALLOWED_REDIRECT_HOSTS: 'evil.example' }), null,
+        'firefox: worker: pinning a host only ever narrows the shapes, and cannot add one');
+      eq(worker.decodeTarget(stateFor(CHROME), { ALLOWED_REDIRECT_HOSTS: ' , ' }), CHROME,
+        'firefox: worker: and a list with nothing in it pins nothing');
+
+      const env = { KICK_CLIENT_ID: 'worker-kick-cid', KICK_CLIENT_SECRET: 'secret', TWITCH_CLIENT_ID: 'tw-cid' };
+      const page = async (res) => ({
+        status: res.status,
+        type: res.headers.get('Content-Type') || '',
+        location: res.headers.get('Location'),
+        text: await res.text(),
+      });
+      const NO_TARGET = 'This sign-in link did not name a browser-extension address this proxy returns to. '
+        + 'Start the sign-in again from the extension.';
+
+      // /kick-callback, handing Kick's answer to the add-on.
+      {
+        const state = stateFor(FIREFOX);
+        const res = await worker.fetch(
+          `https://proxy.example/kick-callback?code=CODE&state=${encodeURIComponent(state)}&scope=chat%3Awrite`,
+          undefined, env
+        );
+        eq(res.status, 302, "firefox: worker: /kick-callback answers a Firefox add-on's state with a redirect");
+        const to = new URL(res.headers.get('Location'));
+        eq(to.host, `${HASH}.extensions.allizom.org`, "firefox: worker: to the add-on's allizom.org host");
+        ok(res.headers.get('Location').startsWith(FIREFOX),
+          "firefox: worker: beginning with the very address Firefox's sign-in window is waiting for");
+        eq([to.searchParams.get('code'), to.searchParams.get('state'), to.searchParams.get('scope')],
+          ['CODE', state, 'chat:write'], 'firefox: worker: carrying everything Kick sent back, unaltered');
+
+        const refused = await page(await worker.fetch(
+          `https://proxy.example/kick-callback?code=CODE&state=${encodeURIComponent(stateFor('https://evil.example/'))}`,
+          undefined, env
+        ));
+        eq([refused.status, refused.location], [400, null],
+          'firefox: worker: /kick-callback refuses any other address, and sends nobody anywhere');
+        ok(refused.type.includes('text/html') && refused.text.includes(NO_TARGET),
+          'firefox: worker: with a page saying the link named no extension address it returns to');
+      }
+
+      // /kick-authorize, starting a Firefox sign-in.
+      {
+        const state = stateFor(FIREFOX);
+        const asked = new URLSearchParams({
+          scope: 'user:read chat:write',
+          code_challenge: 'CHALLENGE',
+          code_challenge_method: 'S256',
+          state,
+          // What a caller might try to choose for itself.
+          client_id: 'somebody-elses-app',
+          redirect_uri: 'https://evil.example/collect',
+          response_type: 'token',
+        });
+        const res = await worker.fetch(`https://proxy.example/kick-authorize?${asked}`, undefined, env);
+        eq(res.status, 302, 'firefox: worker: /kick-authorize bounces the sign-in on');
+        const to = new URL(res.headers.get('Location'));
+        eq(`${to.origin}${to.pathname}`, 'https://id.kick.com/oauth/authorize',
+          "firefox: worker: to Kick's own consent page and nowhere else");
+        eq(to.searchParams.getAll('client_id'), ['worker-kick-cid'],
+          "firefox: worker: under the worker's client id, whatever the link asked for");
+        eq(to.searchParams.getAll('redirect_uri'), ['https://proxy.example/kick-callback'],
+          "firefox: worker: returning to the worker's own callback, whatever the link asked for");
+        eq(to.searchParams.getAll('response_type'), ['code'], 'firefox: worker: as a code flow, whatever the link asked for');
+        eq([to.searchParams.get('scope'), to.searchParams.get('code_challenge'),
+          to.searchParams.get('code_challenge_method'), to.searchParams.get('state')],
+        ['user:read chat:write', 'CHALLENGE', 'S256', state],
+        'firefox: worker: with the scopes, the PKCE challenge and the state passed on as they came');
+
+        const elsewhere = await worker.fetch(
+          `https://friendly-chat-kick-proxy.jrblaze.workers.dev/kick-authorize?${asked}`, undefined, env
+        );
+        eq(new URL(elsewhere.headers.get('Location')).searchParams.get('redirect_uri'),
+          'https://friendly-chat-kick-proxy.jrblaze.workers.dev/kick-callback',
+          'firefox: worker: the callback is always on whichever worker was asked');
+
+        const bad = await page(await worker.fetch(
+          `https://proxy.example/kick-authorize?state=${encodeURIComponent(stateFor('https://evil.example/'))}&client_id=x`,
+          undefined, env
+        ));
+        eq([bad.status, bad.location], [400, null],
+          'firefox: worker: a state naming any other address gets a 400 and no bounce at all');
+        ok(bad.type.includes('text/html') && bad.text.includes(NO_TARGET),
+          'firefox: worker: but a page saying what was wrong with the link');
+        eq((await page(await worker.fetch('https://proxy.example/kick-authorize', undefined, env))).status, 400,
+          'firefox: worker: as does a link with no state at all');
+        const unset = await page(await worker.fetch(
+          `https://proxy.example/kick-authorize?state=${encodeURIComponent(state)}`, undefined, {}
+        ));
+        eq([unset.status, unset.location], [400, null], 'firefox: worker: a worker with no Kick client id bounces nobody');
+        contains(unset.text, 'This proxy holds no Kick client id.', 'firefox: worker: and says it holds none');
+        eq((await worker.fetch(`https://proxy.example/kick-authorize?${asked}`, { method: 'POST' }, env)).status, 404,
+          'firefox: worker: and only a GET starts a sign-in');
+      }
+
+      // /kick-config, saying what the worker can do.
+      {
+        const config = await (await worker.fetch('https://proxy.example/kick-config', undefined, env)).json();
+        eq(config, { client_id: 'worker-kick-cid', features: ['kick-authorize', 'allizom-redirect'] },
+          'firefox: worker: /kick-config lists what the worker can do beside its client id');
+        ok(fs.readFileSync(path.join(ROOT, 'src/background/auth.js'), 'utf8').includes("features.includes('kick-authorize')"),
+          'firefox: worker: under the very name the extension looks for before sending Firefox to /kick-authorize');
+      }
+    }
+
+    // ── Site access: what Firefox is not letting the add-on use ──
+    //
+    // Firefox grants an add-on's sites at install and then lets anyone take any
+    // of them back, and an update that adds one is installed without it. So the
+    // add-on asks what it really has (FCM.hostAccess), and says what is missing
+    // where it can: a line in the feed for a service, the toolbar badge for
+    // Twitch or Kick themselves. Chrome does none of it.
+    {
+      const util = (chrome) => load(makeSandbox(chrome === undefined ? {} : { chrome }),
+        'src/shared/namespace.js', 'src/shared/constants.js', 'src/shared/util.js');
+      function asking(answer) {
+        const asked = [];
+        const FCM = util({
+          runtime: {
+            getURL: (p = '') => `moz-extension://2f9a6c1e-7d4b-4c0e-9a51-3b8e6f0d2c47/${p}`,
+            getManifest: () => ({ version: '1.2.3', host_permissions: fm.host_permissions }),
+          },
+          permissions: { contains: (query) => { asked.push(query); return answer(query); } },
+        });
+        return { FCM, asked };
+      }
+      // Firefox's answer for a set of granted patterns: yes for any origin one
+      // of them covers, not only for one written the same.
+      const granting = (grants) => async ({ origins }) => origins.every((o) => grants.some((g) => patternCovers(g, o)));
+      const grantedBut = (...gone) => granting(fm.host_permissions.filter((o) => !gone.includes(o)));
+      const TWITCH = '*://*.twitch.tv/*';
+      const KICK = '*://*.kick.com/*';
+
+      {
+        const { FCM, asked } = asking(grantedBut());
+        eq(await FCM.hostAccess(), { origins: fm.host_permissions, missing: [], sitesMissing: [] },
+          'firefox: hostAccess: with every site granted, nothing is missing');
+        eq(asked, fm.host_permissions.map((o) => ({ origins: [o] })),
+          'firefox: hostAccess: having asked about each origin the manifest lists, one at a time and in order');
+      }
+      {
+        const { FCM } = asking(grantedBut('https://7tv.io/*', KICK, 'http://localhost/*'));
+        const found = await FCM.hostAccess();
+        eq(found.missing, [KICK, 'http://localhost/*', 'https://7tv.io/*'],
+          "firefox: hostAccess: the ones not granted, in the manifest's order");
+        eq(found.sitesMissing, [KICK],
+          'firefox: hostAccess: and which of those is a site the overlay is drawn on');
+      }
+      {
+        const { FCM } = asking(async ({ origins }) => {
+          if (origins[0] === 'https://7tv.io/*') throw new Error('No such permission');
+          return origins[0] !== 'https://api.frankerfacez.com/*';
+        });
+        eq((await FCM.hostAccess()).missing, ['https://api.frankerfacez.com/*'],
+          'firefox: hostAccess: a question that is refused counts as granted, and the rest are still asked');
+      }
+
+      // A site allowed one address at a time. Firefox's extensions menu grants
+      // "Always allow on www.twitch.tv" as that address alone, and "Only when
+      // clicked" takes the whole-site grant away first. The overlay is drawn on
+      // the channel pages all the same, so the site is not missing — unless the
+      // address allowed is not the one those pages are on.
+      for (const [what, site, grants, stillMissing] of [
+        ['www.twitch.tv, in either scheme', TWITCH, ['*://www.twitch.tv/*'], false],
+        ['www.twitch.tv over https and over http, a grant for each', TWITCH, ['https://www.twitch.tv/*', 'http://www.twitch.tv/*'], false],
+        ['kick.com', KICK, ['*://kick.com/*'], false],
+        ['twitch.tv without the www', TWITCH, ['*://twitch.tv/*'], true],
+        ['clips.twitch.tv', TWITCH, ['*://clips.twitch.tv/*'], true],
+        ['www.twitch.tv over plain http alone', TWITCH, ['http://www.twitch.tv/*'], true],
+        ['www.kick.com', KICK, ['*://www.kick.com/*'], true],
+      ]) {
+        const { FCM, asked } = asking(granting([...fm.host_permissions.filter((o) => o !== site), ...grants]));
+        const found = await FCM.hostAccess();
+        eq([found.missing.includes(site), found.sitesMissing], [stillMissing, stillMissing ? [site] : []],
+          `firefox: hostAccess: ${FCM.originLabel(site)} allowed only on ${what} ${stillMissing
+            ? 'is still missing, the overlay not being drawn there' : 'is not missing, since that is where the overlay is drawn'}`);
+        eq(asked.slice(fm.host_permissions.indexOf(site) + 1, fm.host_permissions.indexOf(site) + 2), [{ origins: FCM.SITE_PAGES[site] }],
+          `firefox: hostAccess: (${what}: the address the overlay is drawn on is asked about straight after the whole site)`);
+      }
+      {
+        const { FCM } = asking(({ origins }) => {
+          if (origins[0] === fm.host_permissions[0]) throw new TypeError('permissions.contains is not a function');
+          return Promise.resolve(false);
+        });
+        eq((await FCM.hostAccess()).missing, fm.host_permissions.slice(1),
+          'firefox: hostAccess: as does one that throws where it is asked');
+      }
+      {
+        const noApi = util({ runtime: { getManifest: () => ({ version: '1.2.3', host_permissions: fm.host_permissions }) } });
+        eq(await noApi.hostAccess(), { origins: fm.host_permissions, missing: [], sitesMissing: [] },
+          'firefox: hostAccess: with no permissions API at all, as in a content script, every origin counts as granted');
+        eq(await util().hostAccess(), { origins: [], missing: [], sitesMissing: [] },
+          'firefox: hostAccess: with no extension API whatever, there is simply nothing to check');
+        const unlisted = util({ runtime: { getManifest: () => ({ version: '1.2.3' }) }, permissions: { contains: async () => false } });
+        eq(await unlisted.hostAccess(), { origins: [], missing: [], sitesMissing: [] },
+          'firefox: hostAccess: nor in a manifest that lists no host permissions');
+      }
+      {
+        const FCM = util();
+        eq(FCM.SITE_ORIGINS.filter((o) => manifest.host_permissions.includes(o) && fm.host_permissions.includes(o)),
+          FCM.SITE_ORIGINS, 'firefox: the two sites are written exactly as both manifests list them');
+        eq([...new Set(manifest.content_scripts.flatMap((entry) => entry.matches))], FCM.SITE_ORIGINS,
+          'firefox: and are exactly where the content scripts run, so a missing one is a site with no overlay');
+        eq(Object.keys(FCM.SITE_PAGES), FCM.SITE_ORIGINS, 'firefox: each site has the address its overlay is drawn on');
+        eq(FCM.SITE_ORIGINS.map((site) => FCM.SITE_PAGES[site].every((page) => patternCovers(site, page))), [true, true],
+          'firefox: an address on that site, where its content scripts run, and which its whole-site grant covers');
+        eq(['*://*.twitch.tv/*', 'https://api.github.com/*', 'http://localhost/*', 'https://*.workers.dev/*',
+          'http://localhost:8080/*'].map(FCM.originLabel),
+        ['twitch.tv', 'api.github.com', 'localhost', 'workers.dev', 'localhost'],
+        'firefox: an origin is named by the host a person would know it by');
+        const odd = fm.host_permissions.map(FCM.originLabel).filter((label) => !/^[a-z0-9.-]+$/.test(label));
+        eq(odd, [], `firefox: and every origin the add-on asks for comes out as a plain host (${odd.join(', ')})`);
+      }
+
+      const FIREFOX = { loadPath: 'scripts', browser: 'firefox' };
+      const allBut = (...gone) => fm.host_permissions.filter((o) => !gone.includes(o));
+      const LINE = /Firefox has not allowed access/;
+      const told = (tab) => tab.of('sys').map((m) => m.text).filter((text) => LINE.test(text));
+      const hello = (tab, channel, site = 'twitch') => tab.send({ cmd: 'hello', site, channel, hints: [] });
+
+      // The line in the feed, for a service.
+      {
+        const w = bootWorker({ ...FIREFOX, grants: allBut('https://7tv.io/*', 'https://api.betterttv.net/*') });
+        try {
+          const tab = w.makeTab(1).connect();
+          hello(tab, 'alpha');
+          await wait(80);
+          eq(told(tab), ['[Merged] Firefox has not allowed access to 7tv.io, api.betterttv.net — emotes, history or '
+            + "sign-in that depend on them will be missing. Allow it from the extension's options page (Site access)."],
+          'firefox: site access: a tab is told which services Firefox is not letting the add-on reach, and where to allow them');
+          const at = tab.inbox.findIndex((m) => m.type === 'sys' && LINE.test(m.text));
+          ok(at > tab.inbox.findIndex((m) => m.type === 'ready'),
+            "firefox: site access: after hello's answer, when there is a panel to show it in");
+          hello(tab, 'beta');
+          await wait(80);
+          hello(tab, 'beta');
+          await wait(40);
+          eq(told(tab).length, 1, 'firefox: site access: once for the tab, not again with every channel it goes to');
+          const other = w.makeTab(2).connect();
+          hello(other, 'gamma', 'kick');
+          await wait(80);
+          eq(told(other).length, 1, 'firefox: site access: while a second tab is told for itself');
+        } finally { w.teardown(); }
+      }
+      {
+        const w = bootWorker({ ...FIREFOX, grants: allBut('https://recent-messages.robotty.de/*') });
+        try {
+          const tab = w.makeTab(1).connect();
+          hello(tab, '');
+          await wait(60);
+          eq(told(tab), [], 'firefox: site access: a hello from a page on no channel, with no panel to show it, is told nothing');
+          hello(tab, 'alpha');
+          await wait(80);
+          eq(told(tab).length, 1, 'firefox: site access: the tab is told once it is on a channel');
+          contains(told(tab)[0], 'access to recent-messages.robotty.de —', 'firefox: site access: about the one service that is missing');
+        } finally { w.teardown(); }
+      }
+      {
+        const w = bootWorker({ ...FIREFOX, grants: allBut('*://*.kick.com/*') });
+        try {
+          const tab = w.makeTab(1).connect();
+          hello(tab, 'alpha');
+          await wait(80);
+          eq(told(tab), [], 'firefox: site access: Kick itself missing is not a line in the feed of a Twitch tab');
+          eq(w.badge.text, '!', 'firefox: site access: it is the badge that says so');
+        } finally { w.teardown(); }
+      }
+      for (const [what, opts] of [
+        ['on Firefox with everything allowed', { ...FIREFOX }],
+        ['on Chrome with nothing granted at all', { grants: [] }],
+        ['on Chrome through background.scripts with nothing granted', { loadPath: 'scripts', grants: [] }],
+      ]) {
+        const w = bootWorker(opts);
+        try {
+          const tab = w.makeTab(1).connect();
+          hello(tab, 'alpha');
+          await wait(80);
+          eq(told(tab), [], `firefox: site access: ${what}, no tab is told anything`);
+          if (w.browser === 'chrome') {
+            eq(w.permissionChecks, [], `firefox: site access: ${what}, the browser is never asked`);
+            eq([w.badge.text, typeof w.listeners.permissionsAdded, typeof w.listeners.permissionsRemoved],
+              ['', 'undefined', 'undefined'],
+              `firefox: site access: ${what}, the badge is left alone and no permission event is listened for`);
+          }
+        } finally { w.teardown(); }
+      }
+
+      // The badge, for Twitch or Kick: over an update's dot, and gone again
+      // once the site is allowed.
+      const UPDATE = load(makeSandbox(), 'src/shared/namespace.js', 'src/shared/constants.js').STORAGE_KEYS.update;
+      const newer = { local: { [UPDATE]: { latest: '99.0.0' } } };
+      {
+        const grants = allBut('*://*.kick.com/*');
+        // A package without an update_url, so that there is an update dot for
+        // the ! to take the place of; a signed build never has one (below).
+        const w = bootWorker({ ...FIREFOX, updateUrl: null, grants, seed: newer });
+        try {
+          await wait(60);
+          ok((await w.sandbox.FCM.updateStatus()).available, 'firefox: badge: (with an update waiting to be shown)');
+          eq([w.badge.text, w.badge.color, w.badge.textColor], ['!', '#ffb400', '#000000'],
+            'firefox: badge: Firefox keeping the add-on off Kick puts an amber ! on the toolbar icon, in place of the update dot');
+          grants.push('*://*.kick.com/*');
+          w.listeners.permissionsAdded({ origins: ['*://*.kick.com/*'] });
+          await wait(40);
+          eq([w.badge.text, w.badge.color, w.badge.textColor], ['●', '#7c6bff', '#ffffff'],
+            'firefox: badge: once Kick is allowed again the update dot is back, in its own colours');
+          grants.splice(grants.indexOf('*://*.kick.com/*'), 1);
+          w.listeners.permissionsRemoved({ origins: ['*://*.kick.com/*'] });
+          await wait(40);
+          eq(w.badge.text, '!', 'firefox: badge: and taking Kick back puts the ! back, without waiting for a restart');
+          await w.sandbox.FCM.dismissUpdate('99.0.0');
+          await wait(20);
+          eq(w.badge.text, '!', 'firefox: badge: dismissing the update does not take the ! away along with the dot');
+        } finally { w.teardown(); }
+      }
+      {
+        const grants = allBut('*://*.twitch.tv/*', 'https://7tv.io/*');
+        const w = bootWorker({ ...FIREFOX, grants });
+        try {
+          await wait(60);
+          eq(w.badge.text, '!', 'firefox: badge: Twitch missing puts it there too');
+          grants.push('*://*.twitch.tv/*');
+          w.listeners.permissionsAdded({ origins: ['*://*.twitch.tv/*'] });
+          await wait(40);
+          eq(w.badge.text, '',
+            'firefox: badge: and with no update to show, allowing it clears the badge, even with a service still missing');
+        } finally { w.teardown(); }
+      }
+      {
+        // Twitch allowed only on www.twitch.tv, as Firefox's extensions menu
+        // leaves it after "Only when clicked" and then "Always allow on
+        // www.twitch.tv": the overlay is there, so nothing may say it is not.
+        const grants = [...allBut(TWITCH), '*://www.twitch.tv/*'];
+        const w = bootWorker({ ...FIREFOX, grants });
+        try {
+          await wait(60);
+          eq(w.badge.text, '', 'firefox: badge: Twitch allowed only where its channel pages are puts no ! on the toolbar icon');
+          const tab = w.makeTab(1).connect();
+          hello(tab, 'alpha');
+          await wait(80);
+          eq(told(tab), [], 'firefox: site access: nor any line in the feed of the Twitch tab the overlay is running in');
+          grants.splice(grants.indexOf('*://www.twitch.tv/*'), 1);
+          w.listeners.permissionsRemoved({ origins: ['*://www.twitch.tv/*'] });
+          await wait(40);
+          eq(w.badge.text, '!', 'firefox: badge: while taking that address back as well puts the ! there');
+        } finally { w.teardown(); }
+      }
+      {
+        // A signed build, which Firefox updates by itself: the update check is
+        // off, but Firefox does nothing about a site it is keeping the add-on
+        // off, so the ! still has to say so — and allowing the site leaves the
+        // badge empty rather than bringing back a dot for a stored update.
+        const grants = allBut('*://*.kick.com/*');
+        const w = bootWorker({ ...FIREFOX, grants, seed: newer });
+        try {
+          await wait(60);
+          eq(w.manifest.browser_specific_settings.gecko.update_url, pack.UPDATE_URL,
+            'firefox: badge: (a build Firefox updates by itself)');
+          eq([w.badge.text, w.badge.color, w.badge.textColor], ['!', '#ffb400', '#000000'],
+            'firefox: badge: a build Firefox updates by itself still shows the amber ! for a site it is kept off');
+          grants.push('*://*.kick.com/*');
+          w.listeners.permissionsAdded({ origins: ['*://*.kick.com/*'] });
+          await wait(40);
+          eq(w.badge.text, '', 'firefox: badge: and once the site is allowed, no update dot takes its place');
+          grants.splice(grants.indexOf('*://*.kick.com/*'), 1);
+          w.listeners.permissionsRemoved({ origins: ['*://*.kick.com/*'] });
+          await wait(40);
+          eq(w.badge.text, '!', 'firefox: badge: while taking the site back puts the ! back');
+        } finally { w.teardown(); }
+      }
+      {
+        const w = bootWorker({ grants: [], seed: newer });
+        try {
+          await wait(60);
+          ok((await w.sandbox.FCM.updateStatus()).available,
+            'firefox: badge: (Chrome with the same update waiting, whatever an earlier worker did to its own copy)');
+          eq(w.badge.text, '●', 'firefox: badge: Chrome with nothing granted still shows the update dot, as it always has');
+        } finally { w.teardown(); }
+      }
+
+      // The options harness, which is where Site access is looked at: its
+      // ?grants= lists the hosts Firefox is letting the add-on use, and its
+      // Allow all is answered yes.
+      {
+        const html = fs.readFileSync(path.join(ROOT, 'tests/options-harness.html'), 'utf8');
+        const script = html.split('<script>').slice(1).map((s) => s.split('</script>')[0])
+          .find((s) => s.includes('window.chrome = {'));
+        const harness = (search) => {
+          const sandbox = makeSandbox({ location: { search }, document: { createElement: () => ({}) } });
+          sandbox.window = sandbox;
+          vm.runInContext(script, sandbox, { filename: 'tests/options-harness.html' });
+          // What the harness reads out of manifest.json before the page runs.
+          sandbox.__hostPermissions = fm.host_permissions.slice();
+          const FCM = load(sandbox, 'src/shared/namespace.js', 'src/shared/constants.js', 'src/shared/util.js');
+          return { FCM, chrome: sandbox.chrome, sandbox };
+        };
+        eq(harness('?browser=firefox').sandbox.__firefoxHosts(manifest.host_permissions), fm.host_permissions,
+          'firefox: tests/options-harness.html lists, as Firefox, exactly the hosts the release package asks for');
+        ok(/window\.__firefoxHosts\(manifest\.host_permissions\)/.test(html),
+          'firefox: and that is the list its page is given');
+        const some = harness('?browser=firefox&grants=twitch.tv,7tv.io');
+        eq((await some.FCM.hostAccess()).missing, allBut('*://*.twitch.tv/*', 'https://7tv.io/*'),
+          'firefox: tests/options-harness.html?grants= allows the hosts it lists and no others');
+        await some.chrome.permissions.request({ origins: ['*://*.kick.com/*'] });
+        eq((await some.FCM.hostAccess()).missing, allBut('*://*.twitch.tv/*', 'https://7tv.io/*', '*://*.kick.com/*'),
+          'firefox: and a site its Allow all asks for is allowed from then on');
+        eq((await harness('?browser=firefox').FCM.hostAccess()).missing, [],
+          'firefox: without ?grants= every site is allowed, as on a fresh install');
+        eq((await harness('?browser=firefox&grants=').FCM.hostAccess()).missing, fm.host_permissions,
+          'firefox: and with ?grants= left empty, none is');
+      }
+    }
+  })();
+};
+
+// ── The release ───────────────────────────────────────────────────────────────
+//
+// A release is four files and one step that cannot be taken back, and
+// tools/release.js decides the order everything happens in. All it does to
+// GitHub and to addons.mozilla.org goes through one command runner, so here the
+// runner is a stand-in that records every command and answers the way gh and
+// web-ext would — failing, when told to — and every branch is walked without a
+// network.
+//
+// What it is held to: publishing is the last command and never follows a
+// failure; nothing is created without the credentials to sign; a release that
+// is already published is only looked at; and a draft that already holds the
+// signed add-on is published with that file, because Mozilla will not sign the
+// same version twice. The packages and the signed file are checked against
+// real archives built here, and broken in the ways that matter.
+suites.release = function () {
+  const pack = require(path.join(ROOT, 'tools', 'pack.js'));
+  const release = require(path.join(ROOT, 'tools', 'release.js'));
+  const os = require('os');
+  const childProcess = require('child_process');
+  const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8'));
+  const version = manifest.version;
+  const tag = `v${version}`;
+  const names = {
+    chrome: pack.releaseAssetName(version, 'chrome'),
+    firefox: pack.releaseAssetName(version, 'firefox'),
+    xpi: pack.releaseAssetName(version, 'firefox-xpi'),
+  };
+  const FOUR = [names.chrome, names.firefox, names.xpi, 'updates.json'];
+  const thrown = (fn) => { try { fn(); return ''; } catch (e) { return String(e.message); } };
+  const caught = (fn) => { try { fn(); return null; } catch (e) { return e; } };
+  const cli = (...args) => childProcess.spawnSync(process.execPath, [path.join(ROOT, 'tools', 'release.js'), ...args],
+    { encoding: 'utf8' });
+
+  const temps = [];
+  const temp = (label) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `fcm-release-${label}-`));
+    temps.push(dir);
+    return dir;
+  };
+
+  // The real packages, built once, and ways of rebuilding them with one thing
+  // changed. Read with this file's own zip reader, not release.js's.
+  const chromeZip = pack.build(ROOT, { target: 'chrome' });
+  const firefoxZip = pack.build(ROOT, { target: 'firefox' });
+  const filesOf = (buf) => readZipNames(buf).map((name) => ({ name, data: readZipFile(buf, name) }));
+  const renamed = (buf, rename) => pack.zip(filesOf(buf).map((f) => ({ name: rename(f.name), data: f.data })));
+  const replaced = (buf, name, data) => pack.zip(filesOf(buf).map((f) => (f.name === name ? { name, data } : f)));
+  const withManifest = (buf, change) => {
+    const m = JSON.parse(readZipFile(buf, 'manifest.json').toString('utf8'));
+    change(m);
+    return replaced(buf, 'manifest.json', Buffer.from(`${JSON.stringify(m, null, 2)}\n`));
+  };
+  // What Mozilla hands back: the same files, and its three signature files.
+  const signed = (buf, without) => pack.zip([
+    ...filesOf(buf),
+    ...release.SIGNATURE_FILES.filter((sig) => !(without || []).includes(sig))
+      .map((sig) => ({ name: sig, data: Buffer.from(`stand-in for ${sig}\n`) })),
+  ]);
+  const signedXpi = signed(firefoxZip);
+  // The same, repacked the way Mozilla's signer hands a file back when asked
+  // for COSE as well: the files in another order, the COSE pair beside the
+  // three signature files, and a folder entry.
+  const autographed = pack.zip([
+    ...release.SIGNATURE_FILES.map((sig) => ({ name: sig, data: Buffer.from(`stand-in for ${sig}\n`) })),
+    { name: 'META-INF/cose.manifest', data: Buffer.from('stand-in for the COSE manifest\n') },
+    { name: 'META-INF/cose.sig', data: Buffer.from('stand-in for the COSE signature\n') },
+    { name: 'src/', data: Buffer.alloc(0) },
+    ...filesOf(firefoxZip).reverse(),
+  ]);
+  // Signed, of the right version and ID, but not this tree's package.
+  const signedFromOtherCode = signed(replaced(firefoxZip, 'src/content/overlay.js',
+    Buffer.from('// an earlier commit of the same version\n')));
+
+  // An output folder as pack.js leaves it, with either package swapped, or left
+  // out with null.
+  const distWith = (swap) => {
+    const s = swap || {};
+    const dir = temp('dist');
+    [['chrome', chromeZip], ['firefox', firefoxZip]].forEach(([kind, built]) => {
+      const buf = kind in s ? s[kind] : built;
+      if (buf) fs.writeFileSync(path.join(dir, names[kind]), buf);
+    });
+    return dir;
+  };
+
+  try {
+    // ── verify-packages ──
+    {
+      eq(release.verifyPackages(distWith(), version).problems, [],
+        'release: verify-packages: the two packages pack.js builds pass as they are');
+      const good = cli('verify-packages', distWith(), version);
+      eq(good.status, 0, `release: verify-packages: and the command release.yml runs exits 0 for them (${good.stderr})`);
+
+      const wrappedChrome = release.verifyPackages(distWith({ chrome: renamed(chromeZip, (n) => `FriendlyChatExtension/${n}`) }), version).problems;
+      ok(wrappedChrome.some((p) => p.startsWith(names.chrome) && p.includes('is wrapped in a folder')),
+        'release: verify-packages: a Chrome zip wrapped in a folder is refused, the way v1.18.2 and v1.18.3 shipped');
+      const wrappedFirefox = release.verifyPackages(distWith({ firefox: renamed(firefoxZip, (n) => `FriendlyChatExtension/${n}`) }), version).problems;
+      ok(wrappedFirefox.some((p) => p.startsWith(names.firefox) && p.includes('is wrapped in a folder')),
+        'release: verify-packages: and so is a wrapped Firefox zip');
+      const wrappedCli = cli('verify-packages', distWith({ chrome: renamed(chromeZip, (n) => `FriendlyChatExtension/${n}`) }), version);
+      ok(wrappedCli.status === 1 && wrappedCli.stderr.includes('::error::'),
+        `release: verify-packages: which fails the workflow step, with an annotation (${wrappedCli.status})`);
+
+      const halfWrapped = release.verifyPackages(distWith({
+        chrome: renamed(chromeZip, (n) => (n === 'manifest.json' ? n : `FriendlyChatExtension/${n}`)),
+      }), version).problems;
+      ok(halfWrapped.some((p) => p.includes('does not hold at those paths') && p.includes('src/background/service-worker.js')),
+        'release: verify-packages: as is a manifest at the root with the extension a folder further down');
+
+      // The same JSON in different bytes is still not the file Chrome ships.
+      const disk = fs.readFileSync(path.join(ROOT, 'manifest.json'));
+      const respaced = replaced(chromeZip, 'manifest.json', Buffer.concat([disk, Buffer.from(' ')]));
+      eq(release.verifyPackages(distWith({ chrome: respaced }), version).problems,
+        [`${names.chrome}: its manifest.json is not the repository's manifest.json, byte for byte`],
+        'release: verify-packages: a Chrome manifest that differs from the one on disk by a single byte is refused');
+
+      const firefoxCases = [
+        ['still naming a service worker', (m) => { m.background.service_worker = 'src/background/service-worker.js'; },
+          'still names a background service worker'],
+        ['with no background.scripts', (m) => { delete m.background.scripts; }, 'has no background.scripts'],
+        ['missing its update_url', (m) => { delete m.browser_specific_settings.gecko.update_url; },
+          `its update_url is undefined, not "${pack.UPDATE_URL}"`],
+        ['at another update_url', (m) => { m.browser_specific_settings.gecko.update_url = 'https://example.org/updates.json'; },
+          'its update_url is "https://example.org/updates.json"'],
+        ['for another version', (m) => { m.version = '9.9.9'; }, `its manifest is version "9.9.9", not "${version}"`],
+        ['under another gecko.id', (m) => { m.browser_specific_settings.gecko.id = 'someone-else@example.org'; },
+          'its gecko.id is "someone-else@example.org"'],
+        ['for an older Firefox', (m) => { m.browser_specific_settings.gecko.strict_min_version = '115.0'; },
+          'its strict_min_version is "115.0"'],
+        ['without data_collection_permissions', (m) => { delete m.browser_specific_settings.gecko.data_collection_permissions; },
+          'its data_collection_permissions are undefined'],
+        ["with Chrome's key left in", (m) => { m.key = 'MIIB'; }, "still carries Chrome's key"],
+        ["asking for GitHub's API, which only the update check Firefox replaces uses",
+          (m) => { m.host_permissions.push('https://api.github.com/*'); }, 'asks for https://api.github.com/*'],
+      ];
+      firefoxCases.forEach(([what, change, expected]) => {
+        const problems = release.verifyPackages(distWith({ firefox: withManifest(firefoxZip, change) }), version).problems;
+        ok(problems.some((p) => p.startsWith(`${names.firefox}: `) && p.includes(expected)),
+          `release: verify-packages: a Firefox manifest ${what} is refused (${problems.join(' | ')})`);
+        eq(problems.filter((p) => !p.includes(expected)), [],
+          `release: verify-packages: and that is the only thing said about a manifest ${what}`);
+      });
+
+      const absent = release.verifyPackages(distWith({ firefox: null }), version).problems;
+      eq(absent.map((p) => p.split(' (')[0]), [`${names.firefox} is not there`],
+        'release: verify-packages: a package that was not built is named');
+      ok(release.verifyPackages(distWith({ chrome: Buffer.from('Not Found') }), version).problems
+        .some((p) => p === `${names.chrome} cannot be read as a zip: not a zip archive (too short to be one)`),
+      'release: verify-packages: and one that is not a zip at all is said to be so, not thrown over');
+      ok(release.verifyPackages(distWith({ chrome: Buffer.from('<html><body>This page is not a zip archive</body></html>') }), version).problems
+        .some((p) => p === `${names.chrome} cannot be read as a zip: not a zip archive (no end-of-central-directory record)`),
+      'release: verify-packages: however long it is');
+      const drifted = release.verifyPackages(distWith({ firefox: replaced(firefoxZip, 'README.md', Buffer.from('another tree\n')) }), version).problems;
+      eq(drifted, ['the two packages should differ only in manifest.json, but also differ in: README.md'],
+        'release: verify-packages: two packages built from different trees are refused');
+      contains(thrown(() => release.verifyPackages(distWith(), tag)), "without the tag's v",
+        "release: verify-packages: a version with the tag's v still on is refused rather than looked for under the wrong names");
+    }
+
+    // ── The zip reader ──
+    {
+      // A comment after the end record moves it, and a reader that only looks
+      // at the last 22 bytes would call a good archive broken.
+      const commented = Buffer.concat([chromeZip, Buffer.from('a comment')]);
+      commented.writeUInt16LE(9, chromeZip.length - 22 + 20);
+      eq(release.readCentral(commented).map((e) => e.name), readZipNames(chromeZip),
+        'release: the zip reader finds the directory behind an archive comment');
+      eq(release.readEntry(chromeZip, release.readCentral(chromeZip).find((e) => e.name === 'src/content/feed.js')),
+        readZipFile(chromeZip, 'src/content/feed.js'), 'release: and reads an entry back as the suite\'s own reader does');
+
+      const entry = readZipCentral(signedXpi).find((e) => e.name === 'manifest.json');
+      const corrupt = Buffer.from(signedXpi);
+      const dataAt = entry.offset + 30 + corrupt.readUInt16LE(entry.offset + 26) + corrupt.readUInt16LE(entry.offset + 28);
+      corrupt[dataAt + Math.floor(entry.compressedSize / 2)] ^= 0xff;
+      const dir = temp('corrupt');
+      fs.writeFileSync(path.join(dir, 'corrupt.xpi'), corrupt);
+      ok(release.verifyXpi(path.join(dir, 'corrupt.xpi'), version).problems.some((p) => p.startsWith('corrupt.xpi: its manifest.json cannot be read')),
+        'release: a flipped byte in an entry is caught, by inflate or by the checksum');
+      // A stored entry has no inflate to trip over and keeps its size when a
+      // byte changes, so only the checksum can tell. Random bytes do not
+      // compress, which is what makes pack.js store them.
+      const noise = require('crypto').randomBytes(512);
+      const stored = pack.zip([{ name: 'META-INF/mozilla.rsa', data: noise }]);
+      const storedEntry = release.readCentral(stored)[0];
+      eq(storedEntry.method, 0, 'release: (random bytes are stored, not deflated)');
+      const flipped = Buffer.from(stored);
+      flipped[30 + storedEntry.name.length + 100] ^= 0x01;
+      contains(thrown(() => release.readEntry(flipped, storedEntry)), 'does not match its checksum',
+        'release: and a flipped byte in a stored entry, which inflate never sees, is caught by the checksum');
+      ok(release.readEntry(stored, storedEntry).equals(noise), 'release: while the untouched entry reads back exactly');
+
+      const escaping = pack.zip([{ name: 'manifest.json', data: Buffer.from('{}') }, { name: '../outside.txt', data: Buffer.from('x') }]);
+      const into = path.join(temp('extract'), 'src');
+      contains(thrown(() => release.extractZip(escaping, into)), 'would land outside the folder',
+        'release: unpacking refuses a path that climbs out of the folder');
+      ok(!fs.existsSync(path.join(into, '..', 'outside.txt')) && !fs.existsSync(into),
+        'release: and writes nothing at all when it does');
+      ['/etc/x', 'C:/x', 'a\\b', 'a/../b', './a', ''].forEach((bad) => {
+        ok(release.unsafeEntryName(bad), `release: ${JSON.stringify(bad)} is not a plainly relative path`);
+      });
+      const busy = temp('busy');
+      fs.writeFileSync(path.join(busy, 'left-over.js'), '');
+      contains(thrown(() => release.extractZip(firefoxZip, busy)), 'is not empty',
+        'release: and only unpacks into a new folder, so nothing left in one is signed with the package');
+    }
+
+    // ── verify-xpi ──
+    {
+      const dir = temp('xpi');
+      const at = (name, buf) => { const file = path.join(dir, name); fs.writeFileSync(file, buf); return file; };
+      eq(release.SIGNATURE_FILES.slice().sort(), ['META-INF/manifest.mf', 'META-INF/mozilla.rsa', 'META-INF/mozilla.sf'],
+        'release: verify-xpi: the files a signature is recognised by are META-INF/mozilla.rsa, mozilla.sf and manifest.mf');
+      eq(release.verifyXpi(at('signed.xpi', signedXpi), version).problems, [],
+        'release: verify-xpi: the Firefox package with those three files, this ID and this version passes');
+      eq(cli('verify-xpi', path.join(dir, 'signed.xpi'), version).status, 0, 'release: verify-xpi: and the command exits 0');
+
+      eq(release.verifyXpi(at('unsigned.xpi', firefoxZip), version).problems,
+        ['unsigned.xpi has no META-INF/manifest.mf, META-INF/mozilla.sf, META-INF/mozilla.rsa, so it is not a package Mozilla signed'],
+        'release: verify-xpi: the unsigned Firefox zip, renamed .xpi, is not taken for a signed add-on');
+      eq(cli('verify-xpi', path.join(dir, 'unsigned.xpi'), version).status, 1, 'release: verify-xpi: and the command exits 1');
+      release.SIGNATURE_FILES.forEach((sig) => {
+        const file = `without-${path.basename(sig)}.xpi`;
+        eq(release.verifyXpi(at(file, signed(firefoxZip, [sig])), version).problems,
+          [`${file} has no ${sig}, so it is not a package Mozilla signed`],
+          `release: verify-xpi: nor is one missing only ${sig}`);
+      });
+
+      const otherId = release.verifyXpi(at('fork.xpi', signed(withManifest(firefoxZip, (m) => {
+        m.browser_specific_settings.gecko.id = 'someone-else@example.org';
+      }))), version).problems;
+      eq(otherId, [`fork.xpi: its gecko.id is "someone-else@example.org", not "${pack.GECKO_ID}"`],
+        'release: verify-xpi: a signed add-on under another ID is refused');
+      const otherVersion = release.verifyXpi(at('older.xpi', signed(withManifest(firefoxZip, (m) => { m.version = '1.0.0'; }))), version).problems;
+      eq(otherVersion, [`older.xpi: its manifest is version "1.0.0", not "${version}"`],
+        'release: verify-xpi: and so is a signed add-on of another version');
+      eq(release.verifyXpi(path.join(dir, 'signed.xpi'), '9.9.9').problems,
+        [`signed.xpi: its manifest is version "${version}", not "9.9.9"`],
+        'release: verify-xpi: including when it is this version and the release is another');
+      ok(release.verifyXpi(at('page.xpi', Buffer.from('<html>Not Found</html>')), version).problems[0].startsWith('page.xpi cannot be read as a zip'),
+        'release: verify-xpi: an error page saved under the name is reported, not thrown');
+      eq(release.verifyXpi(path.join(dir, 'absent.xpi'), version).problems.map((p) => p.split(' (')[0]),
+        ['absent.xpi is not there'], 'release: verify-xpi: and a file that is not there is named');
+
+      // Against the package it should have been signed from. A signed file of
+      // the right version and ID can still be a build of other code, and only
+      // comparing its files with the package says so.
+      const against = (name, buf) => release.verifyXpi(at(name, buf), version, { reference: firefoxZip });
+      eq(against('same.xpi', signedXpi), { problems: [], differs: [], version },
+        "release: verify-xpi: a signed file holding exactly the package's files passes the comparison");
+      const referenceFile = at(names.firefox, firefoxZip);
+      eq(release.verifyXpi(path.join(dir, 'same.xpi'), version, { reference: referenceFile }).problems, [],
+        'release: verify-xpi: with the package given by its path as well as by its bytes');
+      eq(against('autographed.xpi', autographed).problems, [],
+        "release: verify-xpi: as does one repacked the way Mozilla's signer hands it back: another order, the COSE pair, a folder entry");
+      eq(against('meta.xpi', pack.zip([...filesOf(signedXpi), { name: 'META-INF/anything.txt', data: Buffer.from('x') }])).problems, [],
+        "release: verify-xpi: META-INF being Mozilla's, nothing in it is compared");
+
+      const changed = against('changed.xpi', signedFromOtherCode);
+      eq(changed.differs, ['src/content/overlay.js (changed)'],
+        "release: verify-xpi: a signed file whose overlay.js is not the package's is found out, by name");
+      eq(changed.problems.length === 1 && changed.problems[0].startsWith('changed.xpi does not hold the files of the package it should have been signed from'),
+        true, 'release: verify-xpi: and refused as not the package it should have been signed from');
+      eq(against('extra.xpi', pack.zip([...filesOf(signedXpi), { name: 'src/content/extra.js', data: Buffer.from('1') }])).differs,
+        ['src/content/extra.js (not in the package)'], 'release: verify-xpi: so is one carrying a file the package does not');
+      eq(against('short.xpi', pack.zip(filesOf(signedXpi).filter((f) => f.name !== 'src/content/feed.js'))).differs,
+        ['src/content/feed.js (missing)'], 'release: verify-xpi: and one without a file the package has');
+      eq(against('manifest.xpi', signed(withManifest(firefoxZip, (m) => { delete m.browser_specific_settings.gecko.update_url; }))).differs,
+        ['manifest.json (changed)'], 'release: verify-xpi: and one whose manifest differs, for all it has the right ID and version');
+      eq(release.verifyXpi(path.join(dir, 'changed.xpi'), version).problems, [],
+        'release: verify-xpi: while without a package to compare with, the check is what it always was');
+    }
+
+    // ── updates-json ──
+    {
+      const dir = temp('updates');
+      const out = path.join(dir, 'nested', 'updates.json');
+      const text = release.writeUpdatesJson('1.21.0', out);
+      const expected = `${JSON.stringify(pack.updatesManifest('1.21.0'), null, 2)}\n`;
+      eq(fs.readFileSync(out, 'utf8'), expected,
+        'release: updates-json: writes pack.updatesManifest, two-space indented, making the folder it goes in');
+      eq(text, expected, 'release: updates-json: and returns the text it wrote');
+      ok(/\}\n$/.test(text) && !/\n\n$/.test(text), 'release: updates-json: ending in exactly one newline');
+      eq(JSON.parse(fs.readFileSync(out, 'utf8')), pack.updatesManifest('1.21.0'), 'release: updates-json: and parsing back as the same object');
+
+      const viaCli = path.join(dir, 'cli', 'updates.json');
+      const ran = cli('updates-json', '1.21.0', viaCli);
+      ok(ran.status === 0 && fs.readFileSync(viaCli, 'utf8') === expected,
+        `release: updates-json: the command writes the same bytes (${ran.status} ${ran.stderr})`);
+      const refused = path.join(dir, 'refused.json');
+      contains(thrown(() => release.writeUpdatesJson('v1.21.0', refused)), "without the tag's v",
+        "release: updates-json: a version with the tag's v is refused");
+      ok(cli('updates-json', 'v1.21.0', refused).status !== 0 && !fs.existsSync(refused),
+        'release: updates-json: by the command too, which writes nothing');
+    }
+
+    // ── planRelease ──
+    {
+      const stepsOf = (plan) => (plan.steps || []).map((s) => s.step);
+      const plan = (credentials, existing) => release.planRelease({ credentials, version, release: existing });
+
+      const noCredentials = plan(false, null);
+      eq([noCredentials.ok, noCredentials.reason, noCredentials.steps], [false, 'credentials', undefined],
+        'release: plan: without AMO credentials there is no plan at all');
+      ['AMO_JWT_ISSUER', 'AMO_JWT_SECRET', 'Nothing was created', 'updates.json'].forEach((said) => {
+        contains(noCredentials.message, said, `release: plan: and the refusal says ${said}`);
+      });
+      eq(plan(false, { isDraft: false, assets: [] }).reason, 'credentials',
+        'release: plan: credentials are the first thing asked, before what exists for the tag');
+
+      const published = plan(true, { isDraft: false, assets: [names.chrome] });
+      eq([published.ok, published.reason, published.steps], [false, 'published', undefined],
+        'release: plan: a release already published for the tag is refused');
+      [`gh release edit ${tag} --draft=true`, 'Delete the release', 'updates.json', '404', 'nothing was changed'].forEach((said) => {
+        contains(published.message, said, `release: plan: telling the maintainer: ${said}`);
+      });
+      missing(published.message, 'nothing left to do', 'release: plan: without claiming a half-finished release is complete');
+      const complete = plan(true, { isDraft: false, assets: FOUR });
+      ok(!complete.ok && complete.message.includes('nothing left to do'),
+        'release: plan: while a published release holding all four files is still refused, and said to need nothing more');
+
+      const strayZip = plan(true, { isDraft: true, assets: [names.chrome, `FriendlyChatExtension-v${version}-firefox.zip`, names.xpi] });
+      eq([strayZip.ok, strayZip.reason, strayZip.steps], [false, 'assets', undefined],
+        "release: plan: a draft holding a .zip that is not Chrome's is refused, before anything is signed or published for it");
+      ['v1.11.0 to v1.20.1', `FriendlyChatExtension-v${version}-firefox.zip`, 'Delete the other .zip', 'Nothing was changed'].forEach((said) => {
+        contains(strayZip.message, said, `release: plan: saying ${said}`);
+      });
+      eq(plan(true, { isDraft: true, assets: [names.chrome, 'notes.txt'] }).ok, true,
+        'release: plan: while any other file on a draft is left alone');
+
+      const SIGNING = ['extract', 'lint', 'create-draft', 'sign', 'verify-xpi', 'updates-json', 'upload', 'confirm-assets', 'publish'];
+      const fresh = plan(true, null);
+      eq([fresh.ok, fresh.reuse, stepsOf(fresh)], [true, false, SIGNING],
+        'release: plan: no release yet: unpack, lint, make a draft, sign, check, write updates.json, upload, read back, publish');
+      eq(fresh.steps[fresh.steps.length - 1], { step: 'publish', latest: true }, 'release: plan: publishing as the latest release');
+
+      const handMade = plan(true, { isDraft: true, isPrerelease: false, assets: [names.chrome, 'notes.txt'] });
+      eq(stepsOf(handMade), SIGNING.filter((s) => s !== 'create-draft'),
+        'release: plan: a draft made by hand without the signed add-on: the same, into that draft');
+
+      const reuse = plan(true, { isDraft: true, assets: [names.chrome, names.xpi] });
+      eq([reuse.reuse, stepsOf(reuse)], [true, ['download-xpi', 'verify-xpi', 'updates-json', 'upload', 'confirm-assets', 'publish']],
+        'release: plan: a draft that already holds the signed add-on: use that file, check it, and carry on');
+      eq(stepsOf(reuse).filter((s) => ['extract', 'lint', 'create-draft', 'sign'].includes(s)), [],
+        'release: plan: never signing a version Mozilla has already signed');
+
+      const stale = plan(true, { isDraft: true, assets: [pack.releaseAssetName('1.0.0', 'firefox-xpi')] });
+      ok(stepsOf(stale).includes('sign') && !stale.reuse,
+        "release: plan: another version's signed add-on on the draft is not this one");
+
+      const prerelease = plan(true, { isDraft: true, isPrerelease: true, assets: [] });
+      eq(prerelease.steps[prerelease.steps.length - 1], { step: 'publish', latest: false },
+        'release: plan: a draft marked prerelease is published as one, without taking latest');
+
+      [fresh, handMade, reuse, stale, prerelease].forEach((p, i) => {
+        eq([stepsOf(p).indexOf('publish'), stepsOf(p).filter((s) => s === 'publish').length], [p.steps.length - 1, 1],
+          `release: plan: publishing is the last step, and there is one of it (plan ${i + 1})`);
+      });
+      contains(thrown(() => release.planRelease({ credentials: true, version: tag, release: null })), "without the tag's v",
+        'release: plan: and a plan is only made for a version, not a tag');
+    }
+
+    // ── publish, against a stand-in for gh and web-ext ──
+    //
+    // It keeps the one release GitHub would have for the tag and changes it the
+    // way each command would. Every command is recorded as its command line,
+    // and in `calls` beside the environment it was handed. `fail` fails the
+    // commands it returns a message for; `signs` is what web-ext leaves in its
+    // artifacts folder; `onDraft` is the .xpi a download from the draft gives;
+    // `lost` names uploads that silently do not arrive; `uploadFails` names
+    // uploads that fail after --clobber has already deleted the file of that
+    // name, which is how gh replaces one; `alsoUploaded` is what something else
+    // puts on the draft while the upload runs; `latest` is the tag of the
+    // release GitHub counts as latest (none, unless given); `during` is told of
+    // each command before it is answered, to change what is on disk meanwhile.
+    const fakeRunner = (opts) => {
+      const o = opts || {};
+      let remote = o.release ? JSON.parse(JSON.stringify(o.release)) : null;
+      const commands = [];
+      const calls = [];
+      const run = (command, args, options) => {
+        const line = [command, ...args].join(' ');
+        commands.push(line);
+        calls.push({ line, env: options && options.env });
+        const value = (flag) => args[args.indexOf(flag) + 1];
+        if (o.during) o.during(line);
+        const failure = o.fail && o.fail(line, commands.length);
+        if (failure) return { status: 1, stdout: '', stderr: `${failure}\n` };
+        // With no tag, gh asks for the latest release.
+        if (command === 'gh' && args[1] === 'view' && args[2] === '--json') {
+          if (!o.latest) return { status: 1, stdout: '', stderr: 'release not found\n' };
+          return { status: 0, stderr: '', stdout: JSON.stringify({ tagName: o.latest }) };
+        }
+        if (command === 'gh' && args[1] === 'view') {
+          if (!remote) return { status: 1, stdout: '', stderr: 'release not found\n' };
+          return {
+            status: 0,
+            stderr: '',
+            stdout: JSON.stringify({
+              tagName: o.answersFor || args[2],
+              isDraft: remote.isDraft,
+              isPrerelease: Boolean(remote.isPrerelease),
+              assets: remote.assets.map((name) => ({ name, state: 'uploaded', size: 1 })),
+            }),
+          };
+        }
+        if (command === 'gh' && args[1] === 'create') remote = { isDraft: args.includes('--draft'), isPrerelease: false, assets: [] };
+        if (command === 'gh' && args[1] === 'upload') {
+          let failed = '';
+          args.slice(3).filter((a) => !a.startsWith('--')).map((file) => path.basename(file)).forEach((name) => {
+            // --clobber deletes the file already there before uploading its own.
+            if (args.includes('--clobber') && remote.assets.includes(name)) remote.assets.splice(remote.assets.indexOf(name), 1);
+            if ((o.uploadFails || []).includes(name)) { failed = name; return; }
+            if (!(o.lost || []).includes(name) && !remote.assets.includes(name)) remote.assets.push(name);
+          });
+          (o.alsoUploaded || []).forEach((name) => { if (!remote.assets.includes(name)) remote.assets.push(name); });
+          if (failed) return { status: 1, stdout: '', stderr: `HTTP 422: Validation Failed uploading ${failed}\n` };
+        }
+        if (command === 'gh' && args[1] === 'download') {
+          fs.writeFileSync(path.join(value('--dir'), value('--pattern')), o.onDraft || signedXpi);
+        }
+        if (command === 'gh' && args[1] === 'edit' && args.includes('--draft=false')) remote.isDraft = false;
+        if (command === 'npx' && args.includes('sign')) {
+          fs.mkdirSync(value('--artifacts-dir'), { recursive: true });
+          (o.signs || [signedXpi]).forEach((buf, i) => {
+            // Under a name of Mozilla's choosing, never the release's.
+            fs.writeFileSync(path.join(value('--artifacts-dir'), `a1b2c3d4-${i}.xpi`), buf);
+          });
+          fs.writeFileSync(path.join(value('--source-dir'), '.amo-upload-uuid'), '{}');
+        }
+        return { status: 0, stdout: '', stderr: '' };
+      };
+      return { run, commands, calls, remote: () => remote };
+    };
+    const CREDENTIALS = { WEB_EXT_API_KEY: 'user:12345:67', WEB_EXT_API_SECRET: 'a-stand-in-secret-0123456789abcdef' };
+    const attempt = (gh, opts) => {
+      const o = opts || {};
+      const dist = o.dist || distWith();
+      const lines = [];
+      const error = caught(() => release.publish({
+        tag, distDir: dist, env: 'env' in o ? o.env : CREDENTIALS, run: gh.run, log: (line) => lines.push(line),
+      }));
+      return { error, dist, lines };
+    };
+    const VIEW = `gh release view ${tag} --json tagName,isDraft,isPrerelease,assets`;
+    const LATEST = 'gh release view --json tagName';
+    const PUBLISH = `gh release edit ${tag} --draft=false --latest`;
+    const published = (gh) => gh.commands.filter((c) => c.startsWith('gh release edit'));
+
+    // A first release for the tag.
+    {
+      const gh = fakeRunner();
+      const { error, dist } = attempt(gh);
+      const at = (...parts) => path.join(dist, ...parts);
+      eq(error && `${error.step}: ${error.message}`, null, 'release: publish: a first release for the tag goes through');
+      eq(gh.commands, [
+        VIEW,
+        `npx --yes ${release.WEB_EXT} lint --source-dir ${at('firefox-src')} --self-hosted --no-config-discovery`,
+        `gh release create ${tag} --draft --verify-tag --title ${tag} --generate-notes`,
+        `npx --yes ${release.WEB_EXT} sign --channel unlisted --source-dir ${at('firefox-src')} --artifacts-dir ${at('firefox-signed')} --no-config-discovery`,
+        `gh release upload ${tag} ${at(names.chrome)} ${at(names.firefox)} ${at(names.xpi)} ${at('updates.json')} --clobber`,
+        VIEW,
+        LATEST,
+        PUBLISH,
+      ], 'release: publish: look, lint, make a draft, sign unlisted, upload all four, look again, see which is latest, publish — in that order');
+      eq(gh.commands[gh.commands.length - 1], PUBLISH, 'release: publish: publishing is the last command run');
+      eq(published(gh).length, 1, 'release: publish: and the only one that publishes');
+      eq(gh.remote(), { isDraft: false, isPrerelease: false, assets: FOUR },
+        'release: publish: leaving a published release with exactly the four files');
+      ok(fs.readFileSync(at(names.xpi)).equals(signedXpi),
+        "release: publish: the file web-ext saved under Mozilla's name is what goes up, under the release's");
+      eq(fs.readdirSync(at('firefox-signed')), [], 'release: publish: and nothing is left in the folder web-ext saves to');
+      eq(fs.readFileSync(at('updates.json'), 'utf8'), release.updatesJsonText(version),
+        'release: publish: updates.json is the one updates-json writes');
+      ok(fs.readFileSync(at('firefox-src', 'manifest.json')).equals(readZipFile(firefoxZip, 'manifest.json'))
+        && fs.readFileSync(at('firefox-src', 'src', 'content', 'feed.js')).equals(readZipFile(firefoxZip, 'src/content/feed.js')),
+      'release: publish: what web-ext lints and signs is the Firefox package just checked, unpacked');
+      eq(gh.commands.filter((c) => c.includes(CREDENTIALS.WEB_EXT_API_KEY) || c.includes(CREDENTIALS.WEB_EXT_API_SECRET)), [],
+        'release: publish: the AMO credentials are never on a command line');
+      eq(gh.commands.filter((c) => c.startsWith('gh release create') && !c.includes('--draft')), [],
+        'release: publish: no release is ever created except as a draft');
+    }
+
+    // A failure at any command stops everything after it.
+    {
+      const clean = fakeRunner();
+      attempt(clean);
+      clean.commands.forEach((line, i) => {
+        const gh = fakeRunner({ fail: (l, n) => (n === i + 1 ? 'simulated failure' : '') });
+        const { error } = attempt(gh);
+        const which = `command ${i + 1}, ${line.split(' ').slice(0, 4).join(' ')}`;
+        ok(error && error.message.includes('simulated failure'), `release: publish: a failing ${which} fails the run`);
+        eq(gh.commands.length, i + 1, `release: publish: and nothing runs after a failing ${which}`);
+        if (i < clean.commands.length - 1) {
+          eq(published(gh), [], `release: publish: nothing is published after a failing ${which}`);
+          ok(!gh.remote() || gh.remote().isDraft, `release: publish: and whatever exists for the tag is still a draft (${which})`);
+        }
+      });
+    }
+
+    // Failures that are not a command failing.
+    {
+      const nothingSigned = fakeRunner({ signs: [] });
+      const none = attempt(nothingSigned).error;
+      ok(none && none.step === 'sign' && none.message.includes('left 0 .xpi files'),
+        'release: publish: web-ext succeeding without leaving a signed file stops the run at signing');
+      eq(nothingSigned.commands.filter((c) => /release (upload|edit)/.test(c)), [], 'release: publish: with nothing uploaded or published');
+      ok(none && none.hint.includes('Developer Hub') && none.hint.includes(names.xpi) && none.hint.includes('not signed again'),
+        'release: publish: and it says how to recover a version Mozilla did sign');
+
+      const two = attempt(fakeRunner({ signs: [signedXpi, signedXpi] })).error;
+      ok(two && two.step === 'sign' && two.message.includes('left 2 .xpi files'),
+        'release: publish: two files where one was expected are not guessed between');
+
+      const notSigned = fakeRunner({ signs: [firefoxZip] });
+      const unsignedRun = attempt(notSigned);
+      ok(unsignedRun.error && unsignedRun.error.step === 'verify-xpi' && unsignedRun.error.message.includes('not a package Mozilla signed'),
+        'release: publish: a returned file with no signature in it fails the check');
+      eq(notSigned.commands.filter((c) => /release (upload|edit)/.test(c)), [], 'release: publish: and is never uploaded');
+      ok(fs.existsSync(path.join(unsignedRun.dist, names.xpi)) && unsignedRun.error.hint.includes('will not sign it again'),
+        'release: publish: while the file is kept where the workflow saves it from, and the hint says why that matters');
+
+      const lost = fakeRunner({ lost: ['updates.json'] });
+      const lostRun = attempt(lost).error;
+      ok(lostRun && lostRun.step === 'confirm-assets' && lostRun.message.includes('does not hold updates.json'),
+        'release: publish: an upload that reports success without updates.json arriving is caught by reading the draft back');
+      eq([lost.commands[lost.commands.length - 1], published(lost)], [VIEW, []],
+        'release: publish: before anything is published');
+      eq(lost.remote().isDraft, true, 'release: publish: so the release is still a draft');
+
+      const elsewhere = fakeRunner({ release: { isDraft: true, assets: [] }, answersFor: 'v0.0.1' });
+      const confused = attempt(elsewhere).error;
+      ok(confused && confused.reason === 'read-release' && elsewhere.commands.length === 1,
+        'release: publish: gh answering about a different release is not taken as an answer');
+    }
+
+    // A draft that already holds the signed add-on: a re-run.
+    {
+      const gh = fakeRunner({ release: { isDraft: true, isPrerelease: false, assets: [names.chrome, names.xpi] } });
+      const { error, dist } = attempt(gh);
+      const at = (...parts) => path.join(dist, ...parts);
+      eq(error && `${error.step}: ${error.message}`, null, 'release: publish: re-run against a draft holding the signed add-on goes through');
+      eq(gh.commands, [
+        VIEW,
+        `gh release download ${tag} --pattern ${names.xpi} --dir ${dist} --clobber`,
+        `gh release upload ${tag} ${at(names.chrome)} ${at(names.firefox)} ${at('updates.json')} --clobber`,
+        VIEW,
+        LATEST,
+        PUBLISH,
+      ], 'release: publish: it downloads that file, uploads the other three, looks again and publishes');
+      eq(gh.commands.filter((c) => / (sign|lint) /.test(c) || c.startsWith('gh release create')), [],
+        'release: publish: without signing again, linting or creating anything');
+      ok(fs.readFileSync(at(names.xpi)).equals(signedXpi), 'release: publish: the add-on checked is the one from the draft');
+      eq(gh.remote(), { isDraft: false, isPrerelease: false, assets: [names.xpi, names.chrome, names.firefox, 'updates.json'] },
+        'release: publish: and the release ends up published with all four, the signed add-on never having left the draft');
+
+      const wrong = fakeRunner({
+        release: { isDraft: true, assets: [names.xpi] },
+        onDraft: signed(withManifest(firefoxZip, (m) => { m.version = '1.0.0'; })),
+      });
+      const wrongRun = attempt(wrong).error;
+      ok(wrongRun && wrongRun.step === 'verify-xpi', 'release: publish: a signed add-on on the draft for another version fails the check');
+      eq(wrong.commands.filter((c) => /release (upload|edit)/.test(c) || / sign /.test(c)), [],
+        'release: publish: and nothing is uploaded, signed or published because of it');
+      contains(wrongRun && wrongRun.hint, 'Replace it', 'release: publish: the hint says to replace the file on the draft');
+    }
+
+    // A draft made by hand, without the signed add-on.
+    {
+      const gh = fakeRunner({ release: { isDraft: true, assets: [] } });
+      const { error } = attempt(gh);
+      eq(error, null, 'release: publish: a draft made by hand is used');
+      eq(gh.commands.map((c) => c.split(' ').slice(0, 4).join(' ')), [
+        VIEW.split(' ').slice(0, 4).join(' '), `npx --yes ${release.WEB_EXT} lint`, `npx --yes ${release.WEB_EXT} sign`,
+        `gh release upload ${tag}`, VIEW.split(' ').slice(0, 4).join(' '), 'gh release view --json', `gh release edit ${tag}`,
+      ], 'release: publish: signed into, without a second draft being created beside it');
+    }
+
+    // A release already published.
+    {
+      const gh = fakeRunner({ release: { isDraft: false, assets: [names.chrome] } });
+      const { error, dist } = attempt(gh);
+      eq(error && error.reason, 'published', 'release: publish: a release already published for the tag is refused');
+      eq(gh.commands, [VIEW], 'release: publish: after only looking at it: nothing is created, uploaded, signed or published');
+      eq(gh.remote(), { isDraft: false, assets: [names.chrome] }, 'release: publish: so the release is exactly as it was');
+      ok(!fs.existsSync(path.join(dist, 'firefox-src')), 'release: publish: and not even the package is unpacked');
+    }
+
+    // No credentials.
+    [{}, { WEB_EXT_API_KEY: CREDENTIALS.WEB_EXT_API_KEY }, { WEB_EXT_API_SECRET: CREDENTIALS.WEB_EXT_API_SECRET },
+      { WEB_EXT_API_KEY: '', WEB_EXT_API_SECRET: '' }].forEach((env) => {
+      const gh = fakeRunner({ release: { isDraft: false, assets: [] } });
+      const { error } = attempt(gh, { env });
+      const which = Object.keys(env).map((k) => `${k}${env[k] ? '' : ' (empty)'}`).join(' and ') || 'neither';
+      eq(error && error.reason, 'credentials', `release: publish: with ${which} set, the run is refused for credentials`);
+      eq(gh.commands, [], `release: publish: before gh or web-ext is run at all (${which})`);
+    });
+
+    // Packages that fail their check.
+    {
+      const gh = fakeRunner();
+      const { error } = attempt(gh, { dist: distWith({ chrome: renamed(chromeZip, (n) => `FriendlyChatExtension/${n}`) }) });
+      eq(error && error.reason, 'packages', 'release: publish: packages that fail verify-packages are refused');
+      eq(gh.commands, [], 'release: publish: before any command runs');
+    }
+
+    // GitHub failing to say whether a release exists.
+    {
+      const gh = fakeRunner({ fail: (l) => (l.includes(' view ') ? 'HTTP 401: Bad credentials (https://api.github.com/graphql)' : '') });
+      const { error } = attempt(gh);
+      ok(error && error.reason === 'read-release' && error.message.includes('Bad credentials'),
+        'release: publish: an error reading the release is a failure, not "no release yet"');
+      eq(gh.commands, [VIEW], 'release: publish: so no second release is created beside one that may exist');
+    }
+
+    // A prerelease draft.
+    {
+      const gh = fakeRunner({ release: { isDraft: true, isPrerelease: true, assets: [] }, latest: 'v1.0.0' });
+      attempt(gh);
+      eq(gh.commands[gh.commands.length - 1], `gh release edit ${tag} --draft=false`,
+        'release: publish: a prerelease is published without --latest');
+      ok(!gh.commands.includes(LATEST), 'release: publish: and without asking which release is latest, since it cannot become it');
+    }
+
+    // ── What the Chrome builds already installed are offered ──
+    //
+    // Every Chrome build from v1.11.0 to v1.20.1 is installed somewhere and will
+    // never change, and each finds its update with exactly this: the first file
+    // on the latest release whose name ends in .zip. Copied from
+    // src/background/updates.js as those releases shipped it, rather than read
+    // out of their tags, which a release run's shallow checkout does not have.
+    // GitHub lists a release's files by name, and does not promise even that,
+    // so a release's files are put to it in every order there is.
+    {
+      const installedChromeUpdate = (assets) => (Array.isArray(assets) ? assets : [])
+        .find((a) => a && typeof a.name === 'string' && /\.zip$/i.test(a.name));
+      const permutations = (list) => (list.length <= 1 ? [list]
+        : list.flatMap((item, i) => permutations([...list.slice(0, i), ...list.slice(i + 1)]).map((rest) => [item, ...rest])));
+      eq(installedChromeUpdate([{ name: 'FriendlyChatExtension-v1.21.0-firefox.zip' }, { name: 'FriendlyChatExtension-v1.21.0.zip' }]).name,
+        'FriendlyChatExtension-v1.21.0-firefox.zip',
+        'release: (those builds take a Firefox .zip listed ahead of the Chrome one, which is what has to be impossible)');
+      for (const v of [version, '1.21.0', '2.0.10']) {
+        const files = release.releaseFiles(v);
+        const chrome = pack.releaseAssetName(v, 'chrome');
+        const orders = [
+          ['as uploaded', files],
+          ['by name, byte by byte', files.slice().sort()],
+          ['by name, ignoring case', files.slice().sort((a, b) => (a.toLowerCase() < b.toLowerCase() ? -1 : 1))],
+          ['by name, as a person collates it', files.slice().sort((a, b) => a.localeCompare(b, 'en', { sensitivity: 'base' }))],
+          ['in reverse', files.slice().reverse()],
+          ...permutations(files).map((order, i) => [`in order ${i + 1}`, order]),
+        ];
+        const wrong = orders
+          .map(([how, order]) => [how, (installedChromeUpdate(order.map((name) => ({ name, browser_download_url: `x/${name}` }))) || {}).name])
+          .filter(([, name]) => name !== chrome);
+        eq(wrong, [], `release: from a v${v} release, every Chrome build already installed is offered Chrome's zip, in all ${orders.length} orders`);
+      }
+      eq(release.zipProblems(release.releaseFiles(version), version, 'this release'), [],
+        "release: nothing about this release's files is wrong for those builds");
+      const second = release.zipProblems([...release.releaseFiles(version), `FriendlyChatExtension-v${version}-firefox.zip`], version, 'the draft');
+      ok(second.length === 1 && second[0].includes(`FriendlyChatExtension-v${version}-firefox.zip`) && second[0].includes('v1.11.0 to v1.20.1'),
+        "release: while a second .zip beside Chrome's is named, with the builds it would reach");
+      eq(release.zipProblems(['NOTES.ZIP', names.chrome], version, 'the draft').length, 1,
+        'release: whatever case its name is written in');
+
+      const gh = fakeRunner({ release: { isDraft: true, assets: [`FriendlyChatExtension-v${version}-firefox.zip`] } });
+      const { error } = attempt(gh);
+      eq([error && error.reason, gh.commands], ['assets', [VIEW]],
+        "release: publish: a draft already holding another .zip is refused after only looking at it");
+
+      const racing = fakeRunner({ alsoUploaded: [`FriendlyChatExtension-v${version}-firefox.zip`] });
+      const raced = attempt(racing).error;
+      ok(raced && raced.step === 'confirm-assets' && raced.message.includes('v1.11.0 to v1.20.1'),
+        'release: publish: and one that turns up on the draft during the run is caught reading the draft back');
+      eq([published(racing), racing.remote().isDraft], [[], true], 'release: publish: before anything is published');
+    }
+
+    // ── Signed from other code ──
+    {
+      const gh = fakeRunner({ release: { isDraft: true, assets: [names.chrome, names.xpi] }, onDraft: signedFromOtherCode });
+      const { error } = attempt(gh);
+      ok(error && error.step === 'verify-xpi' && error.message.includes('src/content/overlay.js (changed)'),
+        'release: publish: a signed add-on on the draft of the right version and ID, but built from other code, is refused');
+      eq(gh.commands.filter((c) => /release (upload|edit)/.test(c) || / (sign|lint) /.test(c)), [],
+        'release: publish: and nothing is uploaded, signed or published because of it');
+      ['different build', 'moving the tag cannot fix this', 'next version'].forEach((said) => {
+        contains(error && error.hint, said, `release: publish: the hint for it says: ${said}`);
+      });
+    }
+    {
+      const extra = pack.zip([...filesOf(signedXpi), { name: 'src/content/extra.js', data: Buffer.from('slipped in\n') }]);
+      const gh = fakeRunner({ release: { isDraft: true, assets: [names.xpi] }, onDraft: extra });
+      const { error } = attempt(gh);
+      ok(error && error.step === 'verify-xpi' && error.message.includes('src/content/extra.js (not in the package)'),
+        'release: publish: as is one carrying a file the package does not');
+      eq(published(gh), [], 'release: publish: which is not published either');
+    }
+    {
+      const gh = fakeRunner({ signs: [signedFromOtherCode] });
+      const { error, dist } = attempt(gh);
+      ok(error && error.step === 'verify-xpi' && error.message.includes('src/content/overlay.js (changed)'),
+        'release: publish: a file web-ext hands back that is not the package it was given is refused, straight after signing too');
+      eq(gh.commands.filter((c) => /release (upload|edit)/.test(c)), [], 'release: publish: and never uploaded');
+      ok(error && fs.existsSync(path.join(dist, names.xpi)) && error.hint.includes('must not be') && error.hint.includes('signed-firefox-xpi'),
+        'release: publish: while it is kept for the workflow to save, and the hint says it is not to be put on the draft');
+    }
+    {
+      const gh = fakeRunner({ signs: [autographed] });
+      const { error } = attempt(gh);
+      eq(error && `${error.step}: ${error.message}`, null,
+        "release: publish: a file repacked the way Mozilla's signer does it, holding the same files, goes through");
+    }
+
+    // ── Packages changed after they were checked ──
+    {
+      const dist = distWith();
+      const gh = fakeRunner({
+        during: (line) => {
+          if (line.startsWith(VIEW) && !fs.existsSync(path.join(dist, 'firefox-src'))) {
+            fs.writeFileSync(path.join(dist, names.firefox), replaced(firefoxZip, 'src/content/feed.js', Buffer.from('// not what was checked\n')));
+          }
+        },
+      });
+      const { error } = attempt(gh, { dist });
+      ok(fs.readFileSync(path.join(dist, 'firefox-src', 'src', 'content', 'feed.js')).equals(readZipFile(firefoxZip, 'src/content/feed.js')),
+        'release: publish: what is unpacked for signing is the package as it was checked, not the file on disk changed since');
+      ok(error && error.step === 'upload' && error.message.includes(`${names.firefox} changed on disk`),
+        'release: publish: and a package changed on disk after its check is not uploaded');
+      eq(gh.commands.filter((c) => /release (upload|edit)/.test(c)), [], 'release: publish: nor anything else, nor published');
+      contains(error && error.hint, 'find out what wrote to it', 'release: publish: with a hint saying to find out why first');
+    }
+    {
+      const dist = distWith();
+      const gh = fakeRunner({
+        during: (line) => {
+          if (/ sign /.test(line)) fs.writeFileSync(path.join(dist, names.chrome), replaced(chromeZip, 'README.md', Buffer.from('changed\n')));
+        },
+      });
+      const { error } = attempt(gh, { dist });
+      ok(error && error.step === 'upload' && error.message.includes(`${names.chrome} changed on disk`),
+        "release: publish: so is Chrome's, changed while web-ext was signing");
+      contains(error && error.hint, 'Mozilla will not sign', 'release: publish: the hint saying the signed add-on is to be kept');
+    }
+
+    // ── An upload that fails after gh has deleted what it was replacing ──
+    {
+      // Every upload failing after its delete, the signed add-on's included,
+      // had it been sent: the one way to lose it is to be part of the upload.
+      const gh = fakeRunner({ release: { isDraft: true, assets: [names.chrome, names.xpi] }, uploadFails: [names.chrome, names.xpi] });
+      const { error } = attempt(gh);
+      ok(error && error.step === 'upload' && error.message.includes('Validation Failed'),
+        'release: publish: a re-run whose upload fails part-way fails');
+      ok(gh.remote().assets.includes(names.xpi) && !gh.remote().assets.includes(names.chrome),
+        'release: publish: and the signed add-on the draft already held is still there, only the file being replaced gone');
+      contains(error && error.hint, 'untouched', 'release: publish: which the hint says, rather than asking for the file to be attached again');
+      eq(published(gh), [], 'release: publish: with nothing published');
+    }
+    {
+      const gh = fakeRunner({ uploadFails: [names.xpi] });
+      const { error } = attempt(gh);
+      ok(error && error.step === 'upload' && !gh.remote().assets.includes(names.xpi) && error.hint.includes('attach it to the draft first'),
+        'release: publish: while a first run whose signed add-on did not arrive is told to attach it before re-running');
+    }
+
+    // ── Which release is latest ──
+    //
+    // Only a newer version takes "latest", decided as it is published: an older
+    // one published after a newer one would send every signed install back to
+    // its updates.json, and GitHub makes a published release latest unless told
+    // not to.
+    {
+      eq([
+        release.takesLatest('1.21.0', null),
+        release.takesLatest('1.21.0', 'v1.20.1'),
+        release.takesLatest('1.21.0', 'v1.21.1'),
+        release.takesLatest('1.21.0', 'v1.21.0'),
+        release.takesLatest('1.10.0', 'v1.9.0'),
+        release.takesLatest('1.9.0', 'v1.10.0'),
+        release.takesLatest('2.0', 'v1.99.99'),
+        release.takesLatest('1.21.0.1', 'v1.21.0'),
+        release.takesLatest('1.21.0', '1.20.9'),
+      ], [true, true, false, false, true, false, true, true, true],
+      'release: latest: a version takes latest only from an older one, compared number by number, and from nobody when there is none');
+      contains(thrown(() => release.takesLatest('1.21.0', 'nightly')), 'not a version',
+        'release: latest: a latest release tagged with something other than a version is not guessed about');
+      contains(thrown(() => release.takesLatest('1.21.0', 'v1.22.0-beta')), 'not a version', 'release: latest: nor one with a suffix');
+    }
+    for (const [what, latest, flag] of [
+      ['no release published yet', undefined, '--latest'],
+      ['an older release latest', 'v1.0.0', '--latest'],
+      ['v1.9.99 latest, older, though it sorts after it as text', 'v1.9.99', '--latest'],
+      ['this same version latest under another release', `v${version}`, '--latest=false'],
+      ['a newer release latest', 'v99.0.0', '--latest=false'],
+    ]) {
+      const gh = fakeRunner({ latest });
+      const { error, lines } = attempt(gh);
+      eq(error && `${error.step}: ${error.message}`, null, `release: latest: with ${what}, the release goes through`);
+      eq(gh.commands.slice(-2), [LATEST, `gh release edit ${tag} --draft=false ${flag}`],
+        `release: latest: with ${what}, the latest is read just before publishing, and ${tag} published with ${flag}`);
+      if (flag === '--latest=false') {
+        ok(lines.some((l) => l.startsWith('::notice::') && l.includes(latest) && l.includes('without becoming the latest')),
+          `release: latest: saying in the log that it did not become the latest (${what})`);
+      }
+    }
+    {
+      const gh = fakeRunner({ fail: (l) => (l === LATEST ? 'HTTP 502: Bad Gateway' : '') });
+      const { error } = attempt(gh);
+      ok(error && error.step === 'publish' && error.message.includes('could not read which release is the latest') && error.message.includes('502'),
+        'release: latest: GitHub not saying which release is latest fails the run where it publishes');
+      eq([published(gh), gh.remote().isDraft], [[], true], 'release: latest: with nothing published rather than a guess');
+      ['--latest=false', 'only if'].forEach((said) => contains(error && error.hint, said, `release: latest: the hint for publishing by hand says ${said}`));
+    }
+    {
+      const gh = fakeRunner({ latest: 'nightly' });
+      const { error } = attempt(gh);
+      ok(error && error.step === 'publish' && error.message.includes('"nightly"') && published(gh).length === 0,
+        'release: latest: and so does a latest release it cannot compare itself with');
+    }
+    {
+      const gh = fakeRunner({ latest: 'v99.0.0', fail: (l) => (l.startsWith('gh release edit') ? 'HTTP 500' : '') });
+      const { error } = attempt(gh);
+      contains(error && error.hint, `gh release edit ${tag} --draft=false --latest=false`,
+        'release: latest: a publish that fails after that gives a command that leaves the newer release latest');
+      missing(error && error.hint, '--draft=false --latest ', 'release: latest: not one that would take it');
+    }
+
+    // ── What each command is handed ──
+    //
+    // web-ext comes from npm with hundreds of packages under it, so no command
+    // gets a credential it has no use for: the AMO pair goes to web-ext sign
+    // alone, gh's token to gh alone, and web-ext lint gets neither.
+    {
+      const ENV = {
+        PATH: '/usr/local/bin:/usr/bin', HOME: '/home/runner', HTTPS_PROXY: 'http://proxy.example:3128',
+        GH_TOKEN: 'ghs_workflowtoken', GITHUB_TOKEN: 'ghs_anothertoken', GH_REPO: 'JRBlaze/FriendlyChatExtension',
+        ...CREDENTIALS,
+        AMO_JWT_ISSUER: 'user:12345:67', AMO_JWT_SECRET: 'repository-secret',
+        WEB_EXT_API_URL_PREFIX: 'https://elsewhere.example/api/v5',
+      };
+      const given = JSON.stringify(ENV);
+      const credentialsIn = (env) => Object.keys(env || {}).filter((k) => /^(GH_TOKEN|GITHUB_TOKEN|WEB_EXT_|AMO_)/.test(k)).sort();
+      for (const [what, opts] of [
+        ['a first release', {}],
+        ['a re-run with the signed add-on on the draft', { release: { isDraft: true, assets: [names.chrome, names.xpi] }, latest: 'v1.0.0' }],
+      ]) {
+        const gh = fakeRunner(opts);
+        const { error } = attempt(gh, { env: ENV });
+        eq(error && `${error.step}: ${error.message}`, null, `release: env: ${what} goes through`);
+        eq(gh.calls.filter((c) => !c.env || c.env.PATH !== ENV.PATH || c.env.HOME !== ENV.HOME || c.env.HTTPS_PROXY !== ENV.HTTPS_PROXY)
+          .map((c) => c.line), [],
+        `release: env: (${what}) every command is handed an environment of its own, with PATH, HOME and the proxy it needs to start`);
+        gh.calls.forEach((c) => {
+          const kind = c.line.startsWith('gh ') ? 'gh' : / sign /.test(c.line) ? 'sign' : 'npx';
+          const expected = { gh: ['GH_TOKEN', 'GITHUB_TOKEN'], sign: ['WEB_EXT_API_KEY', 'WEB_EXT_API_SECRET'], npx: [] }[kind];
+          eq(credentialsIn(c.env), expected,
+            `release: env: (${what}) ${c.line.split(' ').slice(0, 4).join(' ')} is handed ${expected.length ? expected.join(' and ') : 'no credential at all'}`);
+        });
+        const signing = gh.calls.find((c) => / sign /.test(c.line));
+        if (signing) {
+          eq([signing.env.WEB_EXT_API_KEY, signing.env.WEB_EXT_API_SECRET], [ENV.WEB_EXT_API_KEY, ENV.WEB_EXT_API_SECRET],
+            'release: env: web-ext sign gets the AMO credentials as they were given');
+        }
+        ok(gh.calls.filter((c) => c.line.startsWith('gh ')).every((c) => c.env.GH_REPO === ENV.GH_REPO && c.env.GH_TOKEN === ENV.GH_TOKEN),
+          `release: env: (${what}) gh keeps its token and GH_REPO`);
+      }
+      eq(JSON.stringify(ENV), given, 'release: env: and the environment the run was given is left as it was');
+
+      const mixed = { Path: '/bin', gh_token: 't', Web_Ext_Api_Key: 'k', amo_jwt_secret: 's', WEB_EXT_CHANNEL: 'listed' };
+      eq([release.commandEnv(mixed, 'github'), release.commandEnv(mixed, 'amo'), release.commandEnv(mixed, null)].map(Object.keys),
+        [['Path', 'gh_token'], ['Path', 'Web_Ext_Api_Key'], ['Path']],
+        'release: env: names are matched whatever case they are in, as Windows reads them, and no other WEB_EXT_ setting reaches web-ext');
+      const probe = release.runCommand(process.execPath,
+        ['-e', 'process.stdout.write(JSON.stringify([process.env.FCM_RELEASE_PROBE || null, process.env.GH_TOKEN || null]))'],
+        { capture: true, env: release.commandEnv({ ...process.env, FCM_RELEASE_PROBE: 'handed', GH_TOKEN: 'must-not-arrive' }, null) });
+      eq([probe.status, probe.stdout], [0, JSON.stringify(['handed', null])],
+        'release: env: and runCommand really starts a command with the environment it is handed, and nothing more');
+    }
+
+    // What the command line says.
+    {
+      const said = [];
+      const io = (gh, env) => ({ run: gh.run, env, log: () => {}, error: (line) => said.push(line) });
+      eq(release.main(['publish', tag, distWith()], io(fakeRunner(), {})), 1, 'release: main: a refused publish exits 1');
+      ok(said[0].startsWith('::error::No AMO credentials'), 'release: main: with the refusal as an annotation');
+      said.length = 0;
+      eq(release.main(['publish', tag, distWith()], io(fakeRunner({ fail: (l) => (l.includes(' sign ') ? 'rejected' : '') }), CREDENTIALS)), 1,
+        'release: main: a failed step exits 1');
+      ok(said.some((l) => l === 'Stopped at: sign. Done before it: extract, lint, create-draft. Not published.'),
+        `release: main: saying where it stopped and what was done before (${said.join(' | ')})`);
+      ok(said.some((l) => l.includes('Developer Hub')), 'release: main: and what to do about it');
+      eq(release.main(['publish', tag, distWith()], io(fakeRunner(), CREDENTIALS)), 0, 'release: main: a release that goes through exits 0');
+      eq(release.main(['sign-everything'], io(fakeRunner(), {})), 2, 'release: main: an unknown command exits 2');
+      eq(release.main(['verify-xpi', 'only-one'], io(fakeRunner(), {})), 2, 'release: main: and so does a wrong number of arguments');
+      eq(release.main(['publish', '1.21.0', distWith()], io(fakeRunner(), CREDENTIALS)), 2, 'release: main: and a tag without its v');
+    }
+
+    // ── release.yml ──
+    {
+      const yml = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'release.yml'), 'utf8').replace(/\r\n/g, '\n');
+      const code = yml.split('\n').filter((line) => !/^\s*#/.test(line)).join('\n');
+      ok(/^on:\n {2}push:\n {4}tags: \['v\*'\]$/m.test(code), 'release.yml: runs when a v* tag is pushed');
+      ok(/^permissions:\n {2}contents: write\b/m.test(code), 'release.yml: with contents: write');
+      ok(/^concurrency:\n {2}group: release-\$\{\{ github\.ref \}\}\n {2}cancel-in-progress: false$/m.test(code),
+        'release.yml: one run per tag at a time, and never one cancelled part-way');
+      contains(code, "node-version: '22'", 'release.yml: on Node 22');
+      eq(code.match(/web-ext@\S+/g), [release.WEB_EXT], 'release.yml: fetches web-ext pinned to exactly the version tools/release.js runs');
+      eq(release.WEB_EXT, 'web-ext@8.10.0', 'release.yml: which is web-ext 8.10.0');
+      contains(code, 'WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}', 'release.yml: the AMO issuer is web-ext\'s API key');
+      contains(code, 'WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}', 'release.yml: the AMO secret is web-ext\'s API secret');
+      contains(code, 'GH_TOKEN: ${{ github.token }}', 'release.yml: and gh has the workflow token');
+      eq((code.match(/secrets\./g) || []).length, 2, 'release.yml: no other secret is used');
+      ok(/- name: Sign and publish\n {8}env:\n( {10}\w+: .+\n)+ {8}run: node tools\/release\.js publish "\$GITHUB_REF_NAME" dist$/m.test(code),
+        'release.yml: the secrets go to the one step that publishes, which is tools/release.js');
+      eq(code.split('\n').filter((line) => /gh release create/.test(line) && !line.includes('--draft')), [],
+        'release.yml: never creates a release that is not a draft');
+      eq(code.split('\n').filter((line) => /gh release (create|upload|edit|delete)/.test(line)), [],
+        'release.yml: and leaves every change to a release to tools/release.js');
+      const order = [
+        'node tests/run.js',
+        'tag="${GITHUB_REF_NAME#v}"',
+        'node tools/pack.js dist --target all',
+        'node tools/release.js verify-packages dist "${GITHUB_REF_NAME#v}"',
+        'npx --yes web-ext@8.10.0 --version',
+        'node tools/release.js publish "$GITHUB_REF_NAME" dist',
+      ];
+      const positions = order.map((s) => code.indexOf(s));
+      ok(positions.every((p, i) => p >= 0 && (i === 0 || p > positions[i - 1])),
+        `release.yml: tests, checks the tag, builds, checks the packages, fetches web-ext and then publishes, in that order (${positions.join(', ')})`);
+      eq(code.match(/^\s+if: .*$/gm), ['        if: failure()'], 'release.yml: nothing runs past a failure except keeping the signed add-on');
+      ok(/- name: Keep the signed add-on\n {8}if: failure\(\)\n {8}uses: actions\/upload-artifact@v\d+\n/.test(code),
+        'release.yml: which is saved as an artifact');
+      const kept = (/name: signed-firefox-xpi\n {10}path: \|\n((?: {12}\S.*\n)+)/.exec(code) || [])[1] || '';
+      const globs = kept.trim().split('\n').map((l) => l.trim()).filter(Boolean);
+      const matches = (glob, file) => new RegExp(`^${glob.split('*').map((s) => s.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('[^/]*')}$`).test(file);
+      ok(globs.some((g) => matches(g, `dist/${names.xpi}`)) && globs.some((g) => matches(g, 'dist/firefox-signed/a1b2c3d4.xpi')),
+        `release.yml: the artifact holds the signed add-on, renamed or not (${globs.join(', ')})`);
+      ok(!globs.some((g) => matches(g, `dist/${names.firefox}`)),
+        'release.yml: and not the unsigned package, which ends in .xpi too and is not a file to attach to a draft');
+      ok(/- uses: actions\/checkout@v\d+\n {8}with:\n {10}persist-credentials: false\n/.test(code),
+        "release.yml: the checkout leaves no token in the git config, where web-ext's npm packages could read it");
+      ok(!yml.includes('\t'), 'release.yml: no tabs, which YAML does not allow for indentation');
+
+      const tests = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'tests.yml'), 'utf8').replace(/\r\n/g, '\n');
+      ok(!/only has\s*(#\s*)?to satisfy Chrome/.test(tests), 'tests.yml: no longer says the extension only has to satisfy Chrome');
+      contains(tests.replace(/\n\s*#\s*/g, ' '), 'satisfy Chrome and Firefox', 'tests.yml: it says Chrome and Firefox');
+      ok(!tests.includes('\t'), 'tests.yml: no tabs');
+      const ignored = fs.readFileSync(path.join(ROOT, '.gitignore'), 'utf8').replace(/\r\n/g, '\n');
+      ok(/^\.amo-upload-uuid$/m.test(ignored), '.gitignore: the upload record web-ext sign leaves behind is ignored');
+    }
+  } finally {
+    temps.forEach((dir) => fs.rmSync(dir, { recursive: true, force: true }));
+  }
 };
 
 suites.irc = function () {
@@ -712,6 +3239,808 @@ suites.updates = function () {
 
   ok(FCM.STORAGE_KEYS.update, 'updates: the check has somewhere to record itself');
   ok(FCM.GITHUB_RELEASES_URL.includes('JRBlaze'), 'updates: the releases page is this repo');
+};
+
+// ── The extension's own pages ─────────────────────────────────────────────────
+//
+// The popup and the options page are ordinary scripts over their own markup.
+// There is no DOM here to load that markup into, so each page is stood up from
+// its own HTML instead: every element with an id becomes a small stand-in with
+// as much of an element as the page scripts use — classes, text, a value, a
+// `hidden` flag, children, and listeners a test can fire and wait on. An id the
+// markup does not have is null, as it would be in the page, so a script that
+// reaches for an element nobody added fails here rather than in a browser.
+function stubElement(tag, attrs = {}) {
+  const classes = new Set(String(attrs.class || '').split(/\s+/).filter(Boolean));
+  const listeners = {};
+  const el = {
+    tagName: String(tag).toUpperCase(),
+    id: attrs.id || '',
+    hidden: !!attrs.hidden,
+    textContent: attrs.text || '',
+    innerHTML: '',
+    value: '',
+    checked: false,
+    disabled: false,
+    title: '',
+    placeholder: '',
+    href: '',
+    download: '',
+    onclick: null,
+    dataset: {},
+    style: {},
+    children: [],
+    parentNode: null,
+    classList: {
+      add: (c) => { classes.add(c); },
+      remove: (c) => { classes.delete(c); },
+      contains: (c) => classes.has(c),
+      toggle: (c, force) => {
+        const on = force === undefined ? !classes.has(c) : !!force;
+        if (on) classes.add(c); else classes.delete(c);
+        return on;
+      },
+    },
+    addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
+    appendChild(child) {
+      if (child.parentNode) child.remove();
+      child.parentNode = el;
+      el.children.push(child);
+      return child;
+    },
+    replaceChildren(...kids) {
+      el.children.slice().forEach((c) => c.remove());
+      kids.forEach((k) => el.appendChild(k));
+    },
+    remove() {
+      const parent = el.parentNode;
+      if (!parent) return;
+      parent.children = parent.children.filter((c) => c !== el);
+      el.parentNode = null;
+    },
+    // Every listener, and onclick for a click, with whatever they start awaited.
+    fire(type) {
+      const event = { type, target: el, preventDefault() {} };
+      const results = (listeners[type] || []).map((fn) => fn(event));
+      if (type === 'click' && typeof el.onclick === 'function') results.push(el.onclick(event));
+      return Promise.all(results);
+    },
+    click() { return el.fire('click'); },
+  };
+  return el;
+}
+
+function pageStub(rel) {
+  const html = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+  const byId = new Map();
+  const tag = /<([a-z][\w-]*)\b([^>]*)>/gi;
+  let m;
+  while ((m = tag.exec(html))) {
+    const id = /\sid="([^"]+)"/.exec(m[2]);
+    if (!id) continue;
+    const cls = /\sclass="([^"]*)"/.exec(m[2]);
+    // `hidden` as an attribute of its own, not as a word in some other value.
+    const bare = m[2].replace(/"[^"]*"/g, '""');
+    // The text up to the element's own closing tag, which is enough for the
+    // leaf elements a page script reads or writes.
+    const close = html.indexOf(`</${m[1]}>`, tag.lastIndex);
+    const text = close < 0 ? '' : html.slice(tag.lastIndex, close)
+      .replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+    byId.set(id[1], stubElement(m[1], {
+      id: id[1], class: cls ? cls[1] : '', hidden: /\shidden(?=[\s=]|$)/.test(bare), text,
+    }));
+  }
+  const document = {
+    body: stubElement('body'),
+    getElementById: (id) => byId.get(id) || null,
+    createElement: (name) => stubElement(name),
+  };
+  return { html, document, $: (id) => byId.get(id) || null };
+}
+
+// A refusal nobody handled only ever shows up as a warning, and in the popup
+// that warning is the symptom of the bug. Collected while a suite runs, so it
+// can be asserted to be absent.
+async function collectingUnhandled(run) {
+  const unhandled = [];
+  const onUnhandled = (reason) => { unhandled.push(String(reason && reason.message ? reason.message : reason)); };
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    await run();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+  return unhandled;
+}
+
+// The popup's update card, in each browser. Chrome's package is a zip that is
+// unpacked and dropped on the extensions page; Firefox's is a signed add-on that
+// installs itself when it is opened. The card has to describe the right one,
+// and a tab the browser refuses to open must leave the popup where it is rather
+// than close it as though the button had worked.
+suites.popup = function () {
+  const release = 'https://github.com/JRBlaze/FriendlyChatExtension/releases';
+  const status = (extra) => ({
+    available: true, version: '9.9.9', installed: '1.2.3', notes: '', checkedAt: 1,
+    url: `${release}/tag/v9.9.9`,
+    downloadUrl: `${release}/download/v9.9.9/FriendlyChatExtension-v9.9.9.zip`,
+    ...extra,
+  });
+
+  // The host permissions the popup is checked against: the Firefox package's,
+  // since only Firefox ever asks.
+  const pack = require(path.join(ROOT, 'tools', 'pack.js'));
+  const { patternCovers } = require('./background.js');
+  const HOSTS = JSON.parse(pack.manifestBytes(ROOT, 'firefox').toString('utf8')).host_permissions;
+
+  // The real popup.js, over popup.html's own elements, with the extension API
+  // answering as the named browser does. `create` decides what tabs.create
+  // gives back; `tab` is the tab the popup was opened over; `grants` lists the
+  // origins permissions.contains says are granted (every one, if not given);
+  // `answer` is what the person says to Firefox's prompt, 'allow' or 'deny'.
+  //
+  // permissions.request keeps Firefox's rule: asked from anywhere but inside a
+  // click still being handled, it is refused without anyone being asked. So a
+  // test clicks through `press`, which is a click the way a person makes one,
+  // and a handler that waited on anything before asking finds its click over.
+  //
+  // `updateUrl` puts an update_url in the manifest the popup reads, as a signed
+  // Firefox release has; every message the popup sends is noted in `sent`, by
+  // its cmd, and 'updateCheck' is answered with `update` as a check that got
+  // through. `self` is what management.getSelf answers — 'reject' for a
+  // refusal, nothing at all for a browser with no management API — and every
+  // time it is asked is noted in `selfAsked`.
+  function openPopup({ browser = 'chrome', update = status(), create, tab, grants, answer = 'allow', updateUrl, self } = {}) {
+    const page = pageStub('src/popup/popup.html');
+    const created = [];
+    const checks = [];
+    const requests = [];
+    const sent = [];
+    const selfAsked = [];
+    const granted = Array.isArray(grants) ? grants.slice() : null;
+    let handlingClick = false;
+    const win = { closed: 0, close() { win.closed++; } };
+    const origin = browser === 'firefox' ? 'moz-extension://popup' : 'chrome-extension://popup';
+    const area = { get: async () => ({}), set: async () => {} };
+    const sandbox = makeSandbox({
+      document: page.document,
+      window: win,
+      chrome: {
+        runtime: {
+          lastError: null,
+          getURL: (p = '') => `${origin}/${p}`,
+          getManifest: () => ({
+            version: '1.2.3',
+            host_permissions: HOSTS.slice(),
+            ...(updateUrl ? { browser_specific_settings: { gecko: { id: pack.GECKO_ID, update_url: updateUrl } } } : {}),
+          }),
+          openOptionsPage() {},
+          sendMessage: (msg, reply) => {
+            sent.push(msg.cmd);
+            if (!reply) return;
+            if (msg.cmd === 'updateStatus') reply(update);
+            else if (msg.cmd === 'updateCheck') reply({ ...update, checked: true });
+            else reply(null);
+          },
+        },
+        tabs: {
+          query: async () => (tab ? [tab] : []),
+          create: (info) => {
+            created.push(info.url);
+            return create ? create(info) : Promise.resolve({ id: 7 });
+          },
+        },
+        ...(self === undefined ? {} : {
+          management: {
+            getSelf: () => {
+              selfAsked.push(true);
+              return self === 'reject' ? Promise.reject(new Error('management is not available')) : Promise.resolve(self);
+            },
+          },
+        }),
+        permissions: {
+          contains: async ({ origins = [] } = {}) => {
+            checks.push(origins);
+            return granted === null || origins.every((o) => granted.some((g) => patternCovers(g, o)));
+          },
+          request: ({ origins = [] } = {}) => {
+            requests.push({ origins, duringClick: handlingClick });
+            if (!handlingClick) {
+              return Promise.reject(new Error('permissions.request may only be called from a user input handler'));
+            }
+            if (answer !== 'allow') return Promise.resolve(false);
+            origins.forEach((o) => { if (granted && !granted.includes(o)) granted.push(o); });
+            return Promise.resolve(true);
+          },
+        },
+        storage: { sync: area, local: area },
+      },
+    });
+    const FCM = load(sandbox, 'src/shared/namespace.js', 'src/shared/constants.js',
+      'src/shared/util.js', 'src/popup/popup.js');
+    const press = (id) => {
+      handlingClick = true;
+      try { return page.$(id).click(); } finally { handlingClick = false; }
+    };
+    return { FCM, $: page.$, created, win, checks, requests, press, sent, selfAsked };
+  }
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  return (async () => {
+    const unhandled = await collectingUnhandled(async () => {
+      // ── Chrome ──
+      {
+        const p = openPopup();
+        await settle();
+        eq(p.FCM.BROWSER, 'chrome', "popup: served from chrome-extension:, the popup is Chrome's");
+        ok(!p.$('update').classList.contains('hidden'), 'popup: an update shows the card');
+        eq(p.$('update-get').textContent, 'Download the zip', 'popup: Chrome is offered the zip');
+        ok(!p.$('update-install').classList.contains('hidden'),
+          'popup: with the button for the extensions page beside it');
+        contains(p.$('update-how').textContent, 'Drop the unzipped folder onto the extensions page',
+          'popup: and the steps for loading it unpacked under both');
+        await p.$('update-install').click();
+        eq(p.created, ['chrome://extensions'], 'popup: that button opens chrome://extensions');
+      }
+      {
+        const p = openPopup({ update: status({ downloadUrl: '' }) });
+        await settle();
+        eq(p.$('update-get').textContent, 'Open the release', 'popup: a release without the file offers its page');
+        await p.$('update-get').click();
+        eq(p.created, [status().url], 'popup: and opens that');
+      }
+
+      // ── Closing only once the tab is there ──
+      {
+        let open = null;
+        const p = openPopup({ create: () => new Promise((resolve) => { open = resolve; }) });
+        await settle();
+        await p.$('update-get').click();
+        eq(p.created, [status().downloadUrl], 'popup: Download opens the file the release carries');
+        await settle();
+        eq(p.win.closed, 0, 'popup: and the popup stays open while the tab is still being made');
+        open({ id: 9 });
+        await settle();
+        eq(p.win.closed, 1, 'popup: then closes, so the new tab is not left behind it');
+      }
+      {
+        const p = openPopup({ create: () => Promise.reject(new Error('Illegal URL: about:addons')) });
+        await settle();
+        await p.$('update-get').click();
+        await settle();
+        eq(p.win.closed, 0,
+          'popup: a tab refused afterwards, the way Firefox refuses one, leaves the popup open');
+      }
+      {
+        const p = openPopup({ create: () => { throw new Error('Cannot open that page'); } });
+        await settle();
+        let threw = null;
+        try { await p.$('update-install').click(); } catch (e) { threw = e.message; }
+        await settle();
+        eq([threw, p.win.closed], [null, 0], 'popup: and one refused on the spot neither throws nor closes it');
+      }
+      {
+        const p = openPopup({ create: () => undefined });
+        await settle();
+        await p.$('update-get').click();
+        await settle();
+        eq(p.win.closed, 1, 'popup: an API that answers with nothing at all still closes it');
+      }
+
+      // ── Firefox ──
+      {
+        const xpi = `${release}/download/v9.9.9/FriendlyChatExtension-v9.9.9-firefox.xpi`;
+        const p = openPopup({ browser: 'firefox', update: status({ downloadUrl: xpi }) });
+        await settle();
+        eq(p.FCM.BROWSER, 'firefox', "popup: served from moz-extension:, the popup is Firefox's");
+        eq(p.$('update-get').textContent, 'Download the add-on', 'popup: Firefox is offered the add-on, not a zip');
+        ok(p.$('update-install').classList.contains('hidden'),
+          'popup: with no extensions-page button, Firefox having no such page to open');
+        eq(p.$('update-how').textContent,
+          'Open the downloaded file in Firefox to install the update over this one.',
+          'popup: and the one step there is, in place of the load-unpacked ones');
+        await p.$('update-install').click();
+        eq(p.created, [], 'popup: the hidden button opens nothing even if it is reached');
+        await p.$('update-get').click();
+        eq(p.created, [xpi], 'popup: while Download opens the add-on');
+      }
+      {
+        const p = openPopup({ browser: 'firefox', update: status({ downloadUrl: '' }) });
+        await settle();
+        eq(p.$('update-get').textContent, 'Open the release',
+          'popup: and a release without the add-on offers its page on Firefox too');
+      }
+
+      // ── Kept up to date by the browser ──
+      //
+      // A build whose manifest names an update_url is updated by Firefox, so
+      // the popup offers neither a check nor the card, asks the background
+      // nothing about either, and says in the check's place that Firefox does
+      // it. Every other build — Chrome's, and a Firefox package without an
+      // update_url — keeps the check exactly as it was.
+      {
+        const p = openPopup();
+        await settle();
+        ok(!p.$('check-updates').classList.contains('hidden'), 'popup: Chrome offers "Check for updates"');
+        ok(p.$('updated-by-browser').classList.contains('hidden'), 'popup: and not the line about Firefox updating it');
+        await p.$('check-updates').click();
+        eq(p.sent.filter((cmd) => /^update/.test(cmd)), ['updateStatus', 'updateCheck'],
+          'popup: Chrome asks what the last check found as it opens, and checks when the link is pressed');
+        eq(p.$('check-updates').textContent, 'Update ready', 'popup: with the link saying what the check found');
+      }
+      {
+        const xpi = `${release}/download/v9.9.9/FriendlyChatExtension-v9.9.9-firefox.xpi`;
+        const p = openPopup({ browser: 'firefox', update: status({ downloadUrl: xpi }) });
+        await settle();
+        ok(!p.$('check-updates').classList.contains('hidden') && p.$('updated-by-browser').classList.contains('hidden'),
+          'popup: a Firefox package without an update_url keeps "Check for updates", with no line in its place');
+        ok(!p.$('update').classList.contains('hidden'), 'popup: and still shows the update card');
+        await p.$('check-updates').click();
+        eq(p.sent.filter((cmd) => /^update/.test(cmd)), ['updateStatus', 'updateCheck'],
+          'popup: asking the background the same two things Chrome does');
+      }
+      {
+        const xpi = `${release}/download/v9.9.9/FriendlyChatExtension-v9.9.9-firefox.xpi`;
+        const p = openPopup({ browser: 'firefox', updateUrl: pack.UPDATE_URL, update: status({ downloadUrl: xpi }) });
+        await settle();
+        ok(p.$('check-updates').classList.contains('hidden'), 'popup: a build Firefox updates by itself offers no "Check for updates"');
+        ok(!p.$('updated-by-browser').classList.contains('hidden'), 'popup: and shows a line in its place');
+        eq(p.$('updated-by-browser').textContent, 'Kept up to date by Firefox', 'popup: saying that Firefox keeps it up to date');
+        ok(p.$('update').classList.contains('hidden'), 'popup: with no update card, even with a background that would report one');
+        await p.$('check-updates').click();
+        await p.$('update-get').click();
+        await settle();
+        eq(p.sent.filter((cmd) => /^update/.test(cmd)), [],
+          'popup: asking the background nothing about updates, even when the hidden link is reached');
+        eq([p.created, p.$('check-updates').textContent], [[], 'Check for updates'],
+          'popup: and opening no download and no release');
+      }
+      // Firefox updates a signed install by itself, but not an add-on loaded
+      // temporarily from about:debugging, though that names the same update_url:
+      // the unsigned package is the very file Mozilla signs. The line says which.
+      for (const [what, self, text] of [
+        ['a permanent install', { installType: 'normal' }, 'Kept up to date by Firefox'],
+        ['an add-on loaded temporarily from about:debugging', { installType: 'development' }, 'Loaded temporarily, so Firefox does not update it'],
+        ['a browser that will not say how it was installed', 'reject', 'Kept up to date by Firefox'],
+      ]) {
+        const p = openPopup({ browser: 'firefox', updateUrl: pack.UPDATE_URL, self });
+        await settle();
+        eq([p.$('check-updates').classList.contains('hidden'), p.$('updated-by-browser').classList.contains('hidden'),
+          p.$('updated-by-browser').textContent, p.selfAsked.length], [true, false, text, 1],
+        `popup: on ${what}, a build Firefox updates says "${text}"`);
+        eq(p.sent.filter((cmd) => /^update/.test(cmd)), [], `popup: and asks the background nothing about updates (${what})`);
+      }
+      {
+        const p = openPopup({ self: { installType: 'development' } });
+        await settle();
+        eq([p.selfAsked.length, p.$('updated-by-browser').classList.contains('hidden'), p.$('check-updates').classList.contains('hidden')],
+          [0, true, false], 'popup: while Chrome, which is not updated by the browser, never asks how it was installed');
+      }
+
+      // ── Site access ──
+      //
+      // Firefox can be keeping the add-on off any site it asks for, and says
+      // nothing about it; the popup is one of the two places that can ask for
+      // it back. Chrome shows none of this and asks the browser nothing.
+      const TWITCH = '*://*.twitch.tv/*';
+      const KICK = '*://*.kick.com/*';
+      const SEVEN = 'https://7tv.io/*';
+      const FFZ = 'https://api.frankerfacez.com/*';
+      const allBut = (...gone) => HOSTS.filter((o) => !gone.includes(o));
+      const elsewhere = { id: 3, url: 'https://example.org/' };
+      // A tab on a site the add-on is kept off, whose address Firefox leaves out.
+      const unseen = { id: 3 };
+      {
+        const p = openPopup({ grants: [], tab: elsewhere });
+        await settle();
+        ok(p.$('access').classList.contains('hidden'), 'popup: Chrome never shows the site-access card, even with nothing granted');
+        await p.press('access-allow');
+        await settle();
+        eq([p.checks.length, p.requests.length], [0, 0],
+          'popup: and never asks the browser about site access, even when the button is reached');
+        ok(p.$('access-reload').classList.contains('hidden'), 'popup: nor ever says an open tab needs reloading');
+        eq(p.$('context').textContent, 'Not a Twitch or Kick page',
+          'popup: a page that is not Twitch or Kick is called that on Chrome, as it always was');
+      }
+      {
+        const p = openPopup({ browser: 'firefox', tab: elsewhere });
+        await settle();
+        ok(p.$('access').classList.contains('hidden'), 'popup: Firefox with every site allowed shows no card');
+        eq(p.checks, HOSTS.map((o) => [o]), 'popup: having asked about every site the manifest lists, one at a time');
+        eq(p.$('context').textContent, 'Not a Twitch or Kick page',
+          'popup: and a page that is not Twitch or Kick is still called that');
+      }
+      {
+        const p = openPopup({ browser: 'firefox', grants: allBut(KICK, SEVEN), tab: unseen });
+        await settle();
+        ok(!p.$('access').classList.contains('hidden'), 'popup: Firefox keeping the add-on off a site shows the card');
+        eq(p.$('access-note').textContent,
+          'Firefox is not letting Friendly Chat use: kick.com, 7tv.io. The overlay cannot appear on a site it is not allowed on.',
+          'popup: naming everything it is kept off, by host, and that without its site the overlay cannot appear');
+        eq(p.$('access-allow').textContent, 'Allow access', 'popup: with a button to allow them');
+        eq(p.$('context').textContent, 'Site access needed',
+          'popup: and a tab whose address Firefox withholds is not called "not a Twitch or Kick page", which it may well be');
+        ok(p.$('idle').classList.contains('hidden'),
+          'popup: nor promised an overlay on the next channel opened, which would not appear');
+        ok(p.$('access-reload').classList.contains('hidden'), 'popup: with nothing yet said about reloading tabs');
+
+        const clicked = p.press('access-allow');
+        eq(p.requests.map((r) => [r.origins, r.duringClick]), [[[KICK, SEVEN], true]],
+          'popup: Allow access asks Firefox for exactly those, while the click is still being handled');
+        await clicked;
+        await settle();
+        ok(p.$('access').classList.contains('hidden'), 'popup: once Firefox allows them, the card goes');
+        ok(!p.$('access-reload').classList.contains('hidden'),
+          'popup: and, a site being among them, the popup says tabs already open need reloading');
+        eq(p.$('access-reload').textContent,
+          'Allowed. Twitch or Kick tabs that were already open need reloading before the panel appears in them.',
+          'popup: since Firefox puts no panel into a page loaded before the site was allowed');
+        eq(p.$('context').textContent, 'Not a Twitch or Kick page',
+          'popup: and the tab is described again, from what the popup can see now');
+        ok(!p.$('idle').classList.contains('hidden'), 'popup: with the line about opening a channel back');
+        eq(p.win.closed, 0, 'popup: and the popup left open');
+      }
+      {
+        const p = openPopup({ browser: 'firefox', grants: allBut(SEVEN, FFZ), tab: elsewhere });
+        await settle();
+        eq(p.$('access-note').textContent,
+          'Firefox is not letting Friendly Chat use: 7tv.io, api.frankerfacez.com. Emotes, history or sign-in that depend on them will be missing.',
+          'popup: a service the add-on is kept off is named as well, with what goes missing without it');
+        eq(p.$('context').textContent, 'Not a Twitch or Kick page',
+          'popup: while a page that really is not Twitch or Kick, with both sites allowed, is still called that');
+        ok(!p.$('idle').classList.contains('hidden'), 'popup: over the usual line about opening a channel');
+        await p.press('access-allow');
+        await settle();
+        eq([p.requests.map((r) => r.origins), p.$('access').classList.contains('hidden')], [[[SEVEN, FFZ]], true],
+          'popup: services alone, once allowed, take the card away too');
+        ok(p.$('access-reload').classList.contains('hidden'),
+          'popup: without a word about reloading tabs, since where the panel appears has not changed');
+      }
+      {
+        // As Firefox's extensions menu leaves Twitch after "Only when clicked"
+        // and then "Always allow on www.twitch.tv": the overlay is on its
+        // channel pages, so the popup must not say it cannot be.
+        const p = openPopup({ browser: 'firefox', grants: [...allBut(TWITCH), '*://www.twitch.tv/*'], tab: elsewhere });
+        await settle();
+        ok(p.$('access').classList.contains('hidden'),
+          'popup: Twitch allowed only where its channel pages are shows no card saying the overlay cannot appear there');
+        eq([p.$('context').textContent, p.$('idle').classList.contains('hidden')], ['Not a Twitch or Kick page', false],
+          'popup: nor "Site access needed" in place of the page it is on');
+      }
+      {
+        const p = openPopup({ browser: 'firefox', grants: allBut(KICK), tab: unseen, answer: 'deny' });
+        await settle();
+        await p.press('access-allow');
+        await settle();
+        ok(!p.$('access').classList.contains('hidden'), 'popup: told no, the card stays');
+        // Every host once a check, and kick.com's channel pages as well, since
+        // the whole site is not allowed.
+        eq([p.$('context').textContent, p.checks.length], ['Site access needed', (HOSTS.length + 1) * 2],
+          'popup: having checked again, and found the site still missing');
+        ok(p.$('access-reload').classList.contains('hidden'), 'popup: and says nothing about reloading tabs');
+      }
+      {
+        const p = openPopup({ browser: 'firefox', grants: allBut(KICK), tab: unseen });
+        await settle();
+        // A click already over when the request is made — which is exactly what
+        // an await in front of the request would have made of a real one.
+        await p.$('access-allow').click();
+        await settle();
+        eq(p.requests.map((r) => r.duringClick), [false], 'popup: a request made after the click is over');
+        ok(!p.$('access').classList.contains('hidden'),
+          'popup: which Firefox refuses without asking, leaves the card where it was');
+        ok(p.$('access-reload').classList.contains('hidden'), 'popup: and a refused request says nothing about reloading tabs');
+      }
+      {
+        const src = fs.readFileSync(path.join(ROOT, 'src/popup/popup.js'), 'utf8').replace(/\r\n/g, '\n');
+        const handler = /\$\('access-allow'\)\.addEventListener\('click', (async )?\(\) => \{\n([^\n]*)/.exec(src);
+        ok(handler && !handler[1], 'popup: the Allow access handler is not an async function');
+        ok(handler && handler[2].trim().startsWith('chrome.permissions.request({ origins: missingAccess })'),
+          'popup: and its first statement is the request itself, with nothing awaited in front of it');
+      }
+    });
+    eq(unhandled, [], 'popup: no refused tab or refused request is left as an unhandled rejection');
+  })();
+};
+
+// The options page's backup section, in each browser: what it says about an
+// extension's storage going, and whether Export reaches the browser as a
+// download at all.
+suites.options = function () {
+  const SETTINGS_KEY = load(makeSandbox(), 'src/shared/namespace.js', 'src/shared/constants.js')
+    .STORAGE_KEYS.settings;
+  const pack = require(path.join(ROOT, 'tools', 'pack.js'));
+  const { patternCovers } = require('./background.js');
+  const HOSTS = JSON.parse(pack.manifestBytes(ROOT, 'firefox').toString('utf8')).host_permissions;
+
+  // `settings` is what storage already holds when the page opens. `grants`
+  // lists the origins permissions.contains says are granted (every one, if not
+  // given), and `answer` is what the person says to Firefox's prompt. Requests
+  // keep Firefox's rule, as in the popup suite: only one made inside a click
+  // still being handled is put to anyone, and `press` is such a click.
+  // `revoke` and `allow` change a grant the way about:addons does — the grant
+  // first, then the event Firefox fires about it.
+  function openOptions({ browser = 'chrome', settings, grants, answer = 'allow' } = {}) {
+    const page = pageStub('src/options/options.html');
+    const checks = [];
+    const requests = [];
+    const granted = Array.isArray(grants) ? grants.slice() : null;
+    const permissionListeners = { added: [], removed: [] };
+    let handlingClick = false;
+    const clicks = [];
+    const make = page.document.createElement;
+    page.document.createElement = (name) => {
+      const el = make(name);
+      // What a download needs at the moment of the click: an address, a file
+      // name, and — the part a detached link lacks — a place in the page.
+      if (String(name).toLowerCase() === 'a') {
+        el.click = () => {
+          clicks.push({ href: el.href, download: el.download, inPage: el.parentNode === page.document.body });
+        };
+      }
+      return el;
+    };
+    const store = { local: {}, sync: {} };
+    if (settings) store.local[SETTINGS_KEY] = { ...settings, savedAt: 1 };
+    const area = (name) => ({
+      get: async (key) => (key in store[name] ? { [key]: store[name][key] } : {}),
+      set: async (obj) => { Object.assign(store[name], obj); },
+      remove: async (key) => { delete store[name][key]; },
+    });
+    class PageURL extends URL {
+      static createObjectURL() { return 'blob:options/backup'; }
+      static revokeObjectURL() {}
+    }
+    const sandbox = makeSandbox({
+      document: page.document,
+      window: { confirm: () => true },
+      URL: PageURL,
+      Blob: class { constructor(parts, init) { this.parts = parts; this.type = init && init.type; } },
+      // The export frees its address ten seconds later; nothing here should
+      // hold the run open waiting for that.
+      setTimeout: () => 0,
+      clearTimeout: () => {},
+      chrome: {
+        runtime: {
+          getURL: (p = '') => `${browser === 'firefox' ? 'moz-extension' : 'chrome-extension'}://options/${p}`,
+          getManifest: () => ({ version: '1.2.3', host_permissions: HOSTS.slice() }),
+        },
+        storage: { local: area('local'), sync: area('sync'), onChanged: { addListener() {} } },
+        permissions: {
+          contains: async ({ origins = [] } = {}) => {
+            checks.push(origins);
+            return granted === null || origins.every((o) => granted.some((g) => patternCovers(g, o)));
+          },
+          request: ({ origins = [] } = {}) => {
+            requests.push({ origins, duringClick: handlingClick });
+            if (!handlingClick) {
+              return Promise.reject(new Error('permissions.request may only be called from a user input handler'));
+            }
+            if (answer !== 'allow') return Promise.resolve(false);
+            origins.forEach((o) => { if (granted && !granted.includes(o)) granted.push(o); });
+            return Promise.resolve(true);
+          },
+          onAdded: { addListener: (fn) => { permissionListeners.added.push(fn); } },
+          onRemoved: { addListener: (fn) => { permissionListeners.removed.push(fn); } },
+        },
+      },
+    });
+    const FCM = load(sandbox, 'src/shared/namespace.js', 'src/shared/constants.js',
+      'src/shared/util.js', 'src/options/options.js');
+    const press = (id) => {
+      handlingClick = true;
+      try { return page.$(id).click(); } finally { handlingClick = false; }
+    };
+    const revoke = (origin) => {
+      granted.splice(granted.indexOf(origin), 1);
+      permissionListeners.removed.forEach((fn) => fn({ origins: [origin] }));
+    };
+    const allow = (origin) => {
+      granted.push(origin);
+      permissionListeners.added.forEach((fn) => fn({ origins: [origin] }));
+    };
+    return {
+      FCM, $: page.$, body: page.document.body, clicks, html: page.html, store,
+      checks, requests, press, revoke, allow,
+    };
+  }
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  return (async () => {
+    const unhandled = await collectingUnhandled(async () => {
+      // ── What it says ──
+      {
+        const onChrome = openOptions();
+        const onFirefox = openOptions({ browser: 'firefox' });
+        await settle();
+        const section = (/<h2>Backup<\/h2>([\s\S]*?)<\/section>/.exec(onChrome.html) || [])[1] || '';
+        ok(section, 'options: the backup section is where it was');
+        missing(section, 'Chrome', 'options: it names no browser in what it tells everyone');
+        contains(section.replace(/\s+/g, ' '),
+          "your browser deletes an extension's storage if it is removed and loaded again",
+          'options: only that the browser deletes storage with an extension, which is true of both');
+        eq(onChrome.FCM.BROWSER, 'chrome', "options: served from chrome-extension:, the page is Chrome's");
+        eq(onChrome.$('backup-firefox').hidden, true,
+          "options: where nothing is said about Firefox's temporary add-ons");
+        eq(onFirefox.$('backup-firefox').hidden, false, 'options: which Firefox is told about');
+        contains(onFirefox.$('backup-firefox').textContent, 'removed, with its storage, when Firefox restarts',
+          'options: that one loaded temporarily loses its storage when Firefox restarts');
+      }
+
+      // ── Where Kick returns, in each browser ──
+      //
+      // Firefox cannot sign in straight back to the extension, and signs in the
+      // default way wherever that is stored. So there the page shows the choice
+      // as one that cannot be picked, shows the one that will really be used,
+      // and describes only the two that remain.
+      {
+        const onChrome = openOptions({ settings: { kickRedirect: 'extension' } });
+        const onFirefox = openOptions({ browser: 'firefox', settings: { kickRedirect: 'extension' } });
+        const proxyOnFirefox = openOptions({ browser: 'firefox', settings: { kickRedirect: 'proxy' } });
+        await settle();
+        eq(onChrome.$('kickRedirect').value, 'extension', "options: Chrome shows a stored 'extension' as it is");
+        eq([onChrome.$('kickRedirect-extension').disabled, onChrome.$('kickRedirect-extension').textContent],
+          [false, 'Straight back to the extension'], 'options: where it can still be chosen, under its own name');
+        eq([onChrome.$('kickRedirect-others').hidden, onChrome.$('kickRedirect-firefox').hidden], [false, true],
+          'options: and the text describes the other two as it always has');
+
+        eq(onFirefox.$('kickRedirect').value, 'shared',
+          "options: Firefox shows a stored 'extension' as the default it will really sign in with");
+        eq(onFirefox.$('kickRedirect-extension').disabled, true,
+          'options: where straight back to the extension cannot be chosen');
+        contains(onFirefox.$('kickRedirect-extension').textContent, '(not in Firefox)',
+          'options: and says why it is there but cannot be picked');
+        eq([onFirefox.$('kickRedirect-others').hidden, onFirefox.$('kickRedirect-firefox').hidden], [true, false],
+          'options: the text about the other two gives way to one about Firefox');
+        contains(onFirefox.$('kickRedirect-firefox').textContent, 'Firefox cannot go straight back to the extension',
+          'options: which says straight back to the extension is not a way Firefox can sign in');
+        contains(onFirefox.$('kickRedirect-firefox').textContent, 'a proxy recent enough to finish a Firefox sign-in',
+          'options: and that the proxy route needs a proxy recent enough for it');
+        eq(onFirefox.store.local[SETTINGS_KEY].kickRedirect, 'extension',
+          'options: without writing anything back, so a backup still carries the choice to Chrome');
+        eq(proxyOnFirefox.$('kickRedirect').value, 'proxy', 'options: while Firefox shows the proxy choice as it is');
+      }
+
+      // ── Export is a download ──
+      {
+        const page = openOptions();
+        await settle();
+        await page.$('export-settings').click();
+        eq(page.clicks.length, 1, 'options: Export clicks one link');
+        const [click] = page.clicks;
+        ok(click && click.inPage,
+          'options: with the link in the page when it is clicked, not detached where a browser may not download from it');
+        ok(click && /^friendly-chat-settings-\d{4}-\d{2}-\d{2}\.json$/.test(click.download),
+          'options: naming a dated settings file');
+        eq(click && click.href, 'blob:options/backup', 'options: holding the backup just built');
+        eq(page.body.children.length, 0, 'options: and taken out of the page again afterwards');
+        contains(page.$('backup-note').textContent, 'Exported', 'options: before it says it exported');
+      }
+
+      // ── Site access ──
+      //
+      // Every site the add-on asks for, allowed or not, and Allow all for the
+      // ones that are not — on Firefox. Chrome keeps the section hidden and
+      // asks the browser nothing.
+      const TWITCH = '*://*.twitch.tv/*';
+      const KICK = '*://*.kick.com/*';
+      const SEVEN = 'https://7tv.io/*';
+      const allBut = (...gone) => HOSTS.filter((o) => !gone.includes(o));
+      const rows = (page) => page.$('site-access-list').children
+        .map((row) => [row.children[0].textContent, row.children[1].textContent, row.children[1].dataset.state]);
+      {
+        const page = openOptions({ grants: [] });
+        await settle();
+        eq(page.$('site-access').hidden, true, 'options: Chrome keeps the Site access section hidden');
+        await page.press('site-access-allow');
+        await settle();
+        eq([page.checks.length, page.requests.length, page.$('site-access-list').children.length], [0, 0, 0],
+          'options: and never asks the browser about site access, even when Allow all is reached');
+        eq(page.$('site-access-reload').hidden, true, 'options: nor ever says an open tab needs reloading');
+      }
+      {
+        const { html } = pageStub('src/options/options.html');
+        const at = (heading) => html.indexOf(`<h2>${heading}</h2>`);
+        ok(at('Sign-in') >= 0 && at('Sign-in') < at('Site access') && at('Site access') < at('Backup'),
+          'options: Site access sits between Sign-in and Backup');
+      }
+      {
+        const page = openOptions({ browser: 'firefox' });
+        await settle();
+        eq(page.$('site-access').hidden, false, 'options: Firefox shows it');
+        eq(rows(page), HOSTS.map((o) => [page.FCM.originLabel(o), 'allowed', 'allowed']),
+          'options: one row for every site the manifest lists, in its order, named by host, each allowed');
+        eq(page.$('site-access-list').children.map((row) => row.children[0].title), HOSTS,
+          'options: with the pattern itself behind each host');
+        eq([page.$('site-access-allow').disabled, page.$('site-access-note').textContent], [true, 'Every one is allowed.'],
+          'options: and nothing for Allow all to ask for');
+      }
+      {
+        const page = openOptions({ browser: 'firefox', grants: allBut(TWITCH, SEVEN) });
+        await settle();
+        eq(rows(page).map(([, text]) => text), HOSTS.map((o) => ([TWITCH, SEVEN].includes(o) ? 'not allowed' : 'allowed')),
+          'options: a site Firefox is keeping the add-on off says not allowed, and only those do');
+        eq(rows(page)[0][2], 'blocked', 'options: marked as such for the colour, as well as in words');
+        eq([page.$('site-access-allow').disabled, page.$('site-access-note').textContent], [false, '2 not allowed'],
+          'options: with Allow all there to press, and a count of what it would ask for');
+        eq(page.$('site-access-reload').hidden, true, 'options: and nothing yet said about reloading tabs');
+
+        const clicked = page.press('site-access-allow');
+        eq(page.requests.map((r) => [r.origins, r.duringClick]), [[[TWITCH, SEVEN], true]],
+          'options: Allow all asks Firefox for exactly the ones not allowed, while the click is still being handled');
+        await clicked;
+        await settle();
+        eq(rows(page).map(([, text]) => text), HOSTS.map(() => 'allowed'),
+          'options: and once Firefox allows them, the list says so');
+        eq(page.$('site-access-allow').disabled, true, 'options: leaving Allow all nothing to do');
+        eq(page.$('site-access-reload').hidden, false,
+          'options: and, a site being among them, the page says tabs already open need reloading');
+        eq(page.$('site-access-reload').textContent,
+          'Twitch or Kick tabs that were already open need reloading before the panel appears in them.',
+          'options: since Firefox puts no panel into a page loaded before the site was allowed');
+      }
+      {
+        // Twitch allowed only on www.twitch.tv, where its channel pages are.
+        const page = openOptions({ browser: 'firefox', grants: [...allBut(TWITCH), '*://www.twitch.tv/*'] });
+        await settle();
+        eq([rows(page)[0], page.$('site-access-allow').disabled, page.$('site-access-note').textContent],
+          [['twitch.tv', 'allowed', 'allowed'], true, 'Every one is allowed.'],
+          'options: Twitch allowed only where its channel pages are shows as allowed, leaving Allow all nothing to ask for');
+      }
+      {
+        const page = openOptions({ browser: 'firefox', grants: allBut(SEVEN) });
+        await settle();
+        await page.press('site-access-allow');
+        await settle();
+        eq([page.requests.map((r) => r.origins), page.$('site-access-allow').disabled], [[[SEVEN]], true],
+          'options: a service alone, allowed, leaves Allow all nothing to do as well');
+        eq(page.$('site-access-reload').hidden, true,
+          'options: without a word about reloading tabs, since where the panel appears has not changed');
+      }
+      {
+        const page = openOptions({ browser: 'firefox', grants: allBut(KICK), answer: 'deny' });
+        await settle();
+        await page.press('site-access-allow');
+        await settle();
+        eq(rows(page)[1][1], 'not allowed', 'options: told no, the site is still shown as not allowed');
+        // Every host once a draw, and kick.com's channel pages as well.
+        eq(page.checks.length, (HOSTS.length + 1) * 2, 'options: having been checked again rather than assumed');
+        eq(page.$('site-access-reload').hidden, true, 'options: and nothing is said about reloading tabs');
+      }
+      {
+        const page = openOptions({ browser: 'firefox', grants: allBut(KICK) });
+        await settle();
+        await page.$('site-access-allow').click();
+        await settle();
+        eq([page.requests.map((r) => r.duringClick), rows(page)[1][1], page.$('site-access-reload').hidden],
+          [[false], 'not allowed', true],
+          'options: a request made once the click is over, which Firefox refuses without asking, changes nothing');
+      }
+      {
+        const page = openOptions({ browser: 'firefox', grants: HOSTS });
+        await settle();
+        page.revoke(KICK);
+        await settle();
+        eq([rows(page)[1][1], page.$('site-access-allow').disabled], ['not allowed', false],
+          'options: a site taken back in about:addons while the page is open shows as not allowed, without a reload');
+        page.allow(KICK);
+        await settle();
+        eq([rows(page)[1][1], page.$('site-access-allow').disabled], ['allowed', true],
+          'options: and one allowed from somewhere else, the popup say, shows as allowed');
+        eq(page.$('site-access-reload').hidden, true,
+          'options: without this page saying anything about reloading tabs, having asked for nothing itself');
+      }
+      {
+        const src = fs.readFileSync(path.join(ROOT, 'src/options/options.js'), 'utf8').replace(/\r\n/g, '\n');
+        const handler = /\$\('site-access-allow'\)\.addEventListener\('click', (async )?\(\) => \{\n([^\n]*)/.exec(src);
+        ok(handler && !handler[1], 'options: the Allow all handler is not an async function');
+        ok(handler && handler[2].trim().startsWith('chrome.permissions.request({ origins: missingAccess })'),
+          'options: and its first statement is the request itself, with nothing awaited in front of it');
+      }
+    });
+    eq(unhandled, [], 'options: nothing on the page failed without being caught');
+  })();
 };
 
 // The replayed history goes through the same parser as the live feed, so
@@ -2068,11 +5397,394 @@ suites.reply = function () {
     contains(inputEl.value, 'b', 'reply: and leaves what came after it alone');
   }
 
+  // 6. A word ends at any whitespace, not only at the space character.
+  //
+  // The scan back to a trigger stopped at ' ' alone, so a no-break space or a
+  // tab let it run on into the word before and read the two as one query. A
+  // query can only match across whitespace when a name has some in it, so these
+  // do — which is what makes where the scan stops visible from here.
+  {
+    FCM.setEmotes('twitch', 'thirdparty', {
+      'Nb Space': { url: 'https://7tv/nb.webp', source: '7TV' },
+      'Nb\tSpace': { url: 'https://7tv/tab.webp', source: '7TV' },
+    });
+    inputEl.value = ':Nb Sp';
+    inputEl.selectionStart = inputEl.value.length;
+    compose.updateAutocomplete();
+    ok(!compose.isPopupOpen(), 'reply: a no-break space ends the word being completed, the way a space does');
+    inputEl.value = ':Nb\tSp';
+    inputEl.selectionStart = inputEl.value.length;
+    compose.updateAutocomplete();
+    ok(!compose.isPopupOpen(), 'reply: and so does a tab');
+    inputEl.value = 'hey :Nb';
+    inputEl.selectionStart = inputEl.value.length;
+    compose.updateAutocomplete();
+    ok(compose.isPopupOpen(), 'reply: while a query that stops short of the whitespace still finds them');
+  }
+
   // Picking from the picker inserts at the caret rather than over a query, and
   // needs a separator in front of it or the name is not an emote at all: after
   // typing "gg", picking one produced "ggPogU", which went out as that literal
   // text. That path draws a real grid and cannot be reached through this stub,
   // so it is exercised against a browser in tests/harness.html instead.
+};
+
+// The composer's box is a contenteditable dressed as an input, and where its
+// caret is has to be read from a selection on the other side of a shadow root.
+// Browsers see through that boundary in different ways. Chrome's shadow root
+// has a selection of its own, which is read exactly as it always was, and the
+// standard way is never asked there. Everywhere else the standard way goes
+// first, and this is where it is shown to find the caret, and to hand over to
+// the page's selection wherever it has nothing to say.
+suites.emoteinput = function () {
+  let pageSelection = null;
+  // The document this script was loaded into: the tab's.
+  const scriptDocument = { getSelection: () => pageSelection };
+  const FCM = load(makeSandbox({ document: scriptDocument, Event: class { constructor(type) { this.type = type; } } }),
+    'src/shared/namespace.js', 'src/content/emote-input.js');
+
+  // A box in a shadow root, holding text and emote pictures, made into the
+  // input the composer talks to. `setup` gives it selections to be read from.
+  function makeBox(parts, setup) {
+    const el = {
+      nodeType: 1,
+      nodeName: 'DIV',
+      childNodes: [],
+      classList: { toggle() {} },
+      addEventListener() {},
+      getAttribute: () => null,
+      setAttribute() {},
+      contains: (node) => node === el || el.childNodes.includes(node),
+    };
+    el.childNodes = parts.map((part) => (typeof part === 'string'
+      ? { nodeType: 3, nodeName: '#text', nodeValue: part }
+      : { nodeType: 1, nodeName: 'IMG', alt: part.emote, classList: { contains: (c) => c === 'fcm-input-emote' } }));
+    const root = { nodeType: 11, contains: (node) => node === root || el.contains(node) };
+    el.getRootNode = () => root;
+    if (setup) setup(el, root);
+    FCM.makeEmoteInput(el);
+    return el;
+  }
+  const caretAt = (node, offset) => ({
+    rangeCount: 1,
+    getRangeAt: () => ({ startContainer: node, startOffset: offset }),
+  });
+  const noSelection = { rangeCount: 0, getRangeAt: () => null };
+  // Where a selection inside a shadow root is reported from outside it, by a
+  // browser that does not look in: the host.
+  const host = { nodeType: 1, nodeName: 'DIV' };
+
+  // ── Spaces ──
+  {
+    const el = makeBox(['hi', ' there ', { emote: 'PogU' }]);
+    eq(el.value, 'hi there PogU', 'emoteinput: a no-break space in the box reads as a plain space');
+    eq(el.value.length, 'hi'.length + ' there '.length + 'PogU'.length,
+      'emoteinput: one for one, so an offset counted from the nodes still lands on the same character');
+  }
+
+  // ── Chrome: the shadow root's own selection, and nothing else ──
+  //
+  // Chromium gives a shadow root a selection of its own, and the caret has
+  // always been read from it. Chrome from 137 has getComposedRanges as well,
+  // and it is never asked there. So each Chrome box below also has a document
+  // whose standard call would give a different answer, inside the box, and a
+  // page selection, and notes every time anything reaches for any of them.
+  function chromeBox(parts, rootSelection, composedAt) {
+    const reached = [];
+    const standard = (box) => ({
+      ...caretAt(host, 0),
+      getComposedRanges: () => { reached.push('getComposedRanges'); return [composedAt(box)]; },
+    });
+    const el = makeBox(parts, (box, root) => {
+      root.getSelection = () => rootSelection(box);
+      Object.defineProperty(box, 'ownerDocument', {
+        configurable: true,
+        get() {
+          reached.push('ownerDocument');
+          return { getSelection: () => standard(box) };
+        },
+      });
+      pageSelection = {
+        get rangeCount() { reached.push('page selection'); return 0; },
+        getRangeAt: () => null,
+        getComposedRanges: () => { reached.push('page getComposedRanges'); return [composedAt(box)]; },
+      };
+    });
+    // Only what reading the caret reaches for, not what making the input did.
+    reached.length = 0;
+    return { el, reached };
+  }
+  {
+    const { el, reached } = chromeBox(['hi ', { emote: 'PogU' }, ' there'],
+      (box) => caretAt(box.childNodes[2], 3),
+      (box) => ({ startContainer: box.childNodes[0], startOffset: 1 }));
+    eq(el.selectionStart, 10,
+      "emoteinput: Chrome reads the caret from the shadow root's own selection, emotes counted by name");
+    eq(reached, [],
+      "emoteinput: without asking getComposedRanges, or even looking at the document or the page's selection, though all are there");
+  }
+  {
+    const { el, reached } = chromeBox(['hi', ' there'],
+      () => noSelection,
+      (box) => ({ startContainer: box.childNodes[1], startOffset: 2 }));
+    eq([el.selectionStart, reached], [8, []],
+      'emoteinput: with nothing selected in the root, Chrome puts the caret at the end as it always did, whatever the standard call would say');
+  }
+  {
+    const { el, reached } = chromeBox(['hi', ' there'],
+      () => caretAt(host, 0),
+      (box) => ({ startContainer: box.childNodes[0], startOffset: 1 }));
+    eq([el.selectionStart, reached], [8, []],
+      "emoteinput: and with the root's selection outside the box, at the end too, the standard call still unasked");
+  }
+  {
+    // A standard call that throws for any argument at all, so that being asked
+    // could not pass quietly.
+    const el = makeBox(['hi', ' there'], (box, root) => {
+      root.getSelection = () => caretAt(box.childNodes[1], 3);
+      box.ownerDocument = { getSelection: () => ({ getComposedRanges: () => { throw new Error('asked on Chrome'); } }) };
+    });
+    let read = null;
+    let threw = null;
+    try { read = el.selectionStart; } catch (e) { threw = e.message; }
+    eq([read, threw], [5, null], 'emoteinput: a standard call that would throw if asked changes nothing on Chrome');
+  }
+
+  // ── Firefox: no selection of the root's own ──
+  {
+    // Before 142: no standard call, but the document's selection reaches into
+    // the root by itself.
+    const el = makeBox(['hi', ' there'], (box) => {
+      box.ownerDocument = { getSelection: () => caretAt(box.childNodes[1], 1) };
+      pageSelection = caretAt(box.childNodes[1], 1);
+    });
+    eq(el.selectionStart, 3,
+      "emoteinput: without the standard call, Firefox reads the page's own selection, as it always did");
+  }
+  {
+    // From 142: the standard call.
+    const asked = [];
+    let boxRoot = null;
+    const el = makeBox(['hi ', { emote: 'PogU' }, ' there'], (box, root) => {
+      boxRoot = root;
+      pageSelection = noSelection;
+      box.ownerDocument = {
+        getSelection: () => ({
+          ...noSelection,
+          getComposedRanges: (options) => {
+            asked.push(options);
+            return [{ startContainer: box.childNodes[2], startOffset: 3 }];
+          },
+        }),
+      };
+    });
+    eq(el.selectionStart, 10,
+      'emoteinput: with the standard call, Firefox finds the caret through getComposedRanges, emotes counted by name');
+    ok(asked.length === 1 && asked[0].shadowRoots.length === 1 && asked[0].shadowRoots[0] === boxRoot,
+      "emoteinput: asked once, with the box's own shadow root, which is what lets it see inside");
+  }
+  {
+    const el = makeBox(['hi', ' there'], (box) => {
+      pageSelection = caretAt(box.childNodes[1], 5);
+      box.ownerDocument = {
+        getSelection: () => ({
+          ...caretAt(box.childNodes[1], 5),
+          getComposedRanges: () => [{ startContainer: box.childNodes[0], startOffset: 1 }],
+        }),
+      };
+    });
+    eq(el.selectionStart, 1, "emoteinput: where both reach inside, Firefox takes the standard call's answer first");
+  }
+
+  // ── Firefox: handing over to the page's selection ──
+  {
+    const el = makeBox(['hi', ' there'], (box) => {
+      pageSelection = caretAt(box.childNodes[1], 2);
+      box.ownerDocument = {
+        getSelection: () => ({
+          getComposedRanges: (...roots) => {
+            if (!roots.every((r) => r && r.nodeType === 11)) {
+              throw new TypeError("parameter 1 is not of type 'ShadowRoot'");
+            }
+            return [];
+          },
+        }),
+      };
+    });
+    eq(el.selectionStart, 4,
+      'emoteinput: a browser that only takes the older argument list is passed over without a throw');
+  }
+  {
+    const el = makeBox(['hi', ' there'], (box) => {
+      pageSelection = caretAt(box.childNodes[0], 1);
+      box.ownerDocument = { getSelection: () => ({ getComposedRanges: () => [{ startContainer: host, startOffset: 0 }] }) };
+    });
+    eq(el.selectionStart, 1,
+      "emoteinput: an answer that stops at the shadow host is passed over for the page's selection, which sees inside");
+  }
+  {
+    const el = makeBox(['hi', ' there'], (box) => {
+      pageSelection = caretAt(box.childNodes[1], 5);
+      box.ownerDocument = { getSelection: () => ({ getComposedRanges: () => [] }) };
+    });
+    eq(el.selectionStart, 7, 'emoteinput: and so is an answer with no range in it');
+  }
+  {
+    let pageAsked = 0;
+    const el = makeBox(['hello'], (box) => {
+      pageSelection = { ...noSelection, getComposedRanges: () => { pageAsked++; return []; } };
+      box.ownerDocument = {
+        getSelection: () => ({ getComposedRanges: () => [{ startContainer: box.childNodes[0], startOffset: 4 }] }),
+      };
+    });
+    eq([el.selectionStart, pageAsked], [4, 0],
+      'emoteinput: popped out, the selection asked is the one of the window the box is in, not the tab it started in');
+  }
+  {
+    const el = makeBox(['hi'], (box) => {
+      pageSelection = noSelection;
+      box.ownerDocument = { getSelection: () => ({ ...noSelection, getComposedRanges: () => [] }) };
+    });
+    eq(el.selectionStart, 2, 'emoteinput: with no selection anywhere, the caret is at the end, as before');
+  }
+
+  // ── Putting the caret back ──
+  //
+  // Every write ends in setCaret: setSelectionRange (a completion, the picker,
+  // a reply), an emote drawn once its name is finished, and a paste. Here the
+  // documents keep selections the way browsers do in the one respect that
+  // matters — Gecko's quietly ignores a range whose nodes are in another
+  // document — and the box really is rebuilt when it is written, with a caret
+  // that was inside a removed child falling back onto the box, as a live range
+  // does. So a caret put in the wrong selection is not simply lost from view:
+  // it is the caret in the right one sitting at the start.
+  {
+    const selections = [];
+    const makeSelection = (accepts) => {
+      const sel = {
+        ranges: [],
+        refused: 0,
+        get rangeCount() { return this.ranges.length; },
+        getRangeAt(i) { return this.ranges[i]; },
+        removeAllRanges() { this.ranges = []; },
+        addRange(range) {
+          if (!accepts(range)) { this.refused++; return; }
+          this.ranges = [range];
+        },
+        getComposedRanges() { return this.ranges.slice(); },
+      };
+      selections.push(sel);
+      return sel;
+    };
+    const rangeFrom = (doc) => () => ({
+      madeBy: doc,
+      setStart(node, offset) { this.startContainer = node; this.startOffset = offset; },
+      setEnd(node, offset) { this.endContainer = node; this.endOffset = offset; },
+    });
+    // A document as Gecko keeps its selection.
+    const geckoDocument = (doc) => {
+      const sel = makeSelection((range) => range.startContainer.ownerDocument === doc);
+      Object.assign(doc, { selection: sel, getSelection: () => sel, createRange: rangeFrom(doc) });
+      return doc;
+    };
+    const text = (value, owner) => ({ nodeType: 3, nodeName: '#text', nodeValue: value, ownerDocument: owner });
+    // What writeValue builds with: the script's own document, whose nodes the
+    // box adopts as they go in.
+    const saved = { ...scriptDocument };
+    Object.assign(geckoDocument(scriptDocument), {
+      createDocumentFragment: () => ({ childNodes: [], appendChild(node) { this.childNodes.push(node); } }),
+      createTextNode: (value) => text(value, scriptDocument),
+      createElement: (name) => {
+        const node = { nodeType: 1, nodeName: String(name).toUpperCase(), ownerDocument: scriptDocument, className: '' };
+        node.classList = { contains: (c) => node.className.split(' ').includes(c) };
+        return node;
+      },
+    });
+    FCM.findEmote = (name) => (name === 'LUL' ? { url: 'https://cdn.example/lul.webp' } : null);
+
+    function writableBox(owner, value, rootSelection) {
+      const listeners = {};
+      const el = {
+        nodeType: 1,
+        nodeName: 'DIV',
+        childNodes: [text(value, owner)],
+        classList: { toggle() {} },
+        getAttribute: () => null,
+        setAttribute() {},
+        addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
+        dispatchEvent(event) { (listeners[event.type] || []).forEach((fn) => fn(event)); return true; },
+        contains: (node) => node === el || el.childNodes.includes(node),
+        replaceChildren(frag) {
+          const removed = el.childNodes;
+          el.childNodes = frag.childNodes.slice();
+          el.childNodes.forEach((node) => { node.ownerDocument = owner; });
+          selections.forEach((sel) => sel.ranges.forEach((range) => {
+            if (removed.includes(range.startContainer)) Object.assign(range, { startContainer: el, startOffset: 0 });
+          }));
+        },
+      };
+      const reached = [];
+      Object.defineProperty(el, 'ownerDocument', { get() { reached.push('ownerDocument'); return owner; } });
+      const root = { nodeType: 11, contains: (node) => node === root || el.contains(node) };
+      if (rootSelection) root.getSelection = () => rootSelection;
+      el.getRootNode = () => root;
+      FCM.makeEmoteInput(el);
+      reached.length = 0;
+      return { el, reached };
+    }
+    const caretIn = (sel) => sel.ranges.map((r) => [r.startContainer.nodeValue === undefined ? 'box' : r.startContainer.nodeValue, r.startOffset]);
+
+    // Firefox, popped out: the box is in the pop-out window's document, and
+    // this script's document is still the tab's.
+    {
+      const pip = geckoDocument({});
+      const { el } = writableBox(pip, 'hi there');
+      el.setSelectionRange(3);
+      eq([caretIn(pip.selection), el.selectionStart, scriptDocument.selection.refused], [[['hi there', 3]], 3, 0],
+        "emoteinput: popped out on Firefox, setSelectionRange puts the caret in the pop-out window's selection, not the tab's");
+    }
+    {
+      const pip = geckoDocument({});
+      const { el } = writableBox(pip, 'hi LUL ');
+      pip.selection.ranges = [{ startContainer: el.childNodes[0], startOffset: 7 }];
+      el.dispatchEvent({ type: 'input' });
+      eq(el.childNodes.map((n) => n.nodeName), ['#text', 'IMG', '#text'], 'emoteinput: (popped out, a finished emote name is drawn)');
+      eq([caretIn(pip.selection), el.selectionStart], [[[' ', 1]], 7],
+        'emoteinput: and the caret goes back to just after it, rather than to the start of the box');
+    }
+    {
+      const pip = geckoDocument({});
+      const { el } = writableBox(pip, 'hello world');
+      pip.selection.ranges = [{ startContainer: el.childNodes[0], startOffset: 5 }];
+      el.dispatchEvent({ type: 'paste', clipboardData: { getData: () => ' there' }, preventDefault() {} });
+      eq([el.value, caretIn(pip.selection), el.selectionStart], ['hello there world', [['hello there world', 11]], 11],
+        'emoteinput: and after a paste, the caret is at the end of what was pasted');
+    }
+    // Firefox, in the tab: the box's document and this script's are one.
+    {
+      scriptDocument.selection.ranges = [];
+      const { el } = writableBox(scriptDocument, 'hi there');
+      el.setSelectionRange(5);
+      eq([caretIn(scriptDocument.selection), el.selectionStart], [[['hi there', 5]], 5],
+        'emoteinput: on Firefox in the tab, the caret goes into the tab\'s selection, as it always did');
+    }
+    // Chrome: the shadow root's own selection, written exactly as before.
+    {
+      const rootSelection = makeSelection(() => true);
+      const { el, reached } = writableBox(scriptDocument, 'hi LUL ', rootSelection);
+      el.setSelectionRange(2);
+      eq([caretIn(rootSelection), rootSelection.ranges[0].madeBy === scriptDocument, reached], [[['hi LUL ', 2]], true, []],
+        "emoteinput: Chrome puts the caret in the shadow root's own selection, with a range from this script's document, never looking at the box's");
+      rootSelection.ranges = [{ startContainer: el.childNodes[0], startOffset: 7 }];
+      el.dispatchEvent({ type: 'input' });
+      eq([caretIn(rootSelection), el.selectionStart, reached], [[[' ', 1]], 7, []],
+        'emoteinput: and after drawing an emote, the same way');
+    }
+
+    delete FCM.findEmote;
+    Object.keys(scriptDocument).forEach((key) => { delete scriptDocument[key]; });
+    Object.assign(scriptDocument, saved);
+  }
 };
 
 // The OAuth flow redirects through the platforms' own login pages, which the
@@ -3699,20 +7411,78 @@ suites.native = function () {
 };
 
 suites.auth = function () {
-  function build({ redirect, launchError, tokenResponse, configResponse, twitchConfig } = {}) {
+  const pack = require(path.join(ROOT, 'tools', 'pack.js'));
+  // A Chrome extension's sign-in address with a real 32-letter ID — the one this
+  // extension's manifest key pins — rather than a short stand-in the worker
+  // would refuse to forward anything to.
+  const CHROME_REDIRECT = 'https://bbjieacidkcngofgddlfipiajcchdaik.chromiumapp.org/';
+  // And this add-on's in Firefox, as pack.js works it out from the gecko ID.
+  const FIREFOX_REDIRECT = pack.firefoxRedirectUrl();
+  // What a current worker's /kick-config says it can do.
+  const WORKER_FEATURES = ['kick-authorize', 'allizom-redirect'];
+
+  /**
+   * auth.js over a stubbed extension API and network.
+   *   browser — 'chrome' (default) or 'firefox': where runtime.getURL says the
+   *     extension is served from, which is what FCM.BROWSER is read from. As
+   *     Firefox, launchWebAuthFlow also turns links away the way Firefox does.
+   *   redirectUrl — what identity.getRedirectURL answers
+   *   features — what /kick-config lists: a current worker's by default, null
+   *     for a worker from before there was a list
+   *   grants — the origins permissions.contains says are granted (every one by
+   *     default); noPermissionsApi leaves that API out altogether
+   */
+  function build({
+    redirect, launchError, tokenResponse, configResponse, twitchConfig,
+    redirectUrl = CHROME_REDIRECT, browser = 'chrome', features, grants, noPermissionsApi,
+  } = {}) {
     const store = {};
     const calls = [];
     const sandbox = makeSandbox({
       chrome: {
         identity: {
-          getRedirectURL: () => 'https://abcd.chromiumapp.org/',
+          getRedirectURL: () => redirectUrl,
           launchWebAuthFlow: (opts, cb) => {
             calls.push({ authUrl: opts.url, interactive: opts.interactive });
             if (launchError) { sandbox.chrome.runtime.lastError = { message: launchError }; cb(); return; }
-            cb(typeof redirect === 'function' ? redirect(opts.url) : redirect);
+            // Firefox checks the link before it opens anything: a redirect_uri
+            // that is not the add-on's own address is refused on the spot, and
+            // a link with none is taken to mean that address.
+            if (browser === 'firefox') {
+              const asked = new URL(opts.url).searchParams.get('redirect_uri');
+              if (asked !== null && !asked.startsWith(redirectUrl)) {
+                sandbox.chrome.runtime.lastError = { message: 'redirect_uri not allowed' };
+                cb();
+                sandbox.chrome.runtime.lastError = null;
+                return;
+              }
+            }
+            const back = typeof redirect === 'function' ? redirect(opts.url) : redirect;
+            // A redirect worked out by the real worker arrives later, as one
+            // coming back over the network would.
+            if (back && typeof back.then === 'function') {
+              back.then(cb, (e) => {
+                sandbox.chrome.runtime.lastError = { message: String(e && e.message) };
+                cb();
+                sandbox.chrome.runtime.lastError = null;
+              });
+              return;
+            }
+            cb(back);
           },
         },
-        runtime: { lastError: null },
+        runtime: {
+          lastError: null,
+          getURL: (p = '') => `${browser === 'firefox' ? 'moz-extension' : 'chrome-extension'}://x/${p}`,
+        },
+        ...(noPermissionsApi ? {} : {
+          permissions: {
+            contains: async ({ origins = [] } = {}) => {
+              calls.push({ permissionsAsked: origins });
+              return !Array.isArray(grants) || origins.every((o) => grants.includes(o));
+            },
+          },
+        }),
         tabs: {
           onUpdated: { addListener: (fn) => { sandbox.__onUpdated = fn; }, removeListener: () => {} },
           onRemoved: { addListener: () => {}, removeListener: () => {} },
@@ -3748,7 +7518,11 @@ suites.auth = function () {
           return { ok: true, json: async () => ({ user_id: '55', login: 'me', scopes: ['chat:edit'], expires_in: 3600 }) };
         }
         if (u.includes('/kick-config')) {
-          return { ok: true, json: async () => (configResponse || { client_id: 'kick-cid' }) };
+          const answer = configResponse || {
+            client_id: 'kick-cid',
+            ...(features === null ? {} : { features: features === undefined ? WORKER_FEATURES : features }),
+          };
+          return { ok: true, json: async () => answer };
         }
         if (u.includes('/twitch-config')) {
           if (twitchConfig === 'offline') throw new TypeError('Failed to fetch');
@@ -3785,7 +7559,7 @@ suites.auth = function () {
       const { FCM, store, calls } = build({
         redirect: (url) => {
           const state = new URL(url).searchParams.get('state');
-          return 'https://abcd.chromiumapp.org/#access_token=TW&state=' + state;
+          return CHROME_REDIRECT + '#access_token=TW&state=' + state;
         },
       });
       const result = await FCM.auth.connect('twitch', {});
@@ -3803,7 +7577,7 @@ suites.auth = function () {
       eq(saved0.clientId, 'tw-cid',
         'auth: stored with the token, because every later Helix call has to send it');
       eq(authUrl.searchParams.get('response_type'), 'token', 'auth: twitch uses the implicit grant');
-      eq(authUrl.searchParams.get('redirect_uri'), 'https://abcd.chromiumapp.org/',
+      eq(authUrl.searchParams.get('redirect_uri'), CHROME_REDIRECT,
         'auth: the extension redirect is what gets registered');
       ok(authUrl.searchParams.get('scope').includes('moderator:manage:banned_users'),
         'auth: moderation scope is requested, or the mod tools could never appear');
@@ -3828,7 +7602,7 @@ suites.auth = function () {
     // was turned down, so theirs wins outright and the proxy is left alone.
     {
       const { FCM, calls } = build({
-        redirect: (url) => 'https://abcd.chromiumapp.org/#access_token=TW&state='
+        redirect: (url) => CHROME_REDIRECT + '#access_token=TW&state='
           + new URL(url).searchParams.get('state'),
       });
       await FCM.auth.connect('twitch', { twitchClientId: 'my-own-app' });
@@ -3847,7 +7621,7 @@ suites.auth = function () {
     {
       const { FCM } = build({
         twitchConfig: { client_id: '' },
-        redirect: 'https://abcd.chromiumapp.org/#access_token=TW',
+        redirect: CHROME_REDIRECT + '#access_token=TW',
       });
       let threw = '';
       try { await FCM.auth.connect('twitch', {}); } catch (e) { threw = e.message; }
@@ -3861,7 +7635,7 @@ suites.auth = function () {
     {
       const { FCM } = build({
         twitchConfig: 'offline',
-        redirect: 'https://abcd.chromiumapp.org/#access_token=TW',
+        redirect: CHROME_REDIRECT + '#access_token=TW',
       });
       let threw = '';
       try { await FCM.auth.connect('twitch', {}); } catch (e) { threw = e.message; }
@@ -3873,7 +7647,7 @@ suites.auth = function () {
 
     // ── A mismatched state must be refused ──
     {
-      const { FCM } = build({ redirect: 'https://abcd.chromiumapp.org/#access_token=TW&state=wrong' });
+      const { FCM } = build({ redirect: CHROME_REDIRECT + '#access_token=TW&state=wrong' });
       let threw = '';
       try { await FCM.auth.connect('twitch', {}); } catch (e) { threw = e.message; }
       contains(threw, 'did not match', 'auth: a forged or stale response is rejected');
@@ -3881,7 +7655,7 @@ suites.auth = function () {
 
     // ── The provider refusing is reported, not swallowed ──
     {
-      const { FCM } = build({ redirect: 'https://abcd.chromiumapp.org/#error=access_denied' });
+      const { FCM } = build({ redirect: CHROME_REDIRECT + '#error=access_denied' });
       let threw = '';
       try { await FCM.auth.connect('twitch', {}); } catch (e) { threw = e.message; }
       contains(threw, 'access_denied', 'auth: a refusal surfaces its reason');
@@ -3900,7 +7674,7 @@ suites.auth = function () {
       const { FCM, store, calls } = build({
         redirect: (url) => {
           const state = new URL(url).searchParams.get('state');
-          return 'https://abcd.chromiumapp.org/?code=CODE&state=' + state;
+          return CHROME_REDIRECT + '?code=CODE&state=' + state;
         },
       });
       await FCM.auth.connect('kick', { kickRedirect: 'extension' });
@@ -3918,7 +7692,7 @@ suites.auth = function () {
       const sent = JSON.parse(exchange.body);
       eq(sent.code, 'CODE', 'auth: the code is passed on');
       ok(sent.code_verifier, 'auth: the verifier is passed on');
-      eq(sent.redirect_uri, 'https://abcd.chromiumapp.org/', 'auth: the redirect must match');
+      eq(sent.redirect_uri, CHROME_REDIRECT, 'auth: the redirect must match');
 
       const saved = store[FCM.STORAGE_KEYS.auth].kick;
       eq(saved.accessToken, 'KA', 'auth: kick token stored');
@@ -3930,7 +7704,7 @@ suites.auth = function () {
     {
       const { FCM, calls } = build({
         configResponse: { client_id: 'proxy-says-this-one' },
-        redirect: (url) => 'https://abcd.chromiumapp.org/?code=CODE&state='
+        redirect: (url) => CHROME_REDIRECT + '?code=CODE&state='
           + new URL(url).searchParams.get('state'),
       });
       await FCM.auth.connect('kick', { kickRedirect: 'extension' });
@@ -3943,7 +7717,7 @@ suites.auth = function () {
     {
       const { FCM, calls } = build({
         configResponse: {},
-        redirect: (url) => 'https://abcd.chromiumapp.org/?code=CODE&state='
+        redirect: (url) => CHROME_REDIRECT + '?code=CODE&state='
           + new URL(url).searchParams.get('state'),
       });
       let threw = '';
@@ -3986,24 +7760,24 @@ suites.auth = function () {
     // ── Straight back to the extension: one hop, id-specific URL ──
     {
       const { FCM, calls } = build({
-        redirect: (url) => 'https://abcd.chromiumapp.org/?code=CODE&state='
+        redirect: (url) => CHROME_REDIRECT + '?code=CODE&state='
           + encodeURIComponent(new URL(url).searchParams.get('state')),
       });
       await FCM.auth.connect('kick', { kickRedirect: 'extension' });
       const authUrl = new URL(calls.find((c) => c.authUrl).authUrl);
-      eq(authUrl.searchParams.get('redirect_uri'), 'https://abcd.chromiumapp.org/',
+      eq(authUrl.searchParams.get('redirect_uri'), CHROME_REDIRECT,
         'kickredirect: the extension is the redirect by default');
       ok(!authUrl.searchParams.get('state').includes('~'),
         'kickredirect: no forwarding target is needed in state');
       const exchange = JSON.parse(calls.find((c) => c.url && c.url.includes('/kick-token')).body);
-      eq(exchange.redirect_uri, 'https://abcd.chromiumapp.org/',
+      eq(exchange.redirect_uri, CHROME_REDIRECT,
         'kickredirect: the exchange repeats the same redirect, as Kick requires');
     }
 
     // ── Via the worker: one fixed URL registered with Kick, forever ──
     {
       const { FCM, calls } = build({
-        redirect: (url) => 'https://abcd.chromiumapp.org/?code=CODE&state='
+        redirect: (url) => CHROME_REDIRECT + '?code=CODE&state='
           + encodeURIComponent(new URL(url).searchParams.get('state')),
       });
       await FCM.auth.connect('kick', {
@@ -4020,10 +7794,16 @@ suites.auth = function () {
       const encoded = state.slice(state.indexOf('~') + 1);
       const padded = encoded.replace(/-/g, '+').replace(/_/g, '/');
       const decoded = Buffer.from(padded + '='.repeat((4 - (padded.length % 4)) % 4), 'base64').toString();
-      eq(decoded, 'https://abcd.chromiumapp.org/',
+      eq(decoded, CHROME_REDIRECT,
         'kickredirect: and it decodes back to the extension');
-      ok(/^https:\/\/[a-z]+\.chromiumapp\.org\/?$/.test(decoded),
-        'kickredirect: the target is a chromiumapp.org URL, which is all the worker will forward to');
+      // Asked of the worker itself rather than of a copy of its pattern: a
+      // looser copy here once passed a stand-in address the real allow-list
+      // would have refused.
+      const worker = loadWorker();
+      ok(worker.EXTENSION_REDIRECTS.some((re) => re.test(decoded)),
+        "kickredirect: the target is an address the worker's own allow-list forwards to");
+      eq(worker.decodeTarget(state), decoded,
+        'kickredirect: and the worker reads that same address back out of state');
 
       const exchange = JSON.parse(calls.find((c) => c.url && c.url.includes('/kick-token')).body);
       eq(exchange.redirect_uri, 'https://proxy.example/kick-callback',
@@ -4033,7 +7813,7 @@ suites.auth = function () {
     // ── The worker's hint about what to fix is passed on ──
     {
       const { FCM } = build({
-        redirect: (url) => 'https://abcd.chromiumapp.org/?code=CODE&state='
+        redirect: (url) => CHROME_REDIRECT + '?code=CODE&state='
           + encodeURIComponent(new URL(url).searchParams.get('state')),
         tokenResponse: { error: 'invalid_request', hint: 'redirect_uri did not match' },
       });
@@ -4042,6 +7822,260 @@ suites.auth = function () {
       contains(threw, 'invalid_request', 'kickredirect: the failure names what Kick said');
       contains(threw, 'redirect_uri did not match',
         "kickredirect: and carries the worker's hint about what to fix");
+    }
+
+    // ── Firefox: the proxy flow starts at the worker's /kick-authorize ──
+    //
+    // Firefox refuses to open a sign-in window for a link whose redirect_uri is
+    // not the add-on's own address, and the worker's /kick-callback is not. So
+    // there the link goes to the worker with no redirect_uri, and the worker
+    // adds Kick's.
+    {
+      const { FCM, calls } = build({
+        browser: 'firefox',
+        redirectUrl: FIREFOX_REDIRECT,
+        redirect: (url) => FIREFOX_REDIRECT + '?code=CODE&state='
+          + encodeURIComponent(new URL(url).searchParams.get('state')),
+      });
+      eq(FCM.BROWSER, 'firefox', 'kickfirefox: served from moz-extension:, the sign-in runs as Firefox');
+      await FCM.auth.connect('kick', { kickRedirect: 'proxy', kickProxyUrl: 'https://proxy.example' });
+      const authUrl = new URL(calls.find((c) => c.authUrl).authUrl);
+      eq(`${authUrl.origin}${authUrl.pathname}`, 'https://proxy.example/kick-authorize',
+        "kickfirefox: the sign-in window opens on the worker's /kick-authorize");
+      eq(authUrl.searchParams.has('redirect_uri'), false,
+        'kickfirefox: with no redirect_uri, which Firefox would refuse unless it were its own');
+      eq(authUrl.searchParams.has('client_id'), false,
+        "kickfirefox: and no client id, which the worker adds from its own");
+      eq(authUrl.searchParams.get('code_challenge_method'), 'S256', 'kickfirefox: still PKCE');
+      ok(authUrl.searchParams.get('code_challenge'), 'kickfirefox: with a challenge');
+      ok(authUrl.searchParams.get('scope').includes('moderation:ban'), 'kickfirefox: and the same scopes');
+
+      const state = authUrl.searchParams.get('state');
+      const encoded = state.slice(state.indexOf('~') + 1).replace(/-/g, '+').replace(/_/g, '/');
+      const decoded = Buffer.from(encoded + '='.repeat((4 - (encoded.length % 4)) % 4), 'base64').toString();
+      eq(decoded, FIREFOX_REDIRECT, "kickfirefox: state names the add-on's allizom.org address to come back to");
+      eq(loadWorker().decodeTarget(state), FIREFOX_REDIRECT,
+        'kickfirefox: which the worker agrees to forward to');
+
+      const exchange = JSON.parse(calls.find((c) => c.url && c.url.includes('/kick-token')).body);
+      eq(exchange.redirect_uri, 'https://proxy.example/kick-callback',
+        "kickfirefox: the exchange names the worker's callback, the redirect Kick was really given");
+      eq((await FCM.auth.summary()).kick.connected, true, 'kickfirefox: and the account ends up connected');
+    }
+
+    // The same sign-in with the real worker in the middle: its bounce on to
+    // Kick, Kick coming back to its callback, and the callback's hand-off to the
+    // address Firefox's sign-in window is waiting for.
+    {
+      const worker = loadWorker();
+      const env = { KICK_CLIENT_ID: 'worker-kick-cid', KICK_CLIENT_SECRET: 'secret', TWITCH_CLIENT_ID: 'tw-cid' };
+      const config = await (await worker.fetch('https://proxy.example/kick-config', undefined, env)).json();
+      const hops = [];
+      let atKick = null;
+      const { FCM, calls } = build({
+        browser: 'firefox',
+        redirectUrl: FIREFOX_REDIRECT,
+        configResponse: config,
+        redirect: async (url) => {
+          const bounce = await worker.fetch(url, undefined, env);
+          hops.push(bounce.status);
+          atKick = new URL(bounce.headers.get('Location'));
+          // Kick, once the viewer has agreed: back to the redirect it was
+          // given, with a code and the state exactly as it came.
+          const back = new URL(atKick.searchParams.get('redirect_uri'));
+          back.searchParams.set('code', 'CODE');
+          back.searchParams.set('state', atKick.searchParams.get('state'));
+          const handOff = await worker.fetch(back.toString(), undefined, env);
+          hops.push(handOff.status);
+          return handOff.headers.get('Location');
+        },
+      });
+      await FCM.auth.connect('kick', { kickRedirect: 'proxy', kickProxyUrl: 'https://proxy.example' });
+      eq(hops, [302, 302], 'kickfirefox: through the real worker, the bounce and the hand-off are both redirects');
+      eq(atKick && `${atKick.origin}${atKick.pathname}`, 'https://id.kick.com/oauth/authorize',
+        "kickfirefox: the bounce lands on Kick's own consent page");
+      eq(atKick && atKick.searchParams.get('client_id'), 'worker-kick-cid',
+        "kickfirefox: under the worker's client id");
+      const exchange = JSON.parse(calls.find((c) => c.url && c.url.includes('/kick-token')).body);
+      eq(atKick && atKick.searchParams.get('redirect_uri'), exchange.redirect_uri,
+        'kickfirefox: and the redirect Kick is sent is the one the exchange repeats, as Kick requires');
+      eq((await FCM.auth.summary()).kick.connected, true,
+        "kickfirefox: the code comes back to the add-on's address and the account is connected");
+    }
+
+    // The stand-in above turns away what Firefox turns away — or the missing
+    // redirect_uri would prove nothing. The link Chrome's proxy flow builds,
+    // naming the worker's callback, is refused before any window opens.
+    {
+      const { sandbox } = build({ browser: 'firefox', redirectUrl: FIREFOX_REDIRECT });
+      let refused = null;
+      sandbox.chrome.identity.launchWebAuthFlow({
+        url: `https://id.kick.com/oauth/authorize?redirect_uri=${encodeURIComponent('https://proxy.example/kick-callback')}`,
+        interactive: true,
+      }, () => { refused = sandbox.chrome.runtime.lastError && sandbox.chrome.runtime.lastError.message; });
+      eq(refused, 'redirect_uri not allowed',
+        "kickfirefox: (Firefox, as stood in for here, refuses a link that names the worker's callback)");
+    }
+
+    // ── Firefox, in front of a proxy from before /kick-authorize ──
+    //
+    // A worker is deployed separately from the extension. Sending Firefox to an
+    // endpoint that is not there would put a 404 page in the sign-in window, so
+    // the proxy's answer is read first and a stale one is named as the problem.
+    for (const [features, what] of [[null, 'that lists no features'], ['kick-authorize', 'whose list is not a list']]) {
+      const { FCM, calls } = build({
+        browser: 'firefox',
+        redirectUrl: FIREFOX_REDIRECT,
+        features,
+        // One that would finish the sign-in, so going ahead regardless shows up
+        // as a sign-in that succeeded rather than one that broke on the way.
+        redirect: (url) => FIREFOX_REDIRECT + '?code=CODE&state='
+          + encodeURIComponent(new URL(url).searchParams.get('state')),
+      });
+      let error = null;
+      try {
+        await FCM.auth.connect('kick', { kickRedirect: 'proxy', kickProxyUrl: 'https://proxy.example' });
+      } catch (e) { error = e; }
+      contains(error && error.message, 'The Kick proxy at https://proxy.example is older than this extension',
+        `kickfirefox: a proxy ${what} is named as too old to finish a Firefox sign-in`);
+      contains(error && error.message, 'Redeploy it, or choose "Reuse the desktop app\'s URL" in the options.',
+        `kickfirefox: a proxy ${what}: the message says to redeploy it, or how to sign in without it`);
+      ok(!calls.some((c) => c.authUrl), `kickfirefox: a proxy ${what}: before any sign-in window is opened`);
+      const explained = error && FCM.explainAuthFailure('kick', error.message, error.authUrl, {
+        redirect: error.usedRedirect, detail: error.detail, alreadyExplained: error.alreadyExplained,
+      });
+      eq(explained && explained.message, error && error.message,
+        `kickfirefox: a proxy ${what}: explaining it leaves those words alone, though they name the proxy`);
+      eq(explained && explained.needsRedirectSetup, false,
+        `kickfirefox: a proxy ${what}: and sends nobody off to register a redirect`);
+    }
+
+    // Chrome never needed /kick-authorize, so an old proxy is as good there as
+    // it ever was.
+    {
+      const { FCM, calls } = build({
+        features: null,
+        redirect: (url) => CHROME_REDIRECT + '?code=CODE&state='
+          + encodeURIComponent(new URL(url).searchParams.get('state')),
+      });
+      await FCM.auth.connect('kick', { kickRedirect: 'proxy', kickProxyUrl: 'https://proxy.example' });
+      const authUrl = new URL(calls.find((c) => c.authUrl).authUrl);
+      eq([`${authUrl.origin}${authUrl.pathname}`, authUrl.searchParams.get('redirect_uri')],
+        [FCM.KICK_AUTH_URL, 'https://proxy.example/kick-callback'],
+        "kickredirect: Chrome still sends Kick straight to the worker's callback, whatever the proxy lists");
+      eq((await FCM.auth.summary()).kick.connected, true, 'kickredirect: and signs in through a proxy that lists nothing');
+    }
+
+    // ── Firefox: reading the sign-in tab's address needs leave to ──
+    //
+    // Firefox tells an extension a tab's address only with a host permission
+    // for it, and a viewer can take that back. Without it the default sign-in
+    // would sit out its five minutes watching a tab it cannot read.
+    {
+      // Given a redirect that would finish the sign-in, so a check that is not
+      // there fails here at once rather than waiting out the tab's five minutes.
+      const { FCM, calls } = build({
+        browser: 'firefox',
+        redirectUrl: FIREFOX_REDIRECT,
+        grants: [],
+        redirect: (url) => FCM_SHARED + '?code=CODE&state='
+          + encodeURIComponent(new URL(url).searchParams.get('state')),
+      });
+      let error = null;
+      try { await FCM.auth.connect('kick', {}); } catch (e) { error = e; }
+      contains(error && error.message,
+        "Firefox has not allowed this extension to read the sign-in tab's address (localhost).",
+        'kickfirefox: without localhost, the default sign-in says Firefox has not allowed it');
+      contains(error && error.message, 'Allow it on the options page under Site access',
+        'kickfirefox: where to allow it');
+      contains(error && error.message, 'or choose "Via the proxy worker".',
+        'kickfirefox: and the choice that needs no tab at all');
+      eq(calls.filter((c) => c.permissionsAsked).map((c) => c.permissionsAsked), [['http://localhost/*']],
+        'kickfirefox: having asked about localhost without a port, the only way Firefox matches one');
+      ok(!calls.some((c) => c.tabUrl), 'kickfirefox: before any tab is opened');
+      eq(error && error.usedRedirect, FCM_SHARED, "kickfirefox: naming the desktop app's address as the one it would have used");
+      const explained = error && FCM.explainAuthFailure('kick', error.message, error.authUrl, {
+        redirect: error.usedRedirect, detail: error.detail, alreadyExplained: error.alreadyExplained,
+      });
+      eq(explained && explained.message, error && error.message,
+        'kickfirefox: and it is explained as written, not as a proxy that could not be reached');
+    }
+    {
+      const { FCM, calls } = build({
+        browser: 'firefox',
+        redirectUrl: FIREFOX_REDIRECT,
+        grants: ['http://localhost/*'],
+        redirect: (url) => FCM_SHARED + '?code=CODE&state='
+          + encodeURIComponent(new URL(url).searchParams.get('state')),
+      });
+      await FCM.auth.connect('kick', {});
+      ok(calls.some((c) => c.tabUrl), 'kickfirefox: with localhost allowed, the default sign-in opens its tab');
+      eq((await FCM.auth.summary()).kick.connected, true, 'kickfirefox: and finishes');
+    }
+    {
+      const { FCM } = build({
+        browser: 'firefox',
+        redirectUrl: FIREFOX_REDIRECT,
+        noPermissionsApi: true,
+        redirect: (url) => FCM_SHARED + '?code=CODE&state='
+          + encodeURIComponent(new URL(url).searchParams.get('state')),
+      });
+      await FCM.auth.connect('kick', {});
+      eq((await FCM.auth.summary()).kick.connected, true,
+        'kickfirefox: and with no permissions API to ask, it tries anyway rather than refusing');
+    }
+    {
+      const { FCM, calls } = build({
+        grants: [],
+        redirect: (url) => FCM_SHARED + '?code=CODE&state='
+          + encodeURIComponent(new URL(url).searchParams.get('state')),
+      });
+      await FCM.auth.connect('kick', {});
+      ok(!calls.some((c) => c.permissionsAsked), 'kickshared: Chrome asks nothing about localhost');
+      eq((await FCM.auth.summary()).kick.connected, true, 'kickshared: and signs in the way it always has');
+    }
+
+    // ── Firefox: a stored 'extension' signs in the default way ──
+    //
+    // Firefox's address for the add-on is not the one Kick's application has
+    // registered, so the choice cannot be made there — but a backup made in
+    // Chrome still brings it along.
+    {
+      const { FCM, calls } = build({
+        browser: 'firefox',
+        redirectUrl: FIREFOX_REDIRECT,
+        redirect: (url) => FCM_SHARED + '?code=CODE&state='
+          + encodeURIComponent(new URL(url).searchParams.get('state')),
+      });
+      await FCM.auth.connect('kick', { kickRedirect: 'extension' });
+      const opened = calls.find((c) => c.tabUrl);
+      ok(opened && !calls.some((c) => c.authUrl),
+        "kickfirefox: a stored 'extension' opens the default sign-in's tab, not a sign-in window");
+      eq(opened && new URL(opened.tabUrl).searchParams.get('redirect_uri'), FCM_SHARED,
+        "kickfirefox: sending Kick the desktop app's address");
+      eq((await FCM.auth.summary()).kick.connected, true, 'kickfirefox: and signs in');
+    }
+    {
+      const stored = ['shared', 'extension', 'proxy', undefined, '', 'bogus'];
+      eq(stored.map((m) => build({}).FCM.kickRedirectMode(m)),
+        ['shared', 'extension', 'proxy', 'shared', 'shared', 'shared'],
+        'auth: in Chrome the stored Kick redirect is the one used, and anything unrecognised is the default');
+      eq(stored.map((m) => build({ browser: 'firefox' }).FCM.kickRedirectMode(m)),
+        ['shared', 'shared', 'proxy', 'shared', 'shared', 'shared'],
+        "auth: in Firefox only 'extension' reads differently, as the default");
+    }
+
+    // ── Twitch in Firefox needs nothing new from the sign-in itself ──
+    {
+      const { FCM, calls } = build({
+        browser: 'firefox',
+        redirectUrl: FIREFOX_REDIRECT,
+        redirect: (url) => FIREFOX_REDIRECT + '#access_token=TW&state=' + new URL(url).searchParams.get('state'),
+      });
+      const result = await FCM.auth.connect('twitch', {});
+      eq(new URL(calls.find((c) => c.authUrl).authUrl).searchParams.get('redirect_uri'), FIREFOX_REDIRECT,
+        "authfirefox: Twitch is sent the add-on's own address, which Firefox lets through");
+      eq(result.login, 'me', 'authfirefox: and the sign-in finishes');
     }
 
     // ── usable(): a live token passes straight through ──
@@ -4216,12 +8250,12 @@ suites.auth = function () {
 
     // ── Failures are explained in terms of what to do about them ──
     {
-      const { FCM } = build({});
+      const { FCM, sandbox } = build({});
       const tw = FCM.explainAuthFailure('twitch', 'Authorization page could not be loaded.');
       eq(tw.needsRedirectSetup, true,
         'auth: Twitch refusing to render the page is read as an unregistered redirect');
       contains(tw.message, 'redirect URL', 'auth: and the message says so plainly');
-      contains(tw.redirectUri, '.chromiumapp.org/',
+      eq(tw.redirectUri, sandbox.chrome.identity.getRedirectURL(),
         'auth: the exact URL to register comes with it');
 
       contains(tw.message, 'redirect_mismatch',
@@ -4242,8 +8276,8 @@ suites.auth = function () {
       eq(shared.redirectUri, FCM.KICK_SHARED_REDIRECT,
         'auth: the message names the redirect the sign-in actually used');
       // And with nothing said about it, the extension's own is still the answer.
-      contains(FCM.explainAuthFailure('kick', 'invalid redirect uri').redirectUri,
-        '.chromiumapp.org/', 'auth: falling back to the extension’s own redirect');
+      eq(FCM.explainAuthFailure('kick', 'invalid redirect uri').redirectUri,
+        sandbox.chrome.identity.getRedirectURL(), 'auth: falling back to the extension’s own redirect');
 
       // —— A 400 that is not about the redirect at all ——
       //
@@ -4271,6 +8305,75 @@ suites.auth = function () {
       const other = FCM.explainAuthFailure('twitch', 'something else entirely');
       eq(other.needsRedirectSetup, false, 'auth: an unrecognised failure is not blamed on the redirect');
       contains(other.message, 'something else entirely', 'auth: but still reports what happened');
+    }
+
+    // ── Firefox's own failures, explained ──
+    //
+    // Two of Firefox's refusals say "redirect", and a Twitch redirect it cannot
+    // finish on only ever shows up as the window being closed. Read the way
+    // Chrome's are, the first two would send people off to register an address
+    // that was never the problem, and the last would be a shrug.
+    {
+      const { FCM } = build({ browser: 'firefox', redirectUrl: FIREFOX_REDIRECT });
+
+      const notAllowed = FCM.explainAuthFailure('kick', 'redirect_uri not allowed',
+        'https://proxy.example/kick-authorize?state=x', { redirect: 'https://proxy.example/kick-callback' });
+      eq(notAllowed.needsRedirectSetup, false,
+        "authfirefox: Firefox refusing a link's redirect_uri is not a redirect to go and register");
+      eq(notAllowed.message, 'Firefox refused to start this sign-in because it would not return to this add-on\'s '
+        + 'own address. Update the extension and the Kick proxy, or choose "Reuse the desktop app\'s URL" under '
+        + '"Where Kick returns after sign-in".',
+      'authfirefox: it says Firefox refused to start the sign-in, why, and the two ways out of it');
+      eq(FCM.explainAuthFailure('kick', 'redirect_uri is invalid').needsRedirectSetup, false,
+        'authfirefox: and the same for a redirect_uri Firefox could not read');
+
+      for (const said of ['Invalid request', 'Invalid request.']) {
+        const offline = FCM.explainAuthFailure('twitch', said, 'https://id.twitch.tv/oauth2/authorize?x');
+        eq([offline.needsRedirectSetup, offline.authUrl], [false, 'https://id.twitch.tv/oauth2/authorize?x'],
+          `authfirefox: "${said}" is not a redirect problem, and keeps the link to open in a tab`);
+        eq(offline.message, 'The Twitch sign-in page could not be reached. Check the connection, or open it in a '
+          + 'tab to see what it says.', `authfirefox: "${said}" says the sign-in page could not be reached`);
+      }
+
+      const closed = FCM.explainAuthFailure('twitch', 'User cancelled or denied access.',
+        'https://id.twitch.tv/oauth2/authorize?x');
+      eq(closed.needsRedirectSetup, true,
+        'authfirefox: a closed Twitch window is taken for the unregistered redirect it most likely is');
+      eq(closed.message, 'Twitch sign-in was closed before it finished. If the window showed a page that would '
+        + 'not load, Twitch did not accept this browser\'s redirect URL. Add this exact URL to the Twitch app\'s '
+        + 'OAuth redirect list and try again:',
+      'authfirefox: saying it was closed, and what to register if the window had stalled on a page');
+      eq([closed.redirectUri, closed.authUrl], [FIREFOX_REDIRECT, 'https://id.twitch.tv/oauth2/authorize?x'],
+        "authfirefox: with the add-on's allizom.org address to add, and the link to try in a tab");
+      eq(FCM.explainAuthFailure('twitch', 'The sign-in window was closed before it finished.').needsRedirectSetup,
+        true, "authfirefox: the same for the sign-in's own words for a window closed with nothing in it");
+      eq(FCM.explainAuthFailure('kick', 'User cancelled or denied access.').message, 'Kick sign-in was cancelled.',
+        'authfirefox: while a closed Kick sign-in is still simply cancelled');
+      const kickRefused = FCM.explainAuthFailure('kick', 'invalid redirect uri');
+      eq([kickRefused.needsRedirectSetup, kickRefused.redirectUri], [true, FIREFOX_REDIRECT],
+        "authfirefox: and a platform refusing the redirect is still read as one, naming Firefox's address");
+    }
+
+    // ── The same words in Chrome, read as they always were ──
+    {
+      const { FCM, sandbox } = build({});
+      const uri = sandbox.chrome.identity.getRedirectURL();
+      eq(FCM.explainAuthFailure('twitch', 'Authorization page could not be loaded.').message,
+        'Twitch did not accept this extension\'s redirect URL, so the sign-in could not finish. If the window '
+        + 'flashed a page that failed to load, its address bar would have read "error=redirect_mismatch" — that '
+        + 'is this. Add this exact URL to the Twitch app\'s OAuth redirect list and try again:',
+        "auth: Chrome's unregistered-redirect message is word for word what it was");
+      const notAllowed = FCM.explainAuthFailure('kick', 'redirect_uri not allowed');
+      eq([notAllowed.needsRedirectSetup, notAllowed.redirectUri], [true, uri],
+        'auth: in Chrome, "redirect_uri not allowed" is still a platform refusing the redirect');
+      eq(FCM.explainAuthFailure('twitch', 'Invalid request.').message, 'Twitch sign-in failed: Invalid request.',
+        'auth: "Invalid request." is still an unrecognised failure, reported as it came');
+      const closed = FCM.explainAuthFailure('twitch', 'User cancelled or denied access.');
+      eq([closed.needsRedirectSetup, closed.message], [false, 'Twitch sign-in was cancelled.'],
+        'auth: and a closed Twitch window is still a cancellation');
+      eq(FCM.explainAuthFailure('kick', 'The Kick proxy at x is older', '', { alreadyExplained: true }).message,
+        'Could not reach the Kick proxy that performs the token exchange. Check its URL in the extension options.',
+        'auth: Chrome reads every failure the way it always has, whatever the context carries');
     }
 
     // ── Disconnecting removes only that platform ──
@@ -10290,6 +14393,19 @@ suites.kickbadges = function () {
   });
   contains(FCM.renderBadges('kick', [{ type: 'trainwreckstv', text: 'Trainwreck' }]), 'TRAINWRECKSTV',
     'kickbadges: a type with no icon is still a label');
+
+  // The OG shield's letters take their font from the stylesheet. Written as an
+  // attribute holding a var(), they depended on a browser resolving a custom
+  // property inside an SVG presentation attribute, which is not something to
+  // count on everywhere, and the default font they fell back to may not fit.
+  {
+    const og = FCM.renderBadges('kick', [{ type: 'og' }]);
+    contains(og, '>OG</text>', 'kickbadges: the OG shield still carries its letters');
+    missing(og, 'font-family', 'kickbadges: with no font written into the markup');
+    const css = fs.readFileSync(path.join(ROOT, 'src/content/overlay.css'), 'utf8');
+    ok(/\.fcm-kbadge-icon-og \.fcm-kbadge-cut\s*\{[^}]*font-family:\s*var\(--fcm-mono\)/.test(css),
+      'kickbadges: because the stylesheet gives them the mono face they were drawn in');
+  }
 
   // A caption is text Kick relays from somewhere; it reaches nothing but text.
   const hostile = FCM.renderBadges('kick', [{ type: 'moderator', text: '"><img src=x onerror=alert(1)>' }]);

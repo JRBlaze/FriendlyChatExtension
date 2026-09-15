@@ -11,6 +11,10 @@
   file://) and open /tests/harness.html:
 
       python -m http.server 8123
+
+  Add ?browser=firefox to see what a Firefox user sees: FCM.BROWSER reads
+  'firefox', so everything that branches on it takes Firefox's side, and the
+  sign-in redirect shown is this add-on's allizom.org address.
 -->
 <style>
   body { margin: 0; background: #0e0e10; color: #efeff1; font-family: system-ui, sans-serif; height: 100vh; display: flex; flex-direction: column; }
@@ -471,6 +475,13 @@ mockComposer(document.querySelector('.kickcol .editor-input'), document.getEleme
 <script>
 // ── chrome.* stubs ────────────────────────────────────────────────────────────
 const mem = { sync: {}, local: {} };
+// ?browser=firefox answers the way Firefox does wherever the page can tell: the
+// extension's own address is moz-extension://, which is all FCM.BROWSER is
+// worked out from, and the sign-in redirect is this add-on's allizom.org one.
+// Every other path is still served from here, so the stylesheet loads either
+// way.
+const HARNESS_BROWSER = new URLSearchParams(location.search).get('browser') === 'firefox'
+  ? 'firefox' : 'chrome';
 function area(name) {
   return {
     get: async (key) => (typeof key === 'string' ? { [key]: mem[name][key] } : { ...mem[name] }),
@@ -479,7 +490,7 @@ function area(name) {
 }
 window.chrome = {
   runtime: {
-    getURL: (p) => `/${p}?t=${Date.now()}`,
+    getURL: (p) => (!p && HARNESS_BROWSER === 'firefox' ? 'moz-extension://harness/' : `/${p}?t=${Date.now()}`),
     connect: () => ({ postMessage() {}, onMessage: { addListener() {} }, onDisconnect: { addListener() {} } }),
     getManifest: () => ({ version: '1.0.0' }),
     onMessage: { addListener() {} },
@@ -492,7 +503,11 @@ window.chrome = {
     },
   },
   storage: { sync: area('sync'), local: area('local'), onChanged: { addListener() {} } },
-  identity: { getRedirectURL: () => 'https://abcdefghijklmnop.chromiumapp.org/' },
+  identity: {
+    getRedirectURL: () => (HARNESS_BROWSER === 'firefox'
+      ? 'https://91e887612fc28278646a28c0b1f4cceded6586a2.extensions.allizom.org/'
+      : 'https://abcdefghijklmnop.chromiumapp.org/'),
+  },
 };
 </script>
 
@@ -617,6 +632,12 @@ function loadSources(bust) {
   ]);
 
   overlay.setStatus('twitch', 'connected', 'examplestreamer');
+  // The account summary the worker answers authStatus with, carrying the
+  // sign-in address only it can ask the browser for — so the settings sheet's
+  // redirect note shows here as it does in the extension (?browser=firefox for
+  // Firefox's address and wording).
+  overlay.setAccounts({ twitch: { connected: false }, kick: { connected: false } },
+    { redirectUri: window.chrome.identity.getRedirectURL(), browser: window.FCM.BROWSER });
 
   const TWITCH_LINES = [
     ['Nightbot',   'welcome to the stream, rules in !discord', { badgesRaw: 'moderator/1', badgeClass: 'mod', color: '#00ADA8' }],
@@ -782,10 +803,10 @@ function loadSources(bust) {
     'auth-both': () => overlay.setAccounts({
       twitch: { connected: true, login: 'MyTwitchName' },
       kick: { connected: true, login: 'MyKickName' },
-    }),
+    }, { redirectUri: window.chrome.identity.getRedirectURL(), browser: window.FCM.BROWSER }),
     'auth-none': () => overlay.setAccounts({
       twitch: { connected: false }, kick: { connected: false },
-    }),
+    }, { redirectUri: window.chrome.identity.getRedirectURL(), browser: window.FCM.BROWSER }),
     long: () => overlay.chat({
       platform: 'twitch', author: 'VeryLongWindedViewer',
       text: 'this is a deliberately long message written to check that the text wraps '

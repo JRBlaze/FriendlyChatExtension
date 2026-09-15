@@ -240,17 +240,165 @@
     return savingChain;
   };
 
+  /**
+   * Where a Kick sign-in will really return to, from the choice stored in the
+   * settings: 'shared', 'extension' or 'proxy', and 'shared' for anything else.
+   *
+   * One place decides, because two have to agree on it: the sign-in, which
+   * acts on it, and the options page, which shows it. Left to work it out
+   * separately, the page could show one choice while the sign-in used another.
+   *
+   * Firefox never goes 'extension'. Its address for the add-on is not Chrome's,
+   * it would have to be registered with Kick's application on top of Chrome's,
+   * and Kick's documentation describes only one redirect per application —
+   * whether it takes a second is not something it says. So a stored
+   * 'extension' — which a backup made in Chrome brings with it — signs in the
+   * default way there rather than failing.
+   */
+  FCM.kickRedirectMode = function (stored) {
+    const mode = stored === 'proxy' || stored === 'extension' ? stored : 'shared';
+    if (mode === 'extension' && FCM.BROWSER === 'firefox') return 'shared';
+    return mode;
+  };
+
+  // ── Updates ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Whether the browser keeps this build up to date by itself, so the
+   * extension's own update check, the badge's dot, the popup's card and the
+   * overlay's strip have nothing to add.
+   *
+   * True for a Firefox build whose manifest names an update_url, which is
+   * every signed release (tools/pack.js, UPDATE_URL): Firefox asks that
+   * address for newer versions on its own schedule and installs them without
+   * anyone opening a file. Read from the running manifest rather than from
+   * FCM.BROWSER, because the manifest is what decides it — a Firefox package
+   * built without an update_url gets no updates from Firefox at all, and still
+   * needs to be told about releases the way Chrome does. Chrome's manifest has
+   * no browser_specific_settings, so this is never true there.
+   *
+   * Asked of the manifest every time rather than kept, since that costs a copy
+   * of a small object and cannot be out of date. Anything that stops it being
+   * read — no extension API here, a content script whose extension has since
+   * been reloaded — answers false, which is what every build did before.
+   */
+  FCM.updatedByBrowser = function () {
+    try {
+      const settings = chrome.runtime.getManifest().browser_specific_settings;
+      const url = settings && settings.gecko && settings.gecko.update_url;
+      return typeof url === 'string' && url !== '';
+    } catch (e) {
+      return false;
+    }
+  };
+
+  // ── Site access ─────────────────────────────────────────────────────────────
+  //
+  // Firefox shows the sites an add-on wants when it is installed, and grants
+  // them there — and after that lets whoever installed it take any one of them
+  // back, whenever they like, from about:addons or the extensions button. An
+  // update fares no better: one that adds a site goes in without it, and nobody
+  // is asked. Nothing announces either. A content script not allowed on a site
+  // is simply never injected there; a background request to a service the
+  // add-on may not reach fails the way any cross-origin request fails, and is
+  // read as that service having nothing to give; a cookie it may not read is
+  // not there.
+  //
+  // So in Firefox the manifest says what the add-on asked for, not what it has,
+  // and the popup, the options page and the background each check. Chrome is
+  // left exactly as it was: nothing there calls any of this.
+
+  // The two sites the overlay is drawn on, written exactly as the manifest
+  // writes them. Without one of these there is no overlay on that site at all,
+  // which is a different order of problem from an emote service going missing,
+  // and is told about differently.
+  FCM.SITE_ORIGINS = ['*://*.twitch.tv/*', '*://*.kick.com/*'];
+
+  // The address on each site that the overlay is actually drawn on: the
+  // channel pages. Firefox's extensions menu can allow a site one address at a
+  // time — "Always allow on www.twitch.tv" grants that address and not every
+  // twitch.tv there is, and "Only when clicked" takes the whole-site grant away
+  // first — and the content script is put into those pages all the same. So a
+  // site allowed where it is drawn is not missing, whatever the whole-site
+  // pattern says; a grant for some other address on it (twitch.tv without the
+  // www, which only ever redirects) still is. Asked as https, which a grant for
+  // the address in either scheme, or in both, covers.
+  FCM.SITE_PAGES = {
+    '*://*.twitch.tv/*': ['https://www.twitch.tv/*'],
+    '*://*.kick.com/*': ['https://kick.com/*'],
+  };
+
+  /**
+   * Which of the manifest's host permissions the browser is not granting.
+   *
+   * Asked one origin at a time, because `permissions.contains` given several
+   * only says whether every one of them is granted, and everything that uses
+   * this has to say which. An answer that cannot be had — no permissions API
+   * where this runs, a question that throws or rejects — counts as granted:
+   * this is here to find something to ask for, and an origin it cannot ask
+   * about is not one it could ask for either.
+   *
+   * Twitch or Kick counts as granted when the address the overlay is drawn on
+   * is (FCM.SITE_PAGES), even without the whole-site pattern, and is then in
+   * neither list: the overlay is there, so no badge, card or feed line should
+   * say it cannot be, and Allow access has nothing to ask for on its account.
+   *
+   * @returns {Promise<{origins: string[], missing: string[], sitesMissing: string[]}>}
+   *   every origin the manifest lists, the ones not granted, and which of those
+   *   are the sites themselves — each in the manifest's own order
+   */
+  FCM.hostAccess = async function () {
+    let wanted = [];
+    try {
+      const listed = chrome.runtime.getManifest().host_permissions;
+      if (Array.isArray(listed)) wanted = listed.slice();
+    } catch (e) { /* not an extension page: there is no list to check */ }
+    const allowedWhereDrawn = async (origin) => {
+      for (const page of FCM.SITE_PAGES[origin] || []) {
+        if (await chrome.permissions.contains({ origins: [page] })) return true;
+      }
+      return false;
+    };
+    const missing = [];
+    for (const origin of wanted) {
+      try {
+        if (await chrome.permissions.contains({ origins: [origin] })) continue;
+        if (!(await allowedWhereDrawn(origin))) missing.push(origin);
+      } catch (e) { /* no permissions API here: treat as granted */ }
+    }
+    return {
+      origins: wanted,
+      missing,
+      sitesMissing: missing.filter((origin) => FCM.SITE_ORIGINS.includes(origin)),
+    };
+  };
+
+  /**
+   * An origin pattern as the host a person would know it by: `*://*.twitch.tv/*`
+   * is twitch.tv, `https://api.github.com/*` is api.github.com, and
+   * `http://localhost:8080/*` is localhost.
+   */
+  FCM.originLabel = function (pattern) {
+    return String(pattern || '')
+      .replace(/^[^:/]*:\/\//, '')
+      .replace(/\/.*$/, '')
+      .replace(/^\*\./, '')
+      .replace(/:\d+$/, '');
+  };
+
   // ── Backup ──────────────────────────────────────────────────────────────────
   //
   // Everything worth keeping, in one file that can be put somewhere safe.
   //
-  // Chrome deletes an extension's storage when the extension is removed, and
-  // "remove it, load it again" is a perfectly ordinary way to update one loaded
-  // unpacked — so the favourites, the channel pairings and every setting can go
-  // without anything having gone wrong. storage.sync brings them back only for
-  // somebody signed into Chrome with sync switched on, which is not everybody
-  // and is not something this extension can arrange. A file does not depend on
-  // any of that.
+  // A browser deletes an extension's storage when the extension is removed.
+  // "Remove it, load it again" is a perfectly ordinary way to update one loaded
+  // unpacked in Chrome, and Firefox removes an add-on loaded temporarily, with
+  // its storage, every time it restarts — so the favourites, the channel
+  // pairings and every setting can go without anything having gone wrong.
+  // storage.sync brings them back only for somebody signed in to the browser
+  // with sync switched on (a Mozilla account with add-ons sync, in Firefox),
+  // which is not everybody and is not something this extension can arrange. A
+  // file does not depend on any of that.
   //
   // Deliberately not in it:
   //   auth        account tokens. They are per-device credentials, which is why

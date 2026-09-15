@@ -35,7 +35,13 @@
       else if (node.nodeName === 'BR') out += '';
       else out += node.textContent || '';
     });
-    return out;
+    // A no-break space is a space. Chrome types plain ones into this box, but
+    // an editor is free to write U+00A0 wherever an ordinary space would
+    // collapse — at the end of the text, or beside another space — and one
+    // sent as it is reaches the chat as a character that only looks like a
+    // space, beside which an emote name is not an emote. Swapped one character
+    // for one, so every offset counted from the nodes still lines up.
+    return out.replace(/\u00A0/g, ' ');
   }
 
   /**
@@ -98,10 +104,47 @@
     return total;
   }
 
-  function caretOffset(el) {
+  /**
+   * The range the caret is in, or null when there is no selection.
+   *
+   * Where the shadow root has a selection of its own, that is what is read,
+   * exactly as it always was, and nothing else is asked. Only Chromium gives a
+   * shadow root one. Chrome from 137 has the standard `getComposedRanges` as
+   * well, but nothing was wrong with the answer Chrome already gave, and a new
+   * way of reading the caret there would be a change to typing, pasting and
+   * completing in Chrome made for the sake of another browser.
+   *
+   * Everywhere else the root has nothing to ask, so the standard call goes
+   * first: handed the shadow root, it can see inside it — Firefox from 142. Its
+   * answer is taken only when it reaches into the box's root. Behind it is the
+   * document's own selection, which is what was always read there and which
+   * Gecko lets reach into a shadow root by itself, for a browser without the
+   * standard call (Firefox 140 and 141), one that only takes its older argument
+   * list, and an answer that stops at the host.
+   *
+   * The standard call is asked of the document the box is in now, which is not
+   * the one this script was loaded into once the panel is popped out.
+   */
+  function selectedRange(el) {
+    const root = el.getRootNode ? el.getRootNode() : null;
+    if (root && root.nodeType === 11 && typeof root.getSelection !== 'function') {
+      const doc = el.ownerDocument || document;
+      try {
+        const sel = doc && typeof doc.getSelection === 'function' ? doc.getSelection() : null;
+        const ranges = sel && typeof sel.getComposedRanges === 'function'
+          ? sel.getComposedRanges({ shadowRoots: [root] })
+          : null;
+        const first = ranges && ranges[0];
+        if (first && root.contains(first.startContainer)) return first;
+      } catch (e) { /* only the older argument list: the way below */ }
+    }
     const sel = selectionFor(el);
-    if (!sel || !sel.rangeCount) return readValue(el).length;
-    const range = sel.getRangeAt(0);
+    return sel && sel.rangeCount ? sel.getRangeAt(0) : null;
+  }
+
+  function caretOffset(el) {
+    const range = selectedRange(el);
+    if (!range) return readValue(el).length;
     if (!el.contains(range.startContainer) && range.startContainer !== el) {
       return readValue(el).length;
     }
@@ -124,13 +167,33 @@
     return { node: el, offset: el.childNodes.length };
   }
 
+  // Puts the caret at a character offset, in the selection it is read from.
+  //
+  // Where the shadow root has a selection of its own — Chromium's — that is
+  // written to exactly as it always was, with a range made by this script's
+  // document, and nothing else is looked at. Every other root has none, and
+  // there it is the selection of the document the box is in now: the tab's,
+  // until the panel is popped out, and the pop-out window's after that. Not
+  // this script's own document, which stays the tab's. Gecko quietly ignores a
+  // range handed to one document's selection whose nodes are in another, so
+  // written to the tab's, a popped-out box lost its caret after every drawn
+  // emote, paste and completion, and the next keystroke landed wherever it
+  // happened to be.
   function setCaret(el, start, end) {
-    const sel = selectionFor(el);
-    if (!sel || !document.createRange) return;
+    const root = el.getRootNode ? el.getRootNode() : null;
+    let doc = document;
+    let sel = null;
+    if (root && typeof root.getSelection === 'function') {
+      sel = root.getSelection();
+    } else {
+      doc = el.ownerDocument || document;
+      sel = typeof doc.getSelection === 'function' ? doc.getSelection() : null;
+    }
+    if (!sel || !doc.createRange) return;
     const from = pointAt(el, start);
     const to = pointAt(el, end === undefined ? start : end);
     try {
-      const range = document.createRange();
+      const range = doc.createRange();
       range.setStart(from.node, from.offset);
       range.setEnd(to.node, to.offset);
       sel.removeAllRanges();

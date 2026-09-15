@@ -4,11 +4,37 @@
 // stubbed, then drives it exactly as a content script does: connect a port,
 // say hello, join channels, push raw socket frames in, and read back what the
 // worker posts to the tab. Nothing here touches the network.
-const fs = require('fs');
-const path = require('path');
-const vm = require('vm');
+//
+// It boots the Chrome way unless asked otherwise. `loadPath: 'scripts'` boots
+// the same files the way Firefox's event page runs them instead (see
+// tests/load-background.js), and `browser: 'firefox'` makes the extension API
+// answer the way Firefox's does where the two differ.
+const pack = require('../tools/pack.js');
+const { loadBackground, backgroundManifest, extensionOrigin } = require('./load-background.js');
 
-const ROOT = path.join(__dirname, '..');
+/**
+ * Whether a granted host pattern covers a wanted one, the way Firefox's
+ * permissions.contains answers: a grant covers every pattern it subsumes, not
+ * only one written the same. `*://*.twitch.tv/*` covers `https://www.twitch.tv/*`
+ * and `https://gql.twitch.tv/*`; `*://www.twitch.tv/*` covers
+ * `https://www.twitch.tv/*` and nothing on any other twitch.tv address;
+ * `https://www.twitch.tv/*` covers neither `http://` nor `*://`.
+ *
+ * Just enough of match patterns for the ones the extension asks about: a
+ * scheme or `*`, a host or `*.` in front of one, and a path.
+ */
+function patternCovers(granted, wanted) {
+  if (granted === wanted) return true;
+  const parts = (p) => /^(\*|[a-z-]+):\/\/([^/]+)(\/.*)$/.exec(String(p));
+  const g = parts(granted);
+  const w = parts(wanted);
+  if (!g || !w) return false;
+  const scheme = g[1] === w[1] || (g[1] === '*' && ['http', 'https'].includes(w[1]));
+  const host = g[2] === w[2]
+    || (g[2].startsWith('*.') && (w[2] === g[2].slice(2) || w[2].endsWith(g[2].slice(1))));
+  const pathCovered = g[3] === '/*' || g[3] === w[3];
+  return scheme && host && pathCovered;
+}
 
 function makeFakeSocket(registry) {
   function FakeWebSocket(url) {
@@ -51,23 +77,54 @@ function makeFakeSocket(registry) {
 
 /**
  * Boots the worker in an isolated context.
- * @param {object} opts { fetchImpl }
+ * @param {object} opts
+ *   fetchImpl, hold, cookies, twitchClips, kickClips, kickHistory, twitchHistory
+ *     — the network and cookie jar, as before;
+ *   loadPath — 'worker' (default: Chrome's service worker) or 'scripts'
+ *     (Firefox's event page);
+ *   browser — 'chrome' (default) or 'firefox': where runtime.getURL says the
+ *     extension is served from, which is what FCM.BROWSER is worked out from;
+ *   manifest — the Chrome manifest to boot under (default: the repository's);
+ *   grants — the origins and permissions permissions.contains reports as
+ *     granted (default: every one, as on an install nothing has been revoked);
+ *   redirectUrl — what identity.getRedirectURL answers (default: a
+ *     chromiumapp.org address, or this add-on's allizom.org one on Firefox);
+ *   seed — `{ local, sync }`, what storage already holds when the background
+ *     starts, for anything it reads on its very first run;
+ *   updateUrl — on the Firefox load path, what the manifest names as its
+ *     update_url in place of tools/pack.js's (null: a package without one);
+ *   alarms — `{ name: info }`, alarms an earlier run left scheduled, which
+ *     outlive the background they were made in
+ * What it hands back also carries `badge`, the toolbar badge as last painted,
+ * and `permissionChecks`, every question put to permissions.contains.
  */
 function bootWorker(opts = {}) {
   const sockets = [];
   const FakeWebSocket = makeFakeSocket(sockets);
-  const storage = { local: {}, sync: {} };
+  // Copied all the way down: the storage stub hands out what it holds rather
+  // than copies, so a worker that changed a seeded record would otherwise be
+  // changing the seed every later boot is handed as well.
+  const seeded = (area) => JSON.parse(JSON.stringify((opts.seed && opts.seed[area]) || {}));
+  const storage = { local: seeded('local'), sync: seeded('sync') };
+  const badge = { text: '', color: null, textColor: null };
+  const permissionChecks = [];
   const posted = [];
   const fetchCalls = [];
   const timers = { intervals: new Set(), timeouts: new Set() };
+  const browser = opts.browser === 'firefox' ? 'firefox' : 'chrome';
+  const manifest = backgroundManifest(opts);
 
   const listeners = {};
-  const alarms = new Map();
+  const alarms = new Map(Object.entries(JSON.parse(JSON.stringify(opts.alarms || {}))));
   const chrome = {
     runtime: {
       onConnect: { addListener: (fn) => { listeners.connect = fn; } },
       onMessage: { addListener: (fn) => { listeners.message = fn; } },
       lastError: null,
+      getURL: (p = '') => `${extensionOrigin(browser)}/${String(p).replace(/^\//, '')}`,
+      // A fresh copy each time, as the browser hands out, so nothing a test
+      // does to one can change what the next caller reads.
+      getManifest: () => JSON.parse(JSON.stringify(manifest)),
     },
     tabs: { onRemoved: { addListener: (fn) => { listeners.tabRemoved = fn; } } },
     // Alarms are kept rather than only noted, because whether one exists is
@@ -89,7 +146,34 @@ function bootWorker(opts = {}) {
         set: async (obj) => { Object.assign(storage.sync, obj); },
       },
     },
-    identity: { getRedirectURL: () => 'https://ext.chromiumapp.org/' },
+    // Everything granted unless a test lists what is. Firefox lets a user take
+    // any host back at any time, so "not granted" has to be something a test
+    // can say. The list is read on every question, so a test can grant or take
+    // back a host by changing the array it passed, then fire the event Firefox
+    // would (listeners.permissionsAdded / permissionsRemoved). Every question
+    // is noted, so a test can also say that one was never asked. A granted
+    // origin answers for every origin it covers (patternCovers), as in Firefox.
+    permissions: {
+      contains: async ({ origins = [], permissions = [] } = {}) => {
+        permissionChecks.push([...origins, ...permissions]);
+        return !Array.isArray(opts.grants)
+          || (origins.every((wanted) => opts.grants.some((granted) => patternCovers(granted, wanted)))
+            && permissions.every((wanted) => opts.grants.includes(wanted)));
+      },
+      onAdded: { addListener: (fn) => { listeners.permissionsAdded = fn; } },
+      onRemoved: { addListener: (fn) => { listeners.permissionsRemoved = fn; } },
+    },
+    identity: {
+      getRedirectURL: () => opts.redirectUrl
+        || (browser === 'firefox' ? pack.firefoxRedirectUrl() : 'https://ext.chromiumapp.org/'),
+    },
+    // The toolbar badge, kept as the browser would show it: the update check
+    // paints a dot there, and on Firefox the site-access check paints over it.
+    action: {
+      setBadgeText: async ({ text }) => { badge.text = text; },
+      setBadgeBackgroundColor: async ({ color }) => { badge.color = color; },
+      setBadgeTextColor: async ({ color }) => { badge.textColor = color; },
+    },
     // The browser's cookie jar, as far as the worker can see it: only what a
     // test put there under `opts.cookies`, keyed by name.
     cookies: {
@@ -179,22 +263,9 @@ function bootWorker(opts = {}) {
     clearTimeout: (t) => { clearTimeout(t); timers.timeouts.delete(t); },
     setInterval: (fn, ms) => { const t = setInterval(fn, ms); timers.intervals.add(t); return t; },
     clearInterval: (t) => { clearInterval(t); timers.intervals.delete(t); },
-    importScripts: (...paths) => {
-      paths.forEach((p) => {
-        const rel = String(p).replace(/^\//, '');
-        vm.runInContext(fs.readFileSync(path.join(ROOT, rel), 'utf8'), sandbox, { filename: rel });
-      });
-    },
   };
-  sandbox.self = sandbox;
-  sandbox.globalThis = sandbox;
-  vm.createContext(sandbox);
 
-  vm.runInContext(
-    fs.readFileSync(path.join(ROOT, 'src/background/service-worker.js'), 'utf8'),
-    sandbox,
-    { filename: 'service-worker.js' }
-  );
+  const { loaded } = loadBackground(sandbox, { loadPath: opts.loadPath, manifest });
 
   // Stands in for one tab's end of the port. Each tab gets its own inbox, which
   // is what makes it possible to prove that two open streams stay separate.
@@ -225,6 +296,7 @@ function bootWorker(opts = {}) {
 
   return {
     sandbox, sockets, posted, fetchCalls, storage, listeners, timers, makeTab, alarms,
+    manifest, loaded, loadPath: opts.loadPath || 'worker', browser, badge, permissionChecks,
     port: port.port,
     connect() { port.connect(); return port.port; },
     send(msg) { return port.send(msg); },
@@ -242,4 +314,4 @@ function bootWorker(opts = {}) {
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
-module.exports = { bootWorker, wait };
+module.exports = { bootWorker, wait, patternCovers };

@@ -19,7 +19,8 @@
    *
    * Both platforms reject an unregistered redirect, but neither says so in a
    * way that points anywhere useful: Twitch refuses to render the page at all
-   * ("Authorization page could not be loaded") and Kick answers "invalid
+   * (all Chrome reports is "Authorization page could not be loaded", and
+   * Firefox reports only that the window was closed) and Kick answers "invalid
    * redirect uri". By far the most common cause of either is that the
    * extension's redirect URL has not been added to the app, so that is what
    * the message explains — with the exact URL to paste.
@@ -45,6 +46,68 @@
     // code — and sent that person off to re-register a URL that was already
     // right.
     const said = String(ctx.detail || raw);
+
+    // Firefox's own refusals, and the one trace it leaves of a redirect Twitch
+    // would not take. Looked for before the redirect test below, because two of
+    // them say "redirect" and that test would read each as a platform refusing
+    // an unregistered address — which is not what happened, and registering
+    // one would change nothing. Only in Firefox: Chrome says none of these, and
+    // a platform that happened to use the same words there goes on being read
+    // the way it always has been.
+    if (FCM.BROWSER === 'firefox') {
+      // Worded by the sign-in itself, about something it found before any
+      // window opened: a proxy too old to finish a Firefox sign-in, or no
+      // permission to read the sign-in tab's address. Already the sentence to
+      // show, and one that names the proxy — which the tests below would take
+      // for the proxy being unreachable and flatten into saying so.
+      if (ctx.alreadyExplained) {
+        return { needsRedirectSetup: false, redirectUri: uri, message: raw, raw };
+      }
+      // Refused before any window opened, because the link named a redirect_uri
+      // that was not the add-on's own. This extension never sends Firefox one
+      // like that, so only an extension and a proxy out of step can get here.
+      if (/redirect_uri (not allowed|is invalid)/i.test(said)) {
+        return {
+          needsRedirectSetup: false,
+          redirectUri: uri,
+          message: 'Firefox refused to start this sign-in because it would not return to this add-on\'s own '
+            + 'address. Update the extension and the Kick proxy, or choose "Reuse the desktop app\'s URL" '
+            + 'under "Where Kick returns after sign-in".',
+          raw,
+        };
+      }
+      // Firefox fetches the sign-in page before it opens a window for it, and a
+      // network error there ends the attempt with only this. The link is still
+      // worth opening in a tab, which says what the fetch could not.
+      if (/^Invalid request\.?$/.test(raw)) {
+        return {
+          needsRedirectSetup: false,
+          redirectUri: uri,
+          authUrl: authUrl || '',
+          message: `The ${name} sign-in page could not be reached. Check the connection, or open it in a tab `
+            + 'to see what it says.',
+          raw,
+        };
+      }
+      // Where Chrome gives up with "could not be loaded", Firefox leaves the
+      // window sitting on the page that failed, and the only thing the sign-in
+      // ever hears is that the viewer closed it ("User cancelled or denied
+      // access."). So in Firefox a closed Twitch window is the likeliest sign of
+      // an unregistered redirect, and the message says what to register — while
+      // saying it was closed, which is the one thing actually known.
+      if (platform === 'twitch' && /cancel|closed/i.test(raw)) {
+        return {
+          needsRedirectSetup: true,
+          redirectUri: uri,
+          authUrl: authUrl || '',
+          message: 'Twitch sign-in was closed before it finished. If the window showed a page that would not '
+            + 'load, Twitch did not accept this browser\'s redirect URL. Add this exact URL to the Twitch app\'s '
+            + 'OAuth redirect list and try again:',
+          raw,
+        };
+      }
+    }
+
     const redirectProblem = /redirect|could not be loaded|invalid.?uri|mismatch/i.test(said);
     if (redirectProblem) {
       return {
@@ -56,7 +119,8 @@
         // sends the browser to whichever redirect *is* registered, carrying
         // ?error=redirect_mismatch. That page usually fails to load, and Chrome
         // reports only "Authorization page could not be loaded" — which says
-        // nothing about the real cause.
+        // nothing about the real cause. Firefox reports less still, and what it
+        // does report is read in its own block above.
         message: `${name} did not accept this extension's redirect URL, so the sign-in could not `
           + `finish. If the window flashed a page that failed to load, its address bar would have `
           + `read "error=redirect_mismatch" — that is this. Add this exact URL to the ${name} app's `
@@ -187,13 +251,16 @@
   }
 
   /**
-   * Runs a sign-in that ends at a redirect chrome.identity cannot handle.
+   * Runs a sign-in that ends at a redirect the identity API cannot handle, in
+   * either browser.
    *
-   * launchWebAuthFlow only ever completes on `https://<id>.chromiumapp.org/`,
-   * so it cannot be used with the redirect the desktop app registers. Opening
-   * an ordinary tab and watching where it goes works instead — and works even
-   * though nothing is listening on that address, because the tab's URL changes
-   * to the redirect before the load fails. That is where the code is.
+   * launchWebAuthFlow only ever completes on the browser's own address for the
+   * extension — `https://<id>.chromiumapp.org/` in Chrome,
+   * `https://<hash>.extensions.allizom.org/` in Firefox — so it cannot be used
+   * with the redirect the desktop app registers. Opening an ordinary tab and
+   * watching where it goes works instead — and works even though nothing is
+   * listening on that address, because the tab's URL changes to the redirect
+   * before the load fails. That is where the code is.
    *
    * @param {string} authUrl        where to send the user
    * @param {string} redirectPrefix the redirect to watch for
@@ -375,9 +442,18 @@
   // built-in id would be worse than failing here — the exchange runs through
   // the proxy too, so an unreachable proxy means walking the user through
   // authorising and only then failing.
+  //
+  // The same answer says what the proxy can do, as `features`. It is deployed
+  // separately from the extension, so a Firefox sign-in that needs its
+  // /kick-authorize has to find out whether the one in front of it has that
+  // before sending anybody there. An answer without the list is a proxy from
+  // before there was one, and can do none of it.
   async function kickClientId(settings) {
     const data = await FCM.getJson(proxy(settings, '/kick-config'));
-    return (data && data.client_id) || '';
+    return {
+      id: (data && data.client_id) || '',
+      features: data && Array.isArray(data.features) ? data.features : [],
+    };
   }
 
   // Base64url without padding, for putting the extension's own redirect inside
@@ -389,14 +465,19 @@
   /**
    * Where Kick is told to send the user back to.
    *
-   * Going straight back to the extension is one hop fewer, but that URL carries
-   * the extension's id, so it has to be registered with Kick — and registered
-   * again if the id ever changes. Routing through the worker's callback instead
-   * means the URL registered with Kick is fixed forever; the worker reads the
-   * extension's own redirect out of the state parameter and forwards there.
+   * Going straight back to the extension is one hop fewer, but that URL is made
+   * from the extension's id — Chrome's carries it, Firefox's a hash of it — so
+   * it has to be registered with Kick, and registered again if the id ever
+   * changes. Firefox never goes that way at all (FCM.kickRedirectMode). Routing
+   * through the worker's callback instead means the URL registered with Kick is
+   * fixed forever; the worker reads the extension's own redirect out of the
+   * state parameter and forwards there.
    */
   function kickRedirect(settings) {
-    const mode = settings.kickRedirect || 'shared';
+    // Which of the three, as FCM.kickRedirectMode reads the stored choice —
+    // the same reading the options page shows, and the one that turns a stored
+    // 'extension' into 'shared' in Firefox.
+    const mode = FCM.kickRedirectMode(settings.kickRedirect);
     if (mode === 'proxy') {
       return { redirect: proxy(settings, '/kick-callback'), viaProxy: true, viaTab: false };
     }
@@ -404,13 +485,13 @@
       return { redirect: redirectUri(), viaProxy: false, viaTab: false };
     }
     // 'shared': the redirect the desktop app already has registered, so there
-    // is nothing for the user to set up. chrome.identity cannot finish on that
-    // address, so the tab is watched instead.
+    // is nothing for the user to set up. launchWebAuthFlow cannot finish on
+    // that address in either browser, so the tab is watched instead.
     return { redirect: FCM.KICK_SHARED_REDIRECT, viaProxy: false, viaTab: true };
   }
 
   async function connectKick(settings) {
-    const clientId = await kickClientId(settings);
+    const { id: clientId, features } = await kickClientId(settings);
     if (!clientId) {
       throw new Error('Could not reach the Kick proxy — check its URL in the extension options.');
     }
@@ -422,17 +503,56 @@
     // one parameter OAuth guarantees will come back untouched.
     const state = viaProxy ? `${nonce}~${base64urlText(redirectUri())}` : nonce;
 
-    const url = `${FCM.KICK_AUTH_URL}?response_type=code`
-      + `&client_id=${encodeURIComponent(clientId)}`
-      + `&redirect_uri=${encodeURIComponent(redirect)}`
-      + `&scope=${encodeURIComponent(FCM.KICK_SCOPES)}`
-      + `&code_challenge=${challenge}&code_challenge_method=S256`
-      + `&state=${encodeURIComponent(state)}`;
-
     // Every failure below is annotated with the redirect this attempt actually
     // sent, so anything explaining it names that one rather than the
     // extension's own — which this flow may never have used.
     const withRedirect = (err) => Object.assign(err, { usedRedirect: redirect });
+    // A failure whose message already says what to do, so explaining it again
+    // could only make it vaguer.
+    const worded = (message) => Object.assign(new Error(message), { alreadyExplained: true });
+
+    // Firefox will not open a sign-in window for a link whose redirect_uri is
+    // not the add-on's own address, and the worker's /kick-callback is not. So
+    // in Firefox the proxy flow starts at the worker's /kick-authorize instead,
+    // which puts Kick's redirect_uri in and bounces on to Kick. A worker
+    // deployed before that existed would answer with a 404 page inside the
+    // sign-in window, so it is asked first, and a stale one is named as such.
+    const bridge = viaProxy && FCM.BROWSER === 'firefox';
+    if (bridge && !features.includes('kick-authorize')) {
+      throw withRedirect(worded(`The Kick proxy at ${proxy(settings, '')} is older than this extension and cannot `
+        + 'finish a Firefox sign-in. Redeploy it, or choose "Reuse the desktop app\'s URL" in the options.'));
+    }
+
+    // Firefox tells an extension a tab's address only with a host permission
+    // for it, and a viewer can take http://localhost/* back at any time.
+    // Without it the tab below reaches the redirect and nothing here can see
+    // that it has: the sign-in would sit there for five minutes and then say it
+    // was not completed in time. Asked first, so it says why instead. An answer
+    // other than a plain no, or no permissions API to ask, is taken as leave to
+    // try.
+    if (viaTab && FCM.BROWSER === 'firefox') {
+      let allowed = true;
+      try {
+        allowed = (await chrome.permissions.contains({ origins: ['http://localhost/*'] })) !== false;
+      } catch (e) { /* nothing to ask: try anyway */ }
+      if (!allowed) {
+        throw withRedirect(worded('Firefox has not allowed this extension to read the sign-in tab\'s address '
+          + '(localhost). Allow it on the options page under Site access, or choose "Via the proxy worker".'));
+      }
+    }
+
+    const url = bridge
+      // No redirect_uri here: Firefox refuses any that is not its own, and
+      // takes a missing one to be its own. The worker adds Kick's, and the
+      // client id with it.
+      ? `${proxy(settings, '/kick-authorize')}?scope=${encodeURIComponent(FCM.KICK_SCOPES)}`
+        + `&code_challenge=${challenge}&code_challenge_method=S256&state=${encodeURIComponent(state)}`
+      : `${FCM.KICK_AUTH_URL}?response_type=code`
+        + `&client_id=${encodeURIComponent(clientId)}`
+        + `&redirect_uri=${encodeURIComponent(redirect)}`
+        + `&scope=${encodeURIComponent(FCM.KICK_SCOPES)}`
+        + `&code_challenge=${challenge}&code_challenge_method=S256`
+        + `&state=${encodeURIComponent(state)}`;
 
     const landed = viaTab ? await launchViaTab(url, redirect) : await launch(url);
     const params = paramsFrom(landed);

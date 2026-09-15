@@ -231,15 +231,37 @@
         <label for="kickRedirect">Where Kick returns after sign-in</label>
         <small>The default reuses the redirect the Friendly Chat desktop app already registers
           with the same Kick application, so nothing needs setting up — no local server has to be
-          running either. The other two are tidier but each needs a URL registered with Kick
-          first; the overlay shows which.</small>
+          running either. <span id="kickRedirect-others">The other two are tidier but each needs a
+          URL registered with Kick first; the overlay shows which.</span><span id="kickRedirect-firefox"
+          hidden>Via the proxy worker is tidier, but needs its URL registered with Kick first, and a
+          proxy recent enough to finish a Firefox sign-in. Firefox cannot go straight back to the
+          extension: its address for the add-on is not Chrome's, and Kick's documentation describes
+          only one redirect per application.</span></small>
       </div>
       <select id="kickRedirect">
         <option value="shared">Reuse the desktop app's URL (no setup)</option>
-        <option value="extension">Straight back to the extension</option>
+        <option value="extension" id="kickRedirect-extension">Straight back to the extension</option>
         <option value="proxy">Via the proxy worker</option>
       </select>
     </div>
+  </section>
+
+  <section id="site-access" hidden>
+    <h2>Site access</h2>
+    <p class="section-note">
+      Every site this add-on asks for, and whether Firefox is letting it use each one. Firefox
+      lets any of them be taken back at any time, from about:addons or the extensions button, and
+      an update that needs a new one is installed without it — and says nothing either way.
+      Without Twitch or Kick there is no overlay on that site; without the others, the emotes,
+      chat history or sign-in that depend on them quietly go missing.
+    </p>
+    <div id="site-access-list"></div>
+    <div class="field-actions">
+      <button id="site-access-allow" class="btn">Allow all</button>
+      <span id="site-access-note" class="section-note" role="status"></span>
+    </div>
+    <p id="site-access-reload" class="section-note" role="status" hidden>Twitch or Kick tabs that were
+      already open need reloading before the panel appears in them.</p>
   </section>
 
   <section>
@@ -247,9 +269,11 @@
     <p class="section-note">
       Everything on this page, your favourite emotes, the channel links below, where each
       channel's messages go and where you dragged the panel — written to one file you can keep
-      somewhere safe. Worth doing before you update the extension: Chrome deletes an extension's
-      storage if it is removed and loaded again, which is one perfectly ordinary way to update
-      one, and there is nothing this extension can do to stop that.
+      somewhere safe. Worth doing before you update the extension: your browser deletes an
+      extension's storage if it is removed and loaded again, which is one perfectly ordinary way
+      to update one, and there is nothing this extension can do to stop that.
+      <span id="backup-firefox" hidden>A temporarily loaded add-on is removed, with its storage,
+      when Firefox restarts.</span>
     </p>
     <p class="section-note">
       Account sign-ins are <em>not</em> in the file. Tokens belong to the browser they were

@@ -14,7 +14,10 @@
   what ships — which matters most for the backup section, where export builds a
   file out of storage and import writes one back into it.
 
-  Serve the project root and open /tests/options-harness.html.
+  Serve the project root and open /tests/options-harness.html. Add
+  ?browser=firefox to see the page the way Firefox shows it, and with it
+  &grants=twitch.tv,7tv.io to see Site access with every other site not allowed
+  (the hosts listed are the ones Firefox is letting the add-on use).
 
     window.__store            the two storage areas, to read or seed by hand
     window.__lastDownload     { name, text } of the most recent export
@@ -46,9 +49,52 @@
     };
   }
 
+  // ?browser=firefox makes the extension's own address Firefox's, which is all
+  // FCM.BROWSER is worked out from, so the page takes Firefox's side wherever
+  // it has one. Nothing on the page is loaded through it.
+  const harnessBrowser = new URLSearchParams(location.search).get('browser') === 'firefox'
+    ? 'firefox' : 'chrome';
+
+  // ?grants= names the sites Firefox is letting the add-on use, by host
+  // (grants=twitch.tv,7tv.io), so Site access can be seen with some of them
+  // missing; grants= with nothing after it allows none. Without it every one is
+  // allowed, as on a fresh install. Allow all is answered yes, as though the
+  // person had said yes to Firefox's prompt.
+  const grantsParam = new URLSearchParams(location.search).get('grants');
+  const grantedHosts = new Set(String(grantsParam || '').split(',').map((h) => h.trim()).filter(Boolean));
+  const grantedOrigins = new Set();
+  const hostOf = (origin) => String(origin).replace(/^[^:/]*:\/\//, '').replace(/\/.*$/, '')
+    .replace(/^\*\./, '').replace(/:\d+$/, '');
+  const isGranted = (origin) => grantsParam === null || grantedOrigins.has(origin) || grantedHosts.has(hostOf(origin));
+  const permissionListeners = { added: [], removed: [] };
+  // The manifest's host permissions, filled in from manifest.json before the
+  // page's scripts run.
+  window.__hostPermissions = [];
+  // Chrome's host permissions as the Firefox release package lists them, which
+  // is what Site access shows there: without a port (tools/pack.js,
+  // firefoxManifest), and without GitHub's API, which a package Firefox updates
+  // by itself never uses (GITHUB_API_ORIGIN there). The firefox suite holds
+  // this to what pack.js really writes.
+  window.__firefoxHosts = (list) => [...new Set((list || [])
+    .map((p) => p.replace(/^([^:]+:\/\/[^/:]+):\d+(\/.*)$/, '$1$2')))]
+    .filter((p) => p !== 'https://api.github.com/*');
+
   window.chrome = {
     storage: { local: area('local'), sync: area('sync'), onChanged: { addListener() {} } },
-    runtime: { getManifest: () => ({ version: '0.0.0-harness' }) },
+    runtime: {
+      getManifest: () => ({ version: '0.0.0-harness', host_permissions: window.__hostPermissions.slice() }),
+      getURL: (p = '') => `${harnessBrowser === 'firefox' ? 'moz-extension' : 'chrome-extension'}://harness/${p}`,
+    },
+    permissions: {
+      contains: async ({ origins = [] } = {}) => origins.every(isGranted),
+      request: async ({ origins = [] } = {}) => {
+        origins.forEach((origin) => grantedOrigins.add(origin));
+        permissionListeners.added.forEach((fn) => fn({ origins }));
+        return true;
+      },
+      onAdded: { addListener: (fn) => { permissionListeners.added.push(fn); } },
+      onRemoved: { addListener: (fn) => { permissionListeners.removed.push(fn); } },
+    },
   };
 
   // A download in this page is an anchor click, which a harness has nowhere to
@@ -90,6 +136,15 @@
   document.head.appendChild(css);
 
   document.body.innerHTML = doc.querySelector('main').outerHTML;
+
+  // The manifest's host permissions, for Site access: as the Firefox release
+  // package lists them when the page is Firefox's (window.__firefoxHosts).
+  try {
+    const manifest = await (await fetch('../manifest.json')).json();
+    const firefox = window.chrome.runtime.getURL('').startsWith('moz-extension:');
+    const hosts = firefox ? window.__firefoxHosts(manifest.host_permissions) : (manifest.host_permissions || []);
+    window.__hostPermissions = [...new Set(hosts)];
+  } catch (e) { /* no manifest to read: Site access lists nothing */ }
 
   // Appended one at a time and awaited, because they depend on each other in
   // the order the page lists them.

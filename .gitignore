@@ -14,6 +14,16 @@ dist/
 *.zip
 *.crx
 
+# Firefox packages Mozilla has signed, and the folder web-ext writes when it
+# builds or signs one on this machine.
+*.xpi
+web-ext-artifacts/
+
+# What `web-ext sign` leaves in the folder it signed: the addons.mozilla.org
+# upload it made, so a second attempt at the same package can reuse it
+# (web-ext 8.10.0, lib/cmd/sign.js). A fact about one signing, not the source.
+.amo-upload-uuid
+
 # OS noise
 .DS_Store
 Thumbs.db

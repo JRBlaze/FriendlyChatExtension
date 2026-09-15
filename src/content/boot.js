@@ -82,8 +82,10 @@
       if (port !== myPort || epoch !== navEpoch) return;
       port = null;
       clearInterval(keepaliveTimer);
-      // The worker sleeps aggressively; reconnecting revives it and replays the
-      // joins that were live before it went away.
+      // The background sleeps aggressively — Chrome's service worker and
+      // Firefox's event page alike — and its ports close when it does.
+      // Reconnecting wakes it and replays the joins that were live before it
+      // went away.
       if (!currentChannel) return;
       clearTimeout(reconnectTimer);
       reconnectTimer = setTimeout(() => {
@@ -94,8 +96,11 @@
     });
 
     clearInterval(keepaliveTimer);
-    // A message over the port resets the worker's idle timer, which is what
-    // stops a quiet channel from having its sockets collected.
+    // A message over the port resets the background's idle timer, which is
+    // what stops a quiet channel from having its sockets collected. On Firefox
+    // nothing the sockets do counts towards that, so the background's own
+    // heartbeat alarm stands behind this for a tab whose timers have been
+    // slowed down in the background.
     keepaliveTimer = setInterval(() => post({ cmd: 'ping' }), 20000);
   }
 
@@ -176,7 +181,9 @@
         break;
 
       case 'auth':
-        overlay.setAccounts(msg.accounts);
+        // The sign-in address comes with the accounts because only the
+        // background can ask the browser for it.
+        overlay.setAccounts(msg.accounts, { redirectUri: msg.redirectUri, browser: msg.browser });
         break;
 
       case 'moderator':

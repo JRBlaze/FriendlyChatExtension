@@ -217,8 +217,11 @@
     //                 watches for the tab reaching it and reads the code from
     //                 the address, so no local server has to be running.
     //   'extension' — straight back to this extension via chrome.identity.
-    //                 Tidier, but that URL carries the extension's id and has
-    //                 to be registered with Kick.
+    //                 Tidier, but that URL is made from the extension's id and
+    //                 has to be registered with Kick. Chrome only: Firefox's
+    //                 address for the add-on is another one, so a stored
+    //                 'extension' signs in the 'shared' way there
+    //                 (FCM.kickRedirectMode).
     //   'proxy'     — via the worker's /kick-callback, which forwards it here.
     //                 One fixed URL to register, and it never changes.
     kickRedirect: 'shared',

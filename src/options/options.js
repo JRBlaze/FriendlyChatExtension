@@ -39,6 +39,11 @@
     SELECTS.forEach((key) => {
       const el = $(key);
       el.value = settings[key];
+      // Firefox signs in the default way wherever 'extension' is stored, so
+      // that is what it shows: the choice that will be used, not one it cannot
+      // make. Nothing is written back — the stored value is left for a backup
+      // to carry to a browser where it still means something.
+      if (key === 'kickRedirect' && FCM.BROWSER === 'firefox') el.value = FCM.kickRedirectMode(settings[key]);
       if (wired) return;
       el.addEventListener('change', () => FCM.saveSettings({ [key]: el.value }));
     });
@@ -118,6 +123,101 @@
     note.dataset.kind = kind || '';
   }
 
+  // One more way to lose all of it, and only Firefox has it: an add-on loaded
+  // for testing from about:debugging is gone, storage and all, the next time
+  // the browser starts. The page says so there, and nowhere it is not true.
+  if (FCM.BROWSER === 'firefox') $('backup-firefox').hidden = false;
+
+  // Straight back to the extension is not a way Firefox can sign in to Kick:
+  // its address for the add-on is not Chrome's, and Kick's documentation
+  // describes only one redirect per application. So the choice is there but
+  // cannot be picked, and the text above it speaks only of the two that remain.
+  if (FCM.BROWSER === 'firefox') {
+    const straightBack = $('kickRedirect-extension');
+    straightBack.disabled = true;
+    straightBack.textContent = 'Straight back to the extension (not in Firefox)';
+    $('kickRedirect-others').hidden = true;
+    $('kickRedirect-firefox').hidden = false;
+  }
+
+  // ── Site access (Firefox) ───────────────────────────────────────────────────
+  //
+  // Every site the add-on asks for, whether Firefox is letting it use each one,
+  // and a button to ask for all the ones it is not. Firefox only: on Chrome the
+  // section stays hidden and nothing here asks the browser anything. This page
+  // opens in a tab of its own and stays open, which makes it the dependable
+  // place to ask; the popup offers the same button, but can close before the
+  // answer comes back.
+
+  // What Allow all asks for: the ones the list last showed as not allowed.
+  // Kept, because the click that asks cannot wait for a fresh answer first.
+  let missingAccess = [];
+
+  async function renderSiteAccess() {
+    const found = await FCM.hostAccess();
+    missingAccess = found.missing;
+    const list = $('site-access-list');
+    list.replaceChildren();
+    found.origins.forEach((origin) => {
+      const allowed = !found.missing.includes(origin);
+      const row = document.createElement('div');
+      row.className = 'access-row';
+      const name = document.createElement('span');
+      name.className = 'origin';
+      name.textContent = FCM.originLabel(origin);
+      // The pattern itself on hover, for whoever is matching it against
+      // Firefox's own list.
+      name.title = origin;
+      const state = document.createElement('span');
+      state.className = 'tag';
+      state.dataset.state = allowed ? 'allowed' : 'blocked';
+      state.textContent = allowed ? 'allowed' : 'not allowed';
+      row.appendChild(name);
+      row.appendChild(state);
+      list.appendChild(row);
+    });
+    const count = found.missing.length;
+    $('site-access-allow').disabled = !count;
+    $('site-access-note').textContent = count ? `${count} not allowed` : 'Every one is allowed.';
+  }
+
+  // What to do with Firefox's answer to a request for `asked`: draw the list
+  // again, as after any answer, and after a yes that took in Twitch or Kick,
+  // say that tabs already open there need reloading. Firefox does not put the
+  // content script into a page that was loaded before the site was allowed, so
+  // those tabs stay without a panel until they are loaded again — while the
+  // list above says the site is allowed, which makes the missing panel look
+  // like a fault. A yes for services alone changes nothing about where the
+  // panel appears, so it says nothing about tabs.
+  function answeredFor(asked) {
+    return (granted) => {
+      if (granted === true && asked.some((origin) => FCM.SITE_ORIGINS.includes(origin))) {
+        $('site-access-reload').hidden = false;
+      }
+      return renderSiteAccess();
+    };
+  }
+
+  if (FCM.BROWSER === 'firefox') {
+    $('site-access').hidden = false;
+    // Firefox asks the person before it grants anything, and only for a request
+    // made while a click on one of the add-on's own pages is still being
+    // handled. An `await` in front of the request would let the click finish
+    // first, and Firefox would then refuse without asking anyone. So the
+    // request is the very first thing the handler does, for what the list last
+    // showed, and the list is drawn again from whatever the answer was.
+    $('site-access-allow').addEventListener('click', () => {
+      chrome.permissions.request({ origins: missingAccess }).then(answeredFor(missingAccess), renderSiteAccess);
+    });
+    // A site taken back in about:addons while this page is open, or allowed
+    // from the popup, shows here without a reload.
+    try {
+      chrome.permissions.onAdded.addListener(() => { renderSiteAccess(); });
+      chrome.permissions.onRemoved.addListener(() => { renderSiteAccess(); });
+    } catch (e) { /* no permission events here: the list is drawn fresh on every open */ }
+    renderSiteAccess();
+  }
+
   async function readStores() {
     const out = {};
     await Promise.all(FCM.BACKUP_STORES.map(async (name) => {
@@ -145,7 +245,13 @@
     const a = document.createElement('a');
     a.href = url;
     a.download = `friendly-chat-settings-${stamp}.json`;
+    // Put in the page for the click and taken out straight after. Chrome
+    // starts a download from an anchor that was never attached to anything,
+    // but that is not something every browser can be counted on to do — and
+    // an export that saved nothing would still say "Exported" underneath.
+    document.body.appendChild(a);
     a.click();
+    a.remove();
     // Freed on a turn of its own: revoking it in the same tick can beat the
     // download that was just started to it.
     setTimeout(() => URL.revokeObjectURL(url), 10000);

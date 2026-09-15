@@ -69,6 +69,9 @@ footer { display: flex; align-items: center; justify-content: space-between; }
 footer a { color: var(--accent); font-size: 12px; text-decoration: none; }
 footer a:hover { text-decoration: underline; }
 footer span { color: var(--dim); font-size: 10.5px; font-family: ui-monospace, Consolas, monospace; }
+/* Where "Check for updates" would be, on a build Firefox updates by itself:
+   plain words rather than a link, because there is nothing to press. */
+footer small { color: var(--muted); font-size: 11px; }
 
 /* The release banner. Loud enough to be the first thing read when it is there,
    and absent entirely when it is not — an "up to date" row every time the popup
@@ -81,8 +84,8 @@ footer span { color: var(--dim); font-size: 10.5px; font-family: ui-monospace, C
   font-size: 15px; line-height: 1; cursor: pointer; padding: 0 2px;
 }
 .update-head button:hover { color: var(--text); }
-.update-actions { display: flex; gap: 7px; }
-.update-actions button {
+.update-actions, .access-actions { display: flex; gap: 7px; }
+.update-actions button, .access-actions button {
   flex: 1;
   /* Both labels stay on one line: the pair sits in a 320px popup, and a button
      whose text wraps reads as broken rather than as a button. */
@@ -91,7 +94,13 @@ footer span { color: var(--dim); font-size: 10.5px; font-family: ui-monospace, C
   border: 1px solid var(--border); background: var(--surface2);
   color: var(--text); font-family: inherit; font-size: 12px; cursor: pointer;
 }
-.update-actions button:hover { border-color: var(--accent); }
-.update-actions .primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-.update-actions .primary:hover { filter: brightness(1.1); }
+.update-actions button:hover, .access-actions button:hover { border-color: var(--accent); }
+.update-actions .primary, .access-actions .primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.update-actions .primary:hover, .access-actions .primary:hover { filter: brightness(1.1); }
 .muted.small { font-size: 11px; }
+
+/* Firefox only: the sites Firefox is not letting the add-on use. Laid out like
+   the release banner, so its button reads as the way out in the same way, but
+   amber rather than the accent colour: this one is a problem to fix, not news. */
+.access { border-color: rgba(255, 180, 0, 0.45); background: rgba(255, 180, 0, 0.07); }
+.access strong { font-size: 12.5px; }
