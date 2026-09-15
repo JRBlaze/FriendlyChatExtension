@@ -2224,7 +2224,7 @@ suites.release = function () {
       // the right version and ID can still be a build of other code, and only
       // comparing its files with the package says so.
       const against = (name, buf) => release.verifyXpi(at(name, buf), version, { reference: firefoxZip });
-      eq(against('same.xpi', signedXpi), { problems: [], differs: [], version },
+      eq(against('same.xpi', signedXpi), { problems: [], differs: [], manifestCheck: 'identical', manifestKeyOrder: null, version },
         "release: verify-xpi: a signed file holding exactly the package's files passes the comparison");
       const referenceFile = at(names.firefox, firefoxZip);
       eq(release.verifyXpi(path.join(dir, 'same.xpi'), version, { reference: referenceFile }).problems, [],
@@ -2244,9 +2244,314 @@ suites.release = function () {
       eq(against('short.xpi', pack.zip(filesOf(signedXpi).filter((f) => f.name !== 'src/content/feed.js'))).differs,
         ['src/content/feed.js (missing)'], 'release: verify-xpi: and one without a file the package has');
       eq(against('manifest.xpi', signed(withManifest(firefoxZip, (m) => { delete m.browser_specific_settings.gecko.update_url; }))).differs,
-        ['manifest.json (changed)'], 'release: verify-xpi: and one whose manifest differs, for all it has the right ID and version');
+        ['manifest.json (content differs: browser_specific_settings.gecko.update_url removed)'],
+        'release: verify-xpi: and one whose manifest differs, for all it has the right ID and version');
       eq(release.verifyXpi(path.join(dir, 'changed.xpi'), version).problems, [],
         'release: verify-xpi: while without a package to compare with, the check is what it always was');
+
+      // manifest.json, compared by what it says. Mozilla writes the manifest
+      // out again when it signs, and 1.21.0's came back without the newline the
+      // package ends it with, its JSON otherwise identical, and was refused for
+      // it. However else that rewriting may write the manifest is let through;
+      // anything it says differently is not, and neither is a byte of any other
+      // file.
+      {
+        const text = readZipFile(firefoxZip, 'manifest.json').toString('utf8');
+        const parsed = JSON.parse(text);
+        const sameJson = (t) => JSON.stringify(JSON.parse(t)) === JSON.stringify(parsed);
+        const verdict = (name, t, from) => release.verifyXpi(
+          at(name, signed(replaced(from || firefoxZip, 'manifest.json', Buffer.from(t, 'utf8')))), version, { reference: from || firefoxZip });
+        const passes = (r) => [r.problems, r.differs, r.manifestCheck, r.manifestKeyOrder];
+        // What a manifest says, with the order of every object's keys left out:
+        // each object's keys sorted, which JSON.stringify then writes in one
+        // order for both.
+        const sorted = (v) => (Array.isArray(v) ? v.map(sorted)
+          : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, sorted(v[k])])) : v);
+        const sameContent = (t) => JSON.stringify(sorted(JSON.parse(t))) === JSON.stringify(sorted(parsed));
+
+        eq([text.endsWith('}\n'), passes(verdict('unended.xpi', text.replace(/\n$/, '')))], [true, [[], [], 'reformatted', null]],
+          "release: verify-xpi: manifest: one without the package's final newline passes, as Mozilla returned 1.21.0's");
+        [
+          ['with four spaces', `${JSON.stringify(parsed, null, 4)}\n`],
+          ['with tabs and CRLF line endings', `${JSON.stringify(parsed, null, '\t').replace(/\n/g, '\r\n')}\r\n`],
+          ['onto one line', JSON.stringify(parsed)],
+        ].forEach(([how, t], i) => {
+          eq([t !== text && sameJson(t), passes(verdict(`indented-${i}.xpi`, t))], [true, [[], [], 'reformatted', null]],
+            `release: verify-xpi: manifest: the same JSON indented ${how} passes`);
+        });
+
+        // The package's manifest is all ASCII today, so a package whose
+        // description is not stands in for one, and its signed copy writes every
+        // UTF-16 unit outside ASCII as an escape, as Python's json.dumps does
+        // unless told otherwise.
+        const worded = withManifest(firefoxZip, (m) => { m.description = 'Überlay — Twitch + Kick, 合并聊天 🎉'; });
+        const wordedText = readZipFile(worded, 'manifest.json').toString('utf8');
+        const escaped = wordedText.replace(/\n$/, '')
+          .replace(/[^\x00-\x7f]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+        eq([/[^\x00-\x7f]/.test(wordedText), /[^\x00-\x7f]/.test(escaped), escaped.includes('\\ud83c\\udf89'), passes(verdict('escaped.xpi', escaped, worded))],
+          [true, false, true, [[], [], 'reformatted', null]],
+          'release: verify-xpi: manifest: one writing every character outside ASCII as a \\u escape, with no final newline, passes');
+
+        // Written the way Mozilla writes it, with no final newline, so that what
+        // it says is all that can fail it.
+        const saying = (change) => {
+          const m = JSON.parse(text);
+          return JSON.stringify(change(m) || m, null, 2);
+        };
+        [
+          ['another version', (m) => { m.version = '9.9.9'; }, 'version changed'],
+          ['another gecko id', (m) => { m.browser_specific_settings.gecko.id = 'someone-else@example.org'; },
+            'browser_specific_settings.gecko.id changed'],
+          ['another update_url', (m) => { m.browser_specific_settings.gecko.update_url = 'https://example.org/updates.json'; },
+            'browser_specific_settings.gecko.update_url changed'],
+          ['a permission more', (m) => { m.permissions.push('tabs'); }, 'permissions changed'],
+          ['a permission fewer', (m) => { m.permissions.pop(); }, 'permissions changed'],
+          ['other data_collection_permissions', (m) => { m.browser_specific_settings.gecko.data_collection_permissions.required.pop(); },
+            'browser_specific_settings.gecko.data_collection_permissions.required changed'],
+          ['no data_collection_permissions', (m) => { delete m.browser_specific_settings.gecko.data_collection_permissions; },
+            'browser_specific_settings.gecko.data_collection_permissions removed'],
+          ['a value of another type', (m) => { m.manifest_version = String(m.manifest_version); }, 'manifest_version changed'],
+          ['a key added', (m) => { m.homepage_url = 'https://example.org/'; }, 'homepage_url added'],
+          ['a key removed', (m) => { delete m.description; }, 'description removed'],
+          // An array is ordered data, and some of the manifest's are read in
+          // order, so the same elements in another order are a change.
+          ['its permissions in another order', (m) => { m.permissions.reverse(); }, 'permissions changed'],
+          ['background.scripts in another order', (m) => { m.background.scripts.reverse(); }, 'background.scripts changed'],
+          ["a content script's files in another order", (m) => { m.content_scripts[0].js.reverse(); }, 'content_scripts changed'],
+        ].forEach(([what, change, expected], i) => {
+          const name = `says-${i}.xpi`;
+          const r = verdict(name, saying(change));
+          const listed = `manifest.json (content differs: ${expected})`;
+          eq([r.differs, r.manifestCheck, r.manifestKeyOrder], [[listed], 'different', null],
+            `release: verify-xpi: manifest: one with ${what} is refused, naming it: ${expected}`);
+          ok(r.problems.some((p) => p.startsWith(`${name} does not hold the files of the package it should have been signed from: ${listed}`)
+            && p.includes('compared by content, not byte for byte') && p.includes('free to change its formatting and the order of its keys')),
+          `release: verify-xpi: manifest: in a message saying its content is not the package's (${what})`);
+        });
+
+        // The order of an object's keys is not something a manifest says, so a
+        // signed copy that writes them in another order passes, at any depth,
+        // and says where. Each is checked to be in another order as
+        // JSON.stringify writes it, and to say the same once the keys are sorted.
+        [
+          ['its keys in another order', (m) => Object.fromEntries(Object.entries(m).reverse()), 'at the top level'],
+          ["gecko's keys in another order", (m) => {
+            m.browser_specific_settings.gecko = Object.fromEntries(Object.entries(m.browser_specific_settings.gecko).reverse());
+          }, 'in browser_specific_settings.gecko'],
+          ['the keys of the object inside content_scripts in another order', (m) => {
+            m.content_scripts[0] = Object.fromEntries(Object.entries(m.content_scripts[0]).reverse());
+          }, 'in content_scripts[0]'],
+        ].forEach(([what, change, where], i) => {
+          const t = saying(change);
+          eq([JSON.stringify(JSON.parse(t)) !== JSON.stringify(parsed), sameContent(t), passes(verdict(`order-${i}.xpi`, t))],
+            [true, true, [[], [], 'reformatted', where]],
+            `release: verify-xpi: manifest: one with ${what} passes, saying where: ${where}`);
+        });
+        {
+          // As a serialiser that sorts every object's keys would write it.
+          const t = saying((m) => sorted(m));
+          const r = verdict('sorted.xpi', t);
+          eq([JSON.stringify(JSON.parse(t)) !== JSON.stringify(parsed), sameContent(t), [r.problems, r.differs, r.manifestCheck],
+            ['at the top level', 'in browser_specific_settings.gecko', 'in content_scripts[0]'].filter((w) => !String(r.manifestKeyOrder).includes(w))],
+          [true, true, [[], [], 'reformatted'], []],
+          `release: verify-xpi: manifest: one with every object's keys sorted passes, naming the objects it reordered (${r.manifestKeyOrder})`);
+        }
+
+        // JSON.parse puts keys that are numbers in numeric order, however they
+        // were written, so only reading the order from the text sees this; and
+        // it passes like any other object's keys in another order.
+        const iconsBackwards = text.replace(/("icons": \{\n)([^}]*)(\n {2}\})/,
+          (all, head, body, tail) => `${head}${body.split(',\n').reverse().join(',\n')}${tail}`);
+        eq([iconsBackwards !== text, sameJson(iconsBackwards), passes(verdict('icons.xpi', iconsBackwards))],
+          [true, true, [[], [], 'reformatted', 'in icons']],
+          "release: verify-xpi: manifest: one listing the icons' sizes in another order passes, saying so, though JSON.stringify cannot tell");
+
+        // A key named twice, which JSON.parse reads as the package's manifest by
+        // keeping the last, and a reader that kept the first would not.
+        const versionLine = (text.match(/^ {2}"version": "[^"]*",\n/m) || [''])[0];
+        const idLine = (text.match(/^ {6}"id": "[^"]*",\n/m) || [''])[0];
+        [
+          ['version twice, alike', text.replace(versionLine, `${versionLine}${versionLine}`), 'version'],
+          ['version twice, the first another', text.replace(versionLine, `  "version": "0.0.1",\n${versionLine}`), 'version'],
+          ['version twice, once spelled with an escape',
+            text.replace(versionLine, `${versionLine}${versionLine.replace('"version"', '"\\u0076ersion"')}`), 'version'],
+          ['gecko.id twice', text.replace(idLine, `${idLine}${idLine}`), 'browser_specific_settings.gecko.id'],
+        ].forEach(([what, t, key], i) => {
+          const r = verdict(`twice-${i}.xpi`, t);
+          eq([Boolean(versionLine && idLine) && t !== text && sameJson(t), r.differs, r.manifestCheck],
+            [true, [`manifest.json (the signed copy names ${key} more than once)`], 'different'],
+            `release: verify-xpi: manifest: one naming ${what} is refused, though JSON.parse reads it as the package's`);
+        });
+
+        [
+          ['with a trailing comma', text.replace(/\n\}\n$/, ',\n}'), 'the signed copy is not valid JSON: '],
+          ['cut short', text.slice(0, Math.floor(text.length / 2)), 'the signed copy is not valid JSON: '],
+          ['holding an array', `[${text}]`, 'the signed copy is not a JSON object)'],
+        ].forEach(([what, t, expected], i) => {
+          const name = `broken-${i}.xpi`;
+          const r = verdict(name, t);
+          eq([r.differs.map((d) => d.startsWith(`manifest.json (${expected}`)), r.manifestCheck,
+            r.problems.some((p) => p.startsWith(`${name} does not hold the files of the package it should have been signed from: manifest.json (`))],
+          [[true], 'different', true],
+          `release: verify-xpi: manifest: one ${what} is refused, naming manifest.json`);
+        });
+        {
+          const r = verdict('deep.xpi', `${'{"a":'.repeat(100000)}1${'}'.repeat(100000)}`);
+          eq([r.differs, r.manifestCheck,
+            r.problems.some((p) => p.startsWith('deep.xpi does not hold the files of the package it should have been signed from: manifest.json ('))],
+          [['manifest.json (the signed copy nests objects and arrays more than 64 deep)'], 'different', true],
+          'release: verify-xpi: manifest: one nested 100000 deep is refused, naming manifest.json, rather than taking the run down with it');
+        }
+
+        eq(against('manifestless.xpi', pack.zip(filesOf(signedXpi).filter((f) => f.name !== 'manifest.json'))).differs,
+          ['manifest.json (missing)'], 'release: verify-xpi: manifest: one with no manifest.json is still missing one, not compared by content');
+        eq(release.verifyXpi(at('surplus.xpi', signedXpi), version,
+          { reference: pack.zip(filesOf(firefoxZip).filter((f) => f.name !== 'manifest.json')) }).differs,
+        ['manifest.json (not in the package)'],
+        'release: verify-xpi: manifest: and one holding a manifest.json a package lacks still holds a file the package does not');
+
+        // A signed archive listing manifest.json twice is refused whatever its
+        // copies hold, since there is no telling which one an unzipper keeps.
+        // Its manifest.json is held to its bytes like any other file, rather
+        // than read for what one copy says when the checksum compared was the
+        // other's: with a harmless copy first and one saying something else
+        // last, the change is still named, however the harmless copy is
+        // written, and no manifest listed twice is said to be reformatted or
+        // identical, nor read for the order of its keys.
+        {
+          const packaged = Buffer.from(text, 'utf8');
+          const unended = Buffer.from(text.replace(/\n$/, ''), 'utf8');
+          const reversed = Buffer.from(saying((m) => { m.permissions.reverse(); }), 'utf8');
+          const twice = (first, last) => pack.zip([
+            ...filesOf(signedXpi).map((f) => (f.name === 'manifest.json' ? { name: f.name, data: first } : f)),
+            { name: 'manifest.json', data: last },
+          ]);
+          [
+            ["the package's manifest first and one with its permissions reversed last", twice(packaged, reversed), true],
+            ["Mozilla's rewriting of it first and one with its permissions reversed last", twice(unended, reversed), true],
+            ["Mozilla's rewriting of it twice", twice(unended, unended), true],
+            ["one with its permissions reversed first and the package's manifest last", twice(reversed, packaged), false],
+          ].forEach(([what, buf, changed], i) => {
+            const name = `listed-twice-${i}.xpi`;
+            const r = against(name, buf);
+            eq([r.problems, r.differs, r.manifestCheck, r.manifestKeyOrder],
+              [[`${name} lists the same path more than once: manifest.json`,
+                ...(changed ? [`${name} does not hold the files of the package it should have been signed from: manifest.json (changed)`] : [])],
+              changed ? ['manifest.json (changed)'] : [], null, null],
+              `release: verify-xpi: manifest: one listing manifest.json twice, ${what}, is refused, compared by its bytes and not said to be reformatted or identical`);
+          });
+          const r = release.verifyXpi(at('against-twice.xpi', signed(replaced(firefoxZip, 'manifest.json', unended))), version,
+            { reference: pack.zip([...filesOf(firefoxZip), { name: 'manifest.json', data: packaged }]) });
+          eq([r.differs, r.manifestCheck, r.manifestKeyOrder], [['manifest.json (changed)'], null, null],
+            'release: verify-xpi: manifest: and so is one compared with a package listing manifest.json twice');
+        }
+
+        // Every other file is held to its bytes, as before: a single byte
+        // changed, or a final newline dropped the way Mozilla drops the
+        // manifest's, is refused.
+        filesOf(firefoxZip).filter((f) => f.name !== 'manifest.json').forEach((f, i) => {
+          const data = Buffer.from(f.data);
+          data[Math.floor(data.length / 2)] ^= 0x01;
+          eq(against(`byte-${i}.xpi`, signed(replaced(firefoxZip, f.name, data))).differs, [`${f.name} (changed)`],
+            `release: verify-xpi: manifest: ${f.name} with a single byte changed is still refused`);
+        });
+        ['README.md', 'LICENSE', 'src/background/service-worker.js', 'src/options/options.html'].forEach((name, i) => {
+          const data = readZipFile(firefoxZip, name);
+          eq([data[data.length - 1], against(`unended-${i}.xpi`, signed(replaced(firefoxZip, name, data.subarray(0, data.length - 1)))).differs],
+            [10, [`${name} (changed)`]], `release: verify-xpi: manifest: while ${name} without its final newline is refused`);
+        });
+
+        // The comparison itself, on texts no package would hold.
+        const differ = (a, b) => {
+          try {
+            return release.manifestDifference(Buffer.from(a), Buffer.from(b));
+          } catch (e) {
+            return `threw: ${e.message}`;
+          }
+        };
+        const nest = (depth, open, close) => `${open.repeat(depth)}1${close.repeat(depth)}`;
+        [
+          ['a key named twice in the package\'s copy is refused too', '{"a":1}', '{"a":1,"a":1}', "the package's copy names a more than once"],
+          ['JSON that is not an object is refused, even when both are alike', '[1]', '[1]', 'the signed copy is not a JSON object'],
+          ['and so is null', 'null', 'null', 'the signed copy is not a JSON object'],
+          ['a key named twice inside an array is found, by its path', '{"a":[{"b":1,"b":1}]}', '{"a":[{"b":1}]}', 'the signed copy names a[0].b more than once'],
+          ['one key in sibling objects is not a key named twice', '{"a":[{"b":1},{"b":1}],"c":{"b":1}}', '{ "a": [ { "b": 1 }, { "b": 1 } ], "c": { "b": 1 } }', null],
+          ['quotes, backslashes, braces and commas inside strings are not structure',
+            '{"q":"}{\\"][,","s":"\\\\","a":{"q":1}}', '{"q": "}{\\u0022][,", "s": "\\u005c", "a": {"q": 1}}', null],
+          ['a number spelled another way is the same number', '{"n":1.0,"e":1e2}', '{"n":1,"e":100}', null],
+          ['a value moved into another object is a change, not a reordering', '{"a":{"x":1},"b":{}}', '{"a":{},"b":{"x":1}}', 'content differs: a.x added, b.x removed'],
+          ['a key named twice in a later element of an array is found, by its index',
+            '{"a":[{},{"b":1,"b":1}]}', '{"a":[{},{"b":1}]}', 'the signed copy names a[1].b more than once'],
+          ['and one in an array inside an array, by both indexes',
+            '{"a":[[{}],[{},{"b":1,"b":2}]]}', '{"a":[[{}],[{},{"b":2}]]}', 'the signed copy names a[1][1].b more than once'],
+          ['an object inside an array with a key fewer is a change', '{"a":[{"x":1}]}', '{"a":[{"x":1,"y":2}]}', 'content differs: a changed'],
+          ['and one naming __proto__ where the package names another key is a change, not the prototype every object has',
+            '{"a":[{"__proto__":{}}]}', '{"a":[{"z":{}}]}', 'content differs: a changed'],
+          // The order of an object's keys is not what it says, at any depth.
+          ['keys in another order in a later element of an array are no difference',
+            '{"a":[{"x":1,"y":2},{"x":1,"y":2}]}', '{"a":[{"x":1,"y":2},{"y":2,"x":1}]}', null],
+          ['nor are keys in another order at the top level', '{"a":1,"b":{"c":2}}', '{"b":{"c":2},"a":1}', null],
+          ['nor number-like keys in another order, which JSON.parse lists in numeric order',
+            '{"i":{"128":"b","16":"a"}}', '{"i":{"16":"a","128":"b"}}', null],
+          ['nor keys in another order 64 deep', `${'{"a":'.repeat(63)}{"x":1,"y":2}${'}'.repeat(63)}`,
+            `${'{"a":'.repeat(63)}{"y":2,"x":1}${'}'.repeat(63)}`, null],
+          ['while a value changed among keys in another order is still a change', '{"a":1,"b":2}', '{"b":3,"a":1}', 'content differs: b changed'],
+          ['and a key named twice among keys in another order is still refused', '{"b":1,"a":1,"a":1}', '{"a":1,"b":1}',
+            'the signed copy names a more than once'],
+          // An array is ordered data: the same elements in another order are a
+          // change.
+          ['array elements in another order are a change', '{"a":[1,2]}', '{"a":[2,1]}', 'content differs: a changed'],
+          ['as are objects in an array in another order, each one alike', '{"a":[{"x":1},{"y":2}]}', '{"a":[{"y":2},{"x":1}]}',
+            'content differs: a changed'],
+          ['and strings, as permissions are', '{"p":["storage","alarms"]}', '{"p":["alarms","storage"]}', 'content differs: p changed'],
+          // JSON.stringify writes Infinity as null and -0 as 0, where Firefox
+          // reads neither as the other.
+          ['a number too large to hold is Infinity, not null', '{"a":1e400}', '{"a":null}', 'content differs: a changed'],
+          ['and one too large and negative is -Infinity, not null', '{"a":-1e400}', '{"a":null}', 'content differs: a changed'],
+          ['as it is inside an array', '{"a":[1e400]}', '{"a":[null]}', 'content differs: a changed'],
+          ['-0 is not 0', '{"a":-0}', '{"a":0}', 'content differs: a changed'],
+          ["nor is 0 the package's -0", '{"a":0}', '{"a":-0}', 'content differs: a changed'],
+          ['nor -0.0 inside an array', '{"a":[1,-0.0]}', '{"a":[1,0]}', 'content differs: a changed'],
+          ['while Infinity and -0 spelled another way are the same', '{"a":1e400,"b":-0}', '{"a": 1E999, "b": -0.0}', null],
+          // Nesting: 64 deep is compared, and deeper is refused before it is
+          // walked, however deep it goes.
+          ['objects nested 64 deep are compared', nest(64, '{"a":', '}'), nest(64, '{ "a": ', ' }'), null],
+          ['and a change 64 deep is found', nest(64, '{"a":', '}'), nest(64, '{"a":', '}').replace('1', '2'),
+            `content differs: ${'a.'.repeat(63)}a changed`],
+          ['objects nested 65 deep are refused', nest(65, '{"a":', '}'), nest(65, '{ "a": ', ' }'),
+            'the signed copy nests objects and arrays more than 64 deep'],
+          ["and so is the package's copy nested 65 deep", nest(64, '{"a":', '}'), nest(65, '{"a":', '}'),
+            "the package's copy nests objects and arrays more than 64 deep"],
+          ['arrays count as nesting: 64 deep is compared', `{"a":${nest(63, '[', ']')}}`, `{ "a": ${nest(63, '[ ', ' ]')} }`, null],
+          ['and 65 deep is refused', `{"a":${nest(64, '[', ']')}}`, `{ "a": ${nest(64, '[ ', ' ]')} }`,
+            'the signed copy nests objects and arrays more than 64 deep'],
+          ['and a manifest nested 100000 deep is refused as well', nest(100000, '{"a":', '}'), '{"a":1}',
+            'the signed copy nests objects and arrays more than 64 deep'],
+        ].forEach(([what, a, b, expected]) => {
+          eq(differ(a, b), expected, `release: manifestDifference: ${what}`);
+        });
+
+        // Which objects write their keys in another order, for the log, asked
+        // of two copies that say the same (so each is checked to).
+        const order = (a, b) => release.manifestKeyOrder(Buffer.from(a), Buffer.from(b));
+        [
+          ['none, when every object writes its keys in the same order',
+            '{"a":1,"b":{"c":1,"d":[{"e":1,"f":2}]}}', '{ "a": 1, "b": { "c": 1, "d": [ { "e": 1, "f": 2 } ] } }', null],
+          ['the top level', '{"b":2,"a":1}', '{"a":1,"b":2}', 'at the top level'],
+          ['an object inside another, by its path', '{"a":{"b":{"y":2,"x":1}}}', '{"a":{"b":{"x":1,"y":2}}}', 'in a.b'],
+          ['number-like keys, which JSON.parse lists in numeric order', '{"i":{"128":"b","16":"a"}}', '{"i":{"16":"a","128":"b"}}', 'in i'],
+          ['an object in a later element of an array, by its index',
+            '{"a":[{"x":1,"y":2},{"y":2,"x":1}]}', '{"a":[{"x":1,"y":2},{"x":1,"y":2}]}', 'in a[1]'],
+          ['several, in the order the signed copy writes them',
+            '{"z":{"q":1,"p":2},"a":[{"y":2,"x":1}]}', '{"a":[{"x":1,"y":2}],"z":{"p":2,"q":1}}', 'at the top level, in z and in a[0]'],
+          ['not an object whose own keys are in order, when only an object inside it moved',
+            '{"a":{"x":1,"y":2},"b":{"m":1,"n":{"q":1,"p":2}}}', '{"a":{"x":1,"y":2},"b":{"m":1,"n":{"p":2,"q":1}}}', 'in b.n'],
+          ['and two objects whose paths are spelled alike are kept apart',
+            '{"a.b":{"y":2,"x":1},"a":{"b":{"x":1,"y":2}}}', '{"a.b":{"x":1,"y":2},"a":{"b":{"y":2,"x":1}}}', 'in a.b and in a.b'],
+        ].forEach(([what, a, b, expected]) => {
+          eq([differ(a, b), order(a, b)], [null, expected], `release: manifestKeyOrder: ${what}`);
+        });
+      }
     }
 
     // ── updates-json ──
@@ -2687,6 +2992,99 @@ suites.release = function () {
       const { error } = attempt(gh);
       eq(error && `${error.step}: ${error.message}`, null,
         "release: publish: a file repacked the way Mozilla's signer does it, holding the same files, goes through");
+    }
+
+    // ── A manifest Mozilla wrote out again ──
+    //
+    // 1.21.0's signed file as its release run met it: every file the package's,
+    // and a manifest.json without its final newline. Taken on either path, the
+    // draft's or the one that signs; and one whose manifest says something
+    // else is refused on either.
+    {
+      const text = readZipFile(firefoxZip, 'manifest.json').toString('utf8');
+      const unended = signed(replaced(firefoxZip, 'manifest.json', Buffer.from(text.replace(/\n$/, ''))));
+      const saidSo = (line) => line.startsWith(`Checked ${names.xpi}:`) && line.includes('its manifest.json written out again by Mozilla');
+
+      const reused = fakeRunner({ release: { isDraft: true, assets: [names.chrome, names.xpi] }, onDraft: unended });
+      const reuseRun = attempt(reused);
+      eq([reuseRun.error && `${reuseRun.error.step}: ${reuseRun.error.message}`, published(reused).length,
+        reused.commands.filter((c) => / (sign|lint) /.test(c)).length], [null, 1, 0],
+      "release: publish: manifest: a re-run whose draft holds a signed add-on with only its manifest's final newline gone publishes it, without signing again");
+      ok(reuseRun.lines.some(saidSo), 'release: publish: manifest: and the log says the manifest was written out again, saying the same');
+
+      const fresh = fakeRunner({ signs: [unended] });
+      const freshRun = attempt(fresh);
+      eq([freshRun.error && `${freshRun.error.step}: ${freshRun.error.message}`, published(fresh).length], [null, 1],
+        'release: publish: manifest: as does a run that signs, and gets such a file back');
+      ok(freshRun.lines.some(saidSo), 'release: publish: manifest: saying so there too');
+      ok(!attempt(fakeRunner()).lines.some(saidSo), 'release: publish: manifest: while a manifest returned byte for byte is not said to have been rewritten');
+
+      // One Mozilla wrote with its keys in another order goes through as well,
+      // on either path, and the log says that Mozilla wrote the keys in another
+      // order, where, and that the content is the same.
+      const reordered = signed(replaced(firefoxZip, 'manifest.json', Buffer.from(JSON.stringify(
+        Object.fromEntries(Object.entries(JSON.parse(text)).reverse()), null, 2))));
+      const saidMoved = (line) => saidSo(line)
+        && line.includes('which wrote the keys in another order at the top level, but the content is the same');
+      [
+        ['a re-run whose draft holds a signed add-on', () => fakeRunner({ release: { isDraft: true, assets: [names.chrome, names.xpi] }, onDraft: reordered })],
+        ['a run that signs, and gets a file back', () => fakeRunner({ signs: [reordered] })],
+      ].forEach(([how, runner]) => {
+        const gh = runner();
+        const run = attempt(gh);
+        eq([run.error && `${run.error.step}: ${run.error.message}`, published(gh).length], [null, 1],
+          `release: publish: manifest: ${how} whose manifest has its keys in another order publishes it`);
+        ok(run.lines.some(saidMoved),
+          `release: publish: manifest: saying Mozilla wrote the keys in another order but the content is the same (${how})`);
+      });
+      ok(![...reuseRun.lines, ...freshRun.lines].some((line) => line.includes('in another order')),
+        "release: publish: manifest: while a manifest with its keys in the package's order is not said to have them in another");
+
+      const m = JSON.parse(text);
+      const widened = signed(replaced(firefoxZip, 'manifest.json',
+        Buffer.from(JSON.stringify({ ...m, permissions: [...m.permissions, 'tabs'] }, null, 2))));
+      const said = "Its manifest.json does not say what the package's says";
+
+      const draftGh = fakeRunner({ release: { isDraft: true, assets: [names.chrome, names.xpi] }, onDraft: widened });
+      const onDraft = attempt(draftGh).error;
+      ok(onDraft && onDraft.step === 'verify-xpi' && onDraft.message.includes('manifest.json (content differs: permissions changed)')
+        && onDraft.message.includes('compared by content, not byte for byte'),
+      'release: publish: manifest: a signed add-on on the draft whose manifest says something else is refused, naming what');
+      eq(draftGh.commands.filter((c) => /release (upload|edit)/.test(c) || / (sign|lint) /.test(c)), [],
+        'release: publish: manifest: and nothing is uploaded, signed or published because of it');
+      contains(onDraft && onDraft.hint, said, "release: publish: manifest: the hint says it is the manifest's content that differs");
+      contains(onDraft && onDraft.hint, 'changes to its formatting and the order of its keys',
+        'release: publish: manifest: beyond the changes to its formatting and the order of its keys that the check allows');
+
+      const signedGh = fakeRunner({ signs: [widened] });
+      const signedHere = attempt(signedGh).error;
+      ok(signedHere && signedHere.step === 'verify-xpi' && signedHere.hint.includes('must not be') && signedHere.hint.includes(said),
+        'release: publish: manifest: as is one web-ext hands back, the hint saying so beside keeping the file');
+      eq([published(signedGh), signedGh.commands.filter((c) => /release upload/.test(c))], [[], []],
+        'release: publish: manifest: which is neither uploaded nor published');
+      const otherCode = attempt(fakeRunner({ signs: [signedFromOtherCode] })).error;
+      ok(otherCode && otherCode.step === 'verify-xpi' && !String(otherCode.hint).includes(said),
+        'release: publish: manifest: while a file whose code differs, and whose manifest does not, is not said to differ in its manifest');
+
+      // A signed file listing manifest.json twice, the package's manifest first
+      // and one with its permissions reversed last, is refused for listing a
+      // path twice. The record the hint is written from still names
+      // manifest.json among the files that differ, so the hint says the file is
+      // not the package's rather than only that it failed the check, and does
+      // not claim the manifest was compared by content.
+      const listedTwice = pack.zip([
+        ...filesOf(signedXpi),
+        { name: 'manifest.json', data: Buffer.from(JSON.stringify({ ...m, permissions: [...m.permissions].reverse() }, null, 2)) },
+      ]);
+      const twiceHere = attempt(fakeRunner({ signs: [listedTwice] })).error;
+      ok(twiceHere && twiceHere.step === 'verify-xpi' && twiceHere.message.includes('lists the same path more than once: manifest.json')
+        && twiceHere.message.includes('manifest.json (changed)') && !twiceHere.message.includes('compared by content')
+        && twiceHere.hint.includes('does not hold the files of the package this run checked') && !twiceHere.hint.includes(said),
+      "release: publish: manifest: a signed file listing manifest.json twice, the last copy changed, is refused as not holding the package's files");
+      const twiceOnDraft = attempt(fakeRunner({ release: { isDraft: true, assets: [names.chrome, names.xpi] }, onDraft: listedTwice })).error;
+      ok(twiceOnDraft && twiceOnDraft.step === 'verify-xpi' && twiceOnDraft.hint.includes('signed from a different build')
+        && !twiceOnDraft.hint.includes(said),
+      'release: publish: manifest: and one on the draft is said to be signed from a different build');
     }
 
     // ── Packages changed after they were checked ──

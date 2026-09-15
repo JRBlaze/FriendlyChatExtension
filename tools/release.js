@@ -500,6 +500,240 @@ function differentFiles(a, b, skip) {
   }).filter(Boolean);
 }
 
+// ── manifest.json, by what it says ──────────────────────────────────────────
+//
+// Of all the files in a signed package, manifest.json is the one compared by
+// what it says rather than by its bytes, because it is the one Mozilla does not
+// hand back as it was sent: its signing service reads the manifest and writes it
+// out again. The first release signed, 1.21.0 on 2026-09-15, came back with
+// every other file the package's to the byte and a manifest.json one byte
+// shorter. The newline the package ends it with was gone, and the JSON was the
+// same down to the order of its keys. web-ext 8.10.0 never writes the manifest
+// it uploads, so the rewriting is Mozilla's, and it looks like Python's
+// json.dumps with an indent of two, which leaves that newline off and is just as
+// free to write any character outside ASCII as a \u escape. So a signed manifest
+// can never be counted on to match the package's by checksum, and the check that
+// insisted on it refused that release, as it would every release after it.
+//
+// What the comparison is for does not need those bytes. It is there to prove
+// that the signed file was signed from this commit's package, and not from an
+// earlier commit of the same version, an old folder, or anything else carrying
+// the right ID and version. Every other file is still held to its checksum and
+// size, so no code the add-on runs and nothing it reads can differ by a byte.
+// And the manifest is compared completely rather than sampled. Both copies have
+// to be JSON objects, nested no deeper than MANIFEST_DEPTH. Neither may name a
+// key twice in one object: JSON.parse keeps the last of the two, and a reader
+// that kept the first would act on a value this check never saw. And the two
+// have to hold the same keys, values, types and nesting, with every array's
+// elements in the same order: an array is ordered data, and some of the
+// manifest's are read in that order (background.scripts run one after another
+// as they are listed), so a list like permissions is held to its order too
+// rather than taken as a set. The values are compared as JSON.parse reads them,
+// numbers included, and not by what JSON.stringify writes of them, which is null
+// for a 1e400 and 0 for a -0 where Firefox reads Infinity and -0.
+//
+// The order of an object's keys is not held to, at any depth. JSON gives it no
+// meaning, a manifest is read by the names of its keys, and a serialiser writing
+// the manifest out again could as well write them sorted, even though 1.21.0's
+// kept them in the package's order. Refusing a signed file for that alone would
+// refuse it after Mozilla has signed a version it will never sign again, costing
+// a version number over a difference nothing reads. It is still noticed, and
+// said in the log (manifestKeyOrder). That order is read from the text itself,
+// since a JavaScript object lists keys like the icons' "16" and "128" in numeric
+// order whatever order they were written in. So what is left free is
+// whitespace, the final newline, how a string or a number is spelled, and the
+// order of each object's keys: how the manifest is written, and never anything
+// it says.
+
+// How deep either copy may nest objects and arrays. The package's nests five
+// deep (browser_specific_settings.gecko.data_collection_permissions.required),
+// so this is room to spare; a manifest nested thousands deep is refused at once
+// instead of being walked, which recurses once for every level.
+const MANIFEST_DEPTH = 64;
+
+const plainObject = (x) => Boolean(x) && typeof x === 'object' && !Array.isArray(x);
+const ownKey = (x, key) => Object.prototype.hasOwnProperty.call(x, key);
+
+// Where a key is, for saying so: browser_specific_settings.gecko.id, or
+// content_scripts[0].js.
+function keyPath(at) {
+  return at.map((part, i) => (typeof part === 'number' ? `[${part}]` : `${i ? '.' : ''}${part}`)).join('');
+}
+
+// The path to a place jsonKeys records, outermost first. A place is recorded
+// once for each object or array, as the place around it and the key or index it
+// has there, so that a key costs the same to record however deep it is.
+function placePath(place) {
+  const at = [];
+  for (let p = place; p && p.parent; p = p.parent) at.unshift(p.step);
+  return at;
+}
+
+/**
+ * Every key of a JSON text in the order it is written, and every key an object
+ * names more than once, each as the place of the object it is in and its name.
+ *
+ * Only for text JSON.parse has already accepted, so the one thing the scan has
+ * to be careful about is strings: a brace, a bracket or a comma inside one is
+ * not structure, and an escaped quote does not end one. Keys are compared as
+ * JSON.parse reads them, so "version" and "\u0076ersion" are one key named
+ * twice.
+ *
+ * The scan stops at the first object or array nested deeper than
+ * MANIFEST_DEPTH, and says so with `tooDeep`; what it found by then is no
+ * answer.
+ *
+ * @param {string} text
+ * @returns {{keys: Array<{place: object, key: string}>,
+ *   duplicates: Array<{place: object, key: string}>, tooDeep: boolean}}
+ */
+function jsonKeys(text) {
+  const keys = [];
+  const duplicates = [];
+  // One for each object or array the scan is inside, outermost first: its
+  // place, the key or the index it has reached, and the keys it has named.
+  const open = [];
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    const inside = open[open.length - 1];
+    if (c === '"') {
+      let end = i + 1;
+      while (end < text.length && text[end] !== '"') end += text[end] === '\\' ? 2 : 1;
+      if (inside && inside.object && inside.expectingKey) {
+        const key = JSON.parse(text.slice(i, end + 1));
+        const found = { place: inside.place, key };
+        if (inside.seen.has(key)) duplicates.push(found);
+        inside.seen.add(key);
+        keys.push(found);
+        inside.key = key;
+        inside.expectingKey = false;
+      }
+      i = end;
+    } else if (c === '{' || c === '[') {
+      if (open.length === MANIFEST_DEPTH) return { keys, duplicates, tooDeep: true };
+      const place = inside
+        ? { parent: inside.place, step: inside.object ? inside.key : inside.index }
+        : { parent: null, step: null };
+      open.push({ place, object: c === '{', expectingKey: c === '{', seen: new Set(), key: null, index: 0 });
+    } else if (c === '}' || c === ']') {
+      open.pop();
+    } else if (c === ',' && inside) {
+      if (inside.object) inside.expectingKey = true;
+      else inside.index += 1;
+    }
+  }
+  return { keys, duplicates, tooDeep: false };
+}
+
+// Whether two values JSON.parse returned are the same: arrays element by
+// element and in order, objects key by key in any order (the order of an
+// object's keys is not something it says; manifestKeyOrder reads it from the
+// text, for the log), and numbers with Object.is, which tells Infinity from null
+// and -0 from 0 where comparing what JSON.stringify writes would not.
+function sameJson(a, b) {
+  if (typeof a === 'number' || typeof b === 'number') return Object.is(a, b);
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((x, i) => sameJson(x, b[i]));
+  }
+  if (plainObject(a) && plainObject(b)) {
+    const names = Object.keys(a);
+    return names.length === Object.keys(b).length && names.every((name) => ownKey(b, name) && sameJson(a[name], b[name]));
+  }
+  return a === b;
+}
+
+// The keys two parsed manifests disagree about, each as `<path> added`,
+// `removed` or `changed`: looking inside objects, taking an array as one value,
+// and paying no attention to the order of any object's keys, which is not a
+// difference. None exactly when sameJson holds of the two.
+function changedKeys(signed, packaged, at) {
+  if (plainObject(signed) && plainObject(packaged)) {
+    return [...new Set([...Object.keys(packaged), ...Object.keys(signed)])].flatMap((key) => {
+      if (!ownKey(packaged, key)) return [`${keyPath([...at, key])} added`];
+      if (!ownKey(signed, key)) return [`${keyPath([...at, key])} removed`];
+      return changedKeys(signed[key], packaged[key], [...at, key]);
+    });
+  }
+  return sameJson(signed, packaged) ? [] : [`${keyPath(at)} changed`];
+}
+
+/**
+ * Whether a signed manifest.json says exactly what the package's says, however
+ * differently it is written and in whatever order it writes each object's keys
+ * (see above).
+ *
+ * @param {Buffer} signedBytes manifest.json as the signed file holds it
+ * @param {Buffer} packageBytes manifest.json as the package holds it
+ * @returns {string|null} null when the two say the same; otherwise what is
+ *   wrong, as verifyXpi lists it after the file's name
+ */
+function manifestDifference(signedBytes, packageBytes) {
+  const read = (bytes, whose) => {
+    const text = bytes.toString('utf8');
+    let value;
+    try {
+      value = JSON.parse(text);
+    } catch (e) {
+      return { wrong: `${whose} is not valid JSON: ${e.message}` };
+    }
+    if (!plainObject(value)) return { wrong: `${whose} is not a JSON object` };
+    const { duplicates, tooDeep } = jsonKeys(text);
+    if (tooDeep) return { wrong: `${whose} nests objects and arrays more than ${MANIFEST_DEPTH} deep` };
+    if (duplicates.length) {
+      const named = new Set(duplicates.map((d) => keyPath([...placePath(d.place), d.key])));
+      return { wrong: `${whose} names ${[...named].join(', ')} more than once` };
+    }
+    return { value };
+  };
+  const signed = read(signedBytes, 'the signed copy');
+  if (signed.wrong) return signed.wrong;
+  const packaged = read(packageBytes, "the package's copy");
+  if (packaged.wrong) return packaged.wrong;
+  // Said as exactly as it can be for the person reading the log: which keys were
+  // added, removed or changed. Keys in another order are none of those.
+  const changes = changedKeys(signed.value, packaged.value, []);
+  return changes.length ? `content differs: ${changes.join(', ')}` : null;
+}
+
+/**
+ * Which objects a signed manifest.json writes the keys of in another order than
+ * the package's does, for the log to say so; nothing is refused for it (see
+ * above).
+ *
+ * Only for two copies manifestDifference has found to say the same thing. Then
+ * every object with keys is in both, at the same path, holding the same keys
+ * with none named twice, so each one's keys can be put side by side, one text's
+ * order against the other's.
+ *
+ * @param {Buffer} signedBytes manifest.json as the signed file holds it
+ * @param {Buffer} packageBytes manifest.json as the package holds it
+ * @returns {string|null} null when every object's keys are written in the same
+ *   order in both; otherwise each object whose are not, as `at the top level` or
+ *   `in <path>`, in the order the signed copy writes them, joined by commas and
+ *   a final `and`
+ */
+function manifestKeyOrder(signedBytes, packageBytes) {
+  // Each object's keys in the order the text writes them, by the object's path.
+  const orders = (bytes) => {
+    const byPlace = new Map();
+    jsonKeys(bytes.toString('utf8')).keys.forEach(({ place, key }) => {
+      if (!byPlace.has(place)) byPlace.set(place, []);
+      byPlace.get(place).push(key);
+    });
+    return new Map([...byPlace].map(([place, keys]) => {
+      const at = placePath(place);
+      return [JSON.stringify(at), { at, keys }];
+    }));
+  };
+  const packaged = orders(packageBytes);
+  const moved = [...orders(signedBytes)].filter(([id, { keys }]) => {
+    const theirs = packaged.get(id);
+    return !theirs || keys.some((key, i) => key !== theirs.keys[i]);
+  }).map(([, { at }]) => (at.length ? `in ${keyPath(at)}` : 'at the top level'));
+  if (!moved.length) return null;
+  return moved.length === 1 ? moved[0] : `${moved.slice(0, -1).join(', ')} and ${moved[moved.length - 1]}`;
+}
+
 /**
  * Checks a signed Firefox package: a zip that opens onto the extension, with
  * Mozilla's signature files in it, for this add-on and this version.
@@ -513,19 +747,36 @@ function differentFiles(a, b, skip) {
  * version, one signed by hand from an older folder, and one that whatever
  * handed it back had changed all carry the right ID, the right version and
  * real signature files. Given `reference` — the Firefox package this release
- * checked — every file outside META-INF/ has to be in both, alike by checksum
- * and size, with nothing extra and nothing missing. META-INF/ is Mozilla's:
- * the three signature files, and the COSE pair it adds beside them when asked.
- * Mozilla's signer repacks the archive but leaves every file in it as it was,
- * so compression and order are not compared, and neither are directory
- * entries.
+ * checked — every file outside META-INF/ has to be in both, with nothing extra
+ * and nothing missing, and every one of them but manifest.json alike by
+ * checksum and size. manifest.json has to say exactly what the package's says,
+ * however it is written and in whatever order it writes each object's keys,
+ * since Mozilla writes it out again when it signs (manifestDifference), and
+ * which objects' keys it did write in another order is said as well
+ * (manifestKeyOrder). That is for a manifest.json each archive lists once. An
+ * archive listing it twice is refused by layoutProblems whatever its copies
+ * hold, since there is no telling which one an unzipper keeps, and its
+ * manifest.json is held to its checksum and size like any other file rather
+ * than read for what one of those copies says. META-INF/ is Mozilla's: the
+ * three signature files, and the COSE pair it adds beside them when asked.
+ * Mozilla's signer also repacks the archive, so compression and order are not
+ * compared, and neither are directory entries.
  *
  * @param {string} file
  * @param {string} version without the tag's v
  * @param {{id?: string, reference?: string|Buffer}} [opts] `id` in place of
  *   GECKO_ID; `reference` the unsigned package, as a path or its bytes
- * @returns {{problems: string[], differs: string[]}} `differs` names the files
- *   that do not match the reference, when one was given
+ * @returns {{problems: string[], differs: string[],
+ *   manifestCheck: null|'identical'|'reformatted'|'different',
+ *   manifestKeyOrder: null|string, version?: string}}
+ *   `differs` names the files that do not match the reference, when one was
+ *   given; `manifestCheck` says how the two manifest.json files compared, when
+ *   each archive lists exactly one to compare: the same bytes, other bytes
+ *   saying the same thing, or not the same; null when either has none, or lists
+ *   it more than once; and `manifestKeyOrder`, for a manifest.json that is
+ *   'reformatted', which of its objects the signed copy writes the keys of in
+ *   another order (manifestKeyOrder), null when it writes them all in the
+ *   package's order or the two were not compared by content
  */
 function verifyXpi(file, version, opts) {
   const o = opts || {};
@@ -534,8 +785,10 @@ function verifyXpi(file, version, opts) {
   const label = path.basename(String(file));
   const problems = [];
   const differs = [];
+  let manifestCheck = null;
+  let keyOrder = null;
   const archive = openArchive(path.resolve(String(file)), label, problems);
-  if (!archive) return { problems, differs };
+  if (!archive) return { problems, differs, manifestCheck, manifestKeyOrder: keyOrder };
 
   const names = archive.entries.map((e) => e.name);
   const unsigned = SIGNATURE_FILES.filter((sig) => !names.includes(sig));
@@ -549,40 +802,78 @@ function verifyXpi(file, version, opts) {
     let reference = null;
     if (Buffer.isBuffer(o.reference)) {
       try {
-        reference = readCentral(o.reference);
+        reference = { buf: o.reference, entries: readCentral(o.reference) };
       } catch (e) {
         problems.push(`the package ${label} is compared with cannot be read as a zip: ${e.message}`);
       }
     } else {
-      const opened = openArchive(path.resolve(String(o.reference)), path.basename(String(o.reference)), problems);
-      reference = opened && opened.entries;
+      reference = openArchive(path.resolve(String(o.reference)), path.basename(String(o.reference)), problems);
     }
     if (reference) {
       const said = { 'only-in-a': 'not in the package', 'only-in-b': 'missing', changed: 'changed' };
-      differentFiles(archive.entries, reference, (name) => name.startsWith('META-INF/')).forEach((d) => {
-        differs.push(`${d.name} (${said[d.how]})`);
+      // manifest.json is compared by what it says only when each archive lists
+      // it exactly once. differentFiles goes by the last copy of a path listed
+      // more than once, and reading what the manifest says from any other copy
+      // would be checking one file's bytes and another file's content. A signed
+      // archive listing the package's manifest first and one with its
+      // permissions reversed last would then have its checksum found to
+      // differ, the harmless first copy found to say the same, and the change
+      // dropped from `differs`, with the manifest said to be 'reformatted'; the
+      // run would still refuse the archive for listing a path twice, but its
+      // record and the hint would say nothing of a manifest that changed. So an
+      // archive listing manifest.json twice, which layoutProblems refuses
+      // whatever its copies hold, has that file held to its checksum and size
+      // like every other file, and `manifestCheck` left at null: its manifest
+      // was not compared, and is neither 'reformatted' nor 'identical'.
+      const listedOnce = (zip) => zip.entries.filter((e) => e.name === 'manifest.json').length === 1;
+      const byContent = listedOnce(archive) && listedOnce(reference);
+      differentFiles(archive.entries, reference.entries, (name) => name.startsWith('META-INF/')).forEach((d) => {
+        if (d.name !== 'manifest.json' || d.how !== 'changed' || !byContent) {
+          differs.push(`${d.name} (${said[d.how]})`);
+          return;
+        }
+        // Other bytes, so compared by what the two say: each archive's one
+        // manifest.json, the same entry differentFiles compared.
+        let difference;
+        try {
+          const manifestOf = (zip) => readEntry(zip.buf, zip.entries.find((e) => e.name === 'manifest.json'));
+          const signedManifest = manifestOf(archive);
+          const packageManifest = manifestOf(reference);
+          difference = manifestDifference(signedManifest, packageManifest);
+          // Asked only of two that say the same, which is all it answers for.
+          if (!difference) keyOrder = manifestKeyOrder(signedManifest, packageManifest);
+        } catch (e) {
+          difference = `cannot be read: ${e.message}`;
+        }
+        manifestCheck = difference ? 'different' : 'reformatted';
+        if (difference) differs.push(`manifest.json (${difference})`);
       });
+      if (byContent && !manifestCheck) manifestCheck = 'identical';
       if (differs.length) {
-        problems.push(`${label} does not hold the files of the package it should have been signed from: ${differs.join(', ')}`);
+        problems.push(`${label} does not hold the files of the package it should have been signed from: ${differs.join(', ')}`
+          + (manifestCheck === 'different'
+            ? ". Its manifest.json was compared by content, not byte for byte, since Mozilla writes that file out again when "
+              + "it signs, free to change its formatting and the order of its keys, and the content is not the package's either"
+            : ''));
       }
     }
   }
 
   const entry = archive.entries.find((e) => e.name === 'manifest.json');
-  if (!entry) return { problems, differs };
+  if (!entry) return { problems, differs, manifestCheck, manifestKeyOrder: keyOrder };
   let manifest;
   try {
     manifest = JSON.parse(readEntry(archive.buf, entry).toString('utf8'));
   } catch (e) {
     problems.push(`${label}: its manifest.json cannot be read: ${e.message}`);
-    return { problems, differs };
+    return { problems, differs, manifestCheck, manifestKeyOrder: keyOrder };
   }
   const gecko = (manifest.browser_specific_settings || {}).gecko || {};
   if (gecko.id !== id) problems.push(`${label}: its gecko.id is ${JSON.stringify(gecko.id)}, not ${JSON.stringify(id)}`);
   if (manifest.version !== v) {
     problems.push(`${label}: its manifest is version ${JSON.stringify(manifest.version)}, not ${JSON.stringify(v)}`);
   }
-  return { problems, differs, version: manifest.version };
+  return { problems, differs, manifestCheck, manifestKeyOrder: keyOrder, version: manifest.version };
 }
 
 /** updates.json as a release publishes it: pack.updatesManifest, two-space indented, ending in a newline. */
@@ -933,11 +1224,23 @@ const STEPS = {
   // publish at any price; the workflow keeps it as an artifact, and the hint
   // says so.
   'verify-xpi'(ctx) {
-    const { problems, differs, version } = verifyXpi(ctx.paths.xpi, ctx.version, { reference: ctx.packages.firefox.buf });
-    ctx.xpi = { differs, version };
+    const { problems, differs, manifestCheck, manifestKeyOrder: keyOrder, version } = verifyXpi(ctx.paths.xpi, ctx.version,
+      { reference: ctx.packages.firefox.buf });
+    ctx.xpi = { differs, manifestCheck, version };
     if (problems.length) throw new Error(problems.join('; '));
+    // A manifest.json Mozilla wrote out again is said to have been, and one it
+    // wrote with an object's keys in another order is said to be that too, and
+    // where: it is the first thing anyone comparing the two files by eye would
+    // see, and it is not something the manifest says.
+    let rewritten = '';
+    if (manifestCheck === 'reformatted') {
+      rewritten = keyOrder
+        ? `, its manifest.json written out again by Mozilla, which wrote the keys in another order ${keyOrder}, `
+          + "but the content is the same: it says exactly what the package's says"
+        : ", its manifest.json written out again by Mozilla and saying exactly what the package's says";
+    }
     ctx.log(`Checked ${path.basename(ctx.paths.xpi)}: signed, ${pack.GECKO_ID}, version ${ctx.version}, `
-      + `holding exactly the files of ${path.basename(ctx.paths.firefox)}`);
+      + `holding exactly the files of ${path.basename(ctx.paths.firefox)}${rewritten}`);
   },
 
   'updates-json'(ctx) {
@@ -1026,9 +1329,16 @@ function hintFor(step, ctx) {
     case 'verify-xpi': {
       const differs = Boolean(ctx.xpi && ctx.xpi.differs.length);
       const thisVersion = Boolean(ctx.xpi && ctx.xpi.version === ctx.version);
+      // Said when it is the manifest's content that differs, since a manifest
+      // differing only in how it is written, or in the order of its keys, is
+      // what a signing can return.
+      const manifestSays = ctx.xpi && ctx.xpi.manifestCheck === 'different'
+        ? " Its manifest.json does not say what the package's says — more than the changes to its formatting and the "
+          + 'order of its keys that Mozilla may make when it writes that file out again on signing, which the check allows.'
+        : '';
       if (signedHere && differs) {
         return `Mozilla has signed ${ctx.version} and will not sign it again, but the file that came back does not hold `
-          + 'the files of the package this run checked and sent. It was not uploaded, and must not be: it is kept at '
+          + `the files of the package this run checked and sent.${manifestSays} It was not uploaded, and must not be: it is kept at `
           + `${ctx.paths.xpi}, as this run's signed-firefox-xpi artifact, to find out what changed it. The draft `
           + `${ctx.tag} is left unpublished. Unless the difference turns out to be harmless, release the next version.`;
       }
@@ -1039,7 +1349,7 @@ function hintFor(step, ctx) {
       }
       if (differs && thisVersion) {
         return `The ${xpi} on the draft ${ctx.tag} is ${ctx.version}, but it was signed from a different build than this `
-          + 'commit\'s package, so publishing it would ship code this release never checked. The draft is left unpublished. '
+          + `commit's package, so publishing it would ship code this release never checked.${manifestSays} The draft is left unpublished. `
           + `Mozilla will not sign ${ctx.version} again, so moving the tag cannot fix this. If the file Mozilla signed from `
           + 'this commit\'s package still exists (the signed-firefox-xpi artifact of the run that signed it), put it on the '
           + `draft in place of this one and re-run; otherwise delete ${xpi} from the draft and release the next version.`;
@@ -1257,7 +1567,7 @@ function main(argv, io) {
 }
 
 module.exports = {
-  readCentral, readEntry, extractZip, unsafeEntryName, differentFiles,
+  readCentral, readEntry, extractZip, unsafeEntryName, differentFiles, manifestDifference, manifestKeyOrder,
   verifyPackages, verifyXpi, updatesJsonText, writeUpdatesJson, releaseFiles, zipProblems,
   planRelease, readRelease, readLatest, takesLatest, publish, runCommand, commandEnv, main, ReleaseError,
   WEB_EXT, SIGNATURE_FILES, UPDATES_JSON, AMO_VARIABLES, GITHUB_TOKEN_VARIABLES,
