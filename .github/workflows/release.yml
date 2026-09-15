@@ -1,17 +1,62 @@
-# The release, built by the same thing every time.
+# The release, built and published by the same thing every time.
 #
-# Push a `v*` tag and this runs the suite, builds the zip with tools/pack.js and
-# attaches it to a release for that tag. Nothing is uploaded by hand, so the
-# archive cannot be whatever the person making the release happened to select —
-# which is exactly how v1.18.2 and v1.18.3 went out with the extension wrapped
-# in a folder, putting `manifest.json` a level deeper than the README says and
-# breaking "Load unpacked" for anyone who followed it.
+# Push a `v*` tag and this runs the suite, builds both packages with
+# tools/pack.js, has Mozilla sign the Firefox one, and publishes a release for
+# the tag carrying four files:
+#
+#   FriendlyChatExtension-v<version>.zip                    Chrome, for Load unpacked
+#   FriendlyChatExtension-v<version>-firefox-unsigned.xpi   Firefox, unsigned, for about:debugging
+#   FriendlyChatExtension-v<version>-firefox.xpi            the same package, signed by Mozilla (unlisted)
+#   updates.json                                            where every signed install finds this version
+#
+# Only Chrome's file ends in .zip, and a release holding another .zip is
+# refused: every Chrome build from v1.11.0 to v1.20.1 takes the first .zip on the
+# latest release as its update, in whatever order GitHub lists them.
+#
+# Nothing is uploaded by hand, so no archive can be whatever the person making
+# the release happened to select — which is exactly how v1.18.2 and v1.18.3
+# went out with the extension wrapped in a folder, putting `manifest.json` a
+# level deeper than the README says and breaking "Load unpacked" for anyone
+# who followed it.
 #
 # The suite runs first and the job stops if it fails, so a tag cannot become a
 # release that does not pass its own tests. It also checks the tag against the
-# manifest: the version in the tag, the version in the manifest and the filename
-# the README sends people to are three places that have to agree, and the only
-# moment they can be compared is here.
+# manifest: the version in the tag, the version in the manifest and the
+# filenames the README sends people to are three places that have to agree,
+# and the only moment they can be compared is here.
+#
+# Draft first, publish last. Every signed Firefox install asks
+# releases/latest/download/updates.json for its next version, and "latest" is
+# the release published most recently, so a release published without
+# updates.json would answer every one of them with a 404. The release is made
+# as a draft, all four files are attached and read back, and only then is it
+# published. If anything before that fails it is never published, and the
+# previous release stays latest. A release already published for the tag is
+# refused rather than filled in: delete it, or turn it back into a draft
+# (`gh release edit <tag> --draft=true`), and re-run. A draft someone made by
+# hand beforehand is fine, and is used.
+#
+# Re-running is safe. Mozilla signs a version only once, so when the draft
+# already holds the signed .xpi, a re-run downloads that file, checks it file by
+# file against the package it has just built, and carries on from there rather
+# than signing again. It does not upload that file again either: gh replaces a
+# file by deleting the one on the draft first, and an upload failing after that
+# would lose the only copy. The other three files are replaced as they are
+# rebuilt, and nothing else is repeated in a way that matters.
+#
+# When signing fails, the log says why and the draft is left unpublished. If
+# Mozilla never signed the version (credentials refused, validation failed,
+# gave up before submitting), fix the cause and re-run. If it did sign it — the
+# add-on's versions in the addons.mozilla.org Developer Hub say so — it will not
+# sign that version again: download the signed file from there, or from the
+# `signed-firefox-xpi` artifact of the run that signed it, attach it to the
+# draft as FriendlyChatExtension-v<version>-firefox.xpi, and re-run. Only a file
+# signed from this commit's package gets through the check. When the fix is a
+# change to the code, or the signed file came from other code, it goes out as a
+# new version instead.
+#
+# What a run may do, and in what order, is in tools/release.js, where the test
+# suite runs it without a network. This file says when, and with which secrets.
 name: Release
 
 on:
@@ -19,24 +64,49 @@ on:
     tags: ['v*']
 
 permissions:
-  contents: write   # to create the release and upload the asset
+  contents: write   # to create the draft, upload its files and publish it
+
+# One run per tag at a time. A second run for the same tag waits for the first
+# rather than cancelling it: a run stopped between signing and uploading would
+# leave a version Mozilla has signed with nothing holding the file.
+#
+# Runs for different tags are not queued behind one another, so an older
+# version can finish after a newer one — and one group for every tag would be
+# worse, since GitHub keeps only one run waiting per group and cancels the rest.
+# So tools/release.js decides whether a release becomes "latest" only as it
+# publishes it, against the release that is latest at that moment, and an
+# older version published last is published without taking it.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   release:
     runs-on: ubuntu-latest
+    # Signing waits up to five minutes for Mozilla's validation and fifteen for
+    # approval. This leaves room for both and for the suite, without letting a
+    # stuck run hold the tag for GitHub's six hours.
+    timeout-minutes: 60
     steps:
+      # Without the workflow token written into the checkout's git config.
+      # Nothing here pushes; gh is handed its token in the one step that uses
+      # it; and web-ext, with the several hundred npm packages under it, runs
+      # in this job.
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v5
         with:
           node-version: '22'
 
-      # Including the pack suite, which is what says the archive opens onto the
-      # extension rather than onto a folder holding it.
+      # Including the pack suite, which says each archive opens onto the
+      # extension rather than onto a folder holding it, and the release suite,
+      # which says nothing below can publish a release without its files.
       - name: Test
         run: node tests/run.js
 
-      # A tag that disagrees with the manifest would publish an asset named for
+      # A tag that disagrees with the manifest would publish files named for
       # one version containing another.
       - name: Check the tag against the manifest
         run: |
@@ -48,35 +118,45 @@ jobs:
           fi
           echo "v$manifest"
 
-      - name: Build the zip
-        run: node tools/pack.js dist
+      - name: Build the packages
+        run: node tools/pack.js dist --target all
 
-      # Belt and braces, against the one failure this workflow exists to
-      # prevent: read the archive back and refuse to publish a wrapped one.
-      - name: Check the archive opens onto the extension
-        run: |
-          cd dist
-          unzip -Z1 FriendlyChatExtension-v*.zip | sort > entries.txt
-          echo "--- entries ---"
-          cat entries.txt
-          if ! grep -qx 'manifest.json' entries.txt; then
-            echo "::error::manifest.json is not at the root of the archive"
-            exit 1
-          fi
-          if grep -q '^FriendlyChatExtension/' entries.txt; then
-            echo "::error::the archive is wrapped in a FriendlyChatExtension/ folder"
-            exit 1
-          fi
+      # Belt and braces, against the failure this workflow first existed to
+      # prevent and the new ones a second package brings: read both archives
+      # back, and stop at a wrapped one, a Chrome manifest that is not the
+      # repository's, or a Firefox manifest that is not what Mozilla should sign.
+      - name: Check the packages
+        run: node tools/release.js verify-packages dist "${GITHUB_REF_NAME#v}"
 
-      - name: Publish
+      # Fetched before anything is created, so npm being unreachable fails the
+      # run while there is still nothing to clean up. The exact version
+      # tools/release.js runs; the release suite holds the two to each other.
+      - name: Fetch web-ext
+        run: npx --yes web-ext@8.10.0 --version
+
+      # Both AMO credentials and the token are in this step's environment, and
+      # tools/release.js hands each command it runs only what that command
+      # needs: the AMO pair to `web-ext sign`, the token to gh, neither to
+      # `web-ext lint`.
+      - name: Sign and publish
         env:
+          WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
+          WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
           GH_TOKEN: ${{ github.token }}
-        run: |
-          # The notes are whatever the release already has if one was made for
-          # this tag by hand; otherwise GitHub writes them from the commits.
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" dist/FriendlyChatExtension-v*.zip --clobber
-          else
-            gh release create "$GITHUB_REF_NAME" dist/FriendlyChatExtension-v*.zip \
-              --title "$GITHUB_REF_NAME" --generate-notes
-          fi
+          GH_REPO: ${{ github.repository }}
+        run: node tools/release.js publish "$GITHUB_REF_NAME" dist
+
+      # Only when the run failed: whatever Mozilla signed, so a version it will
+      # not sign twice is never lost with the runner. Named exactly, because the
+      # unsigned package beside it ends in .xpi as well, and is not a file to
+      # attach to a draft.
+      - name: Keep the signed add-on
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: signed-firefox-xpi
+          path: |
+            dist/FriendlyChatExtension-v*-firefox.xpi
+            dist/firefox-signed/*.xpi
+          if-no-files-found: ignore
+          retention-days: 30

@@ -399,7 +399,10 @@
       const val = inputEl.value;
       const cursor = inputEl.selectionStart;
 
-      // Walk back from the cursor to the nearest trigger, stopping at a space.
+      // Walk back from the cursor to the nearest trigger, stopping at the start
+      // of the word. Any whitespace starts one, not only the space character: a
+      // no-break space or a tab left in the box would otherwise let the scan
+      // run on into the word before and take up a trigger that belongs to it.
       let triggerChar = null;
       let triggerPos = -1;
       let query = '';
@@ -410,7 +413,7 @@
           query = val.slice(i + 1, cursor);
           break;
         }
-        if (val[i] === ' ') break;
+        if (/\s/.test(val[i])) break;
       }
 
       // Typing beside an open picker leaves the picker alone.

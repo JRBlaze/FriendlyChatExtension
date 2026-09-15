@@ -80,6 +80,11 @@
     drops: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v3M6.6 4l1 2M17.4 4l-1 2"/><path d="M3 21v-8l2.4-4h13.2L21 13v8z"/><path d="M3 13h18"/><path d="M10 13v2h4v-2"/></svg>',
   };
 
+  // Whether this page has already said the stylesheet would not load. A new
+  // overlay is made for every channel switch, and one failure is enough to be
+  // told about.
+  let stylesheetFailureLogged = false;
+
   FCM.createOverlay = function (options) {
     const { site, channel, onCommand } = options;
     const hostPlatform = site.id;
@@ -132,6 +137,11 @@
     // The last sign-in failure, kept so the settings sheet can explain it in
     // full rather than flashing it past in a toast.
     let authProblem = null;
+    // The extension's own sign-in address, and which browser it belongs to, as
+    // the background sends them with the accounts. The overlay cannot ask for
+    // the address itself: chrome.identity is not there for content scripts, in
+    // Chrome or in Firefox, which is why the note showing it used to be empty.
+    let signInAddress = { redirectUri: '', browser: FCM.BROWSER };
     // Set while a drag is in progress, so its window listeners can be removed
     // even if the overlay goes away before the mouse comes back up.
     let endDrag = null;
@@ -200,7 +210,17 @@
         style.textContent = css;
         shadow.insertBefore(style, root);
       })
-      .catch(() => { /* the panel still works unstyled */ });
+      .catch((e) => {
+        // The panel still works unstyled, in that it is there — but unplaced,
+        // hard to use, and with nothing on the page to say why. So it is said
+        // in the console, once a page rather than once a channel. Firefox
+        // serves this file from a moz-extension:// address, and whether a
+        // content script's fetch of that is always allowed on these sites is
+        // exactly the kind of thing that should not fail without a word.
+        if (stylesheetFailureLogged) return;
+        stylesheetFailureLogged = true;
+        console.warn('Friendly Chat Extension: the overlay stylesheet could not be loaded.', e);
+      });
 
     root.innerHTML = `
       <button class="fcm-launcher fcm-hidden" part="launcher">
@@ -286,6 +306,14 @@
     // Held by reference: the settings sheet grows a Reset button of its own, and
     // a selector would then be picking between two.
     const resetBtn = $('.fcm-actions [data-act="reset-placement"]');
+
+    // The pop-out is Document Picture-in-Picture, which not every browser this
+    // runs in has: Chrome from 116, Firefox from 151 and only on the desktop,
+    // so not on ESR 140. Where it is missing the button could only ever answer
+    // with an apology, so it is not offered.
+    if (!window.documentPictureInPicture) {
+      $('.fcm-actions [data-act="popout"]').classList.add('fcm-hidden');
+    }
 
     // The box draws emotes as they are typed, and presents the small part of an
     // input's interface the rest of the composer speaks: value, selectionStart
@@ -1203,8 +1231,8 @@
         return;
       }
       // The window the press happened in. A popped-out panel is a window of its
-      // own, and the gesture Chrome wants belongs to the document that saw the
-      // click, not to the tab standing behind it.
+      // own, and the gesture the browser wants belongs to the document that saw
+      // the click, not to the tab standing behind it.
       const opener = (poppedOut() && pipWindow) || window;
       let opened = null;
       try {
@@ -1213,12 +1241,13 @@
         opened = null;
       }
       if (!opened) {
-        // Chrome refuses a window it did not see asked for, and there is nothing
-        // to be done about that from in here except hand over the address. The
+        // The browser refuses a window it did not see asked for — Firefox's
+        // popup blocker holds extensions to that as well — and there is nothing
+        // to be done about it from in here except hand over the address. The
         // feed makes a link of it; a toast is gone in two seconds.
-        feed.addSys(`[Twitch] Chrome would not open the window for Twitch's GIF keyboard. `
+        feed.addSys(`[Twitch] The browser would not open the window for Twitch's GIF keyboard. `
           + `It is at ${plan.url}`);
-        toast('Chrome would not open the window — the address is in the feed');
+        toast('The browser would not open the window — the address is in the feed');
         return;
       }
       // Kept, so the next press raises this window instead of reloading it.
@@ -1356,8 +1385,8 @@
      * Puts the panel back on the page.
      *
      * Called both from the button and from the window being closed by whatever
-     * else can close it — the viewer, the tab navigating, Chrome itself — so it
-     * has to be safe to run when the window has already gone.
+     * else can close it — the viewer, the tab navigating, the browser itself —
+     * so it has to be safe to run when the window has already gone.
      */
     function popIn() {
       const win = pipWindow;
@@ -1387,7 +1416,7 @@
     async function popOut() {
       if (poppedOut()) { popIn(); return; }
       if (!window.documentPictureInPicture) {
-        toast('This version of Chrome cannot open a pop-out window');
+        toast('This browser cannot open a pop-out window');
         return;
       }
       const rect = panel.getBoundingClientRect();
@@ -1398,9 +1427,9 @@
           height: Math.round(rect.height) || 640,
         });
       } catch (e) {
-        // Chrome refuses without a gesture it recognises, and refuses a second
-        // one while the first is open. Neither is worth more than a line.
-        toast('Chrome would not open a pop-out window');
+        // The browser refuses without a gesture it recognises, and refuses a
+        // second one while the first is open. Neither is worth more than a line.
+        toast('The browser would not open a pop-out window');
         return;
       }
       if (destroyed) { try { win.close(); } catch (e) { /* nothing to undo */ } return; }
@@ -1419,7 +1448,7 @@
       setPeek(false);
       win.document.body.appendChild(host);
       // Covers every way the window can go: the viewer closing it, this tab
-      // navigating, Chrome taking it back.
+      // navigating, the browser taking it back.
       win.addEventListener('pagehide', popIn, { once: true });
       refreshPopButton();
       toast('Popped out — close the window to put it back');
@@ -1876,6 +1905,10 @@
       sheet = document.createElement('div');
       sheet.className = 'fcm-sheet';
       const linkedTo = counterpart && counterpart.exists ? counterpart.channel : '';
+      // Firefox's address for the add-on is not Chrome's, so a Twitch app set
+      // up from Chrome does not list it — and somebody following instructions
+      // written for Chrome needs telling that both can be there at once.
+      const onFirefox = signInAddress.browser === 'firefox';
       const accountRows = FCM.SEND_PLATFORMS.map((platform) => {
         const meta = FCM.PLATFORM_META[platform];
         const acct = accounts[platform] || { connected: false };
@@ -1906,7 +1939,10 @@
               ? `<code class="fcm-code">${FCM.escapeHtml(authProblem.redirectUri || '')}</code>
                  <p class="fcm-authfail-hint">Click the URL to select it, then copy it. Add it under
                  <b>OAuth Redirect URLs</b> in the Twitch developer console, or the redirect list
-                 for the Kick app behind the proxy. It must match exactly, trailing slash included.</p>
+                 for the Kick app behind the proxy. It must match exactly, trailing slash included.${
+                   onFirefox && authProblem.redirectUri && authProblem.redirectUri === signInAddress.redirectUri
+                     ? ` This is Firefox's address for the add-on; it is different from Chrome's, and the app can list both.`
+                     : ''}</p>
                  <p class="fcm-authfail-hint">If that app is not yours to edit, register your own
                  application on the platform and put its client ID in the extension's options page
                  instead.</p>`
@@ -1921,9 +1957,10 @@
             ${authProblem.raw && authProblem.raw !== authProblem.message
               ? `<p class="fcm-authfail-raw">${FCM.escapeHtml(authProblem.raw)}</p>` : ''}
           </div>` : ''}
-          <p class="fcm-note">Both platforms must list this extension's redirect URL in their
-            developer console before sign-in will work:
-            <code class="fcm-code">${FCM.escapeHtml(chrome.identity ? chrome.identity.getRedirectURL() : '')}</code></p>
+          ${signInAddress.redirectUri ? `<p class="fcm-note">Twitch must list this browser's redirect URL
+            before sign-in will work:
+            <code class="fcm-code">${FCM.escapeHtml(signInAddress.redirectUri)}</code>${onFirefox
+              ? ` Firefox's address is different from Chrome's; both can be listed on the same app.` : ''}</p>` : ''}
 
           <div class="fcm-section-title">Cross-platform</div>
           <div class="fcm-field">
@@ -2271,6 +2308,12 @@
      * a way to dismiss it that the worker remembers per version — the same
      * dismissal the popup uses, so closing it in either place closes it in
      * both.
+     *
+     * Never a link on a build Firefox keeps up to date by itself. The
+     * background makes no check there and so never sends one of these
+     * (updates.js), but a strip that did arrive must not offer a file to
+     * install by hand over the update Firefox is already fetching: it says
+     * that Firefox does it, and nothing more.
      */
     function renderUpdate(status) {
       if (!status || !status.available || !status.version) {
@@ -2279,12 +2322,15 @@
         return;
       }
       const url = String(status.downloadUrl || status.url || FCM.GITHUB_RELEASES_URL || '');
+      const byBrowser = FCM.updatedByBrowser();
       updateEl.replaceChildren();
       const text = document.createElement('span');
       text.className = 'fcm-update-text';
-      text.textContent = `v${status.version} is out`;
+      text.textContent = byBrowser
+        ? `v${status.version} is out · Firefox updates it by itself`
+        : `v${status.version} is out`;
       updateEl.appendChild(text);
-      if (/^https:\/\//i.test(url)) {
+      if (!byBrowser && /^https:\/\//i.test(url)) {
         const link = document.createElement('a');
         link.className = 'fcm-update-link';
         link.href = url;
@@ -3093,8 +3139,13 @@
         toast(text || `${FCM.PLATFORM_META[platform].name}: the action failed`);
       },
 
-      setAccounts(next) {
+      setAccounts(next, about) {
         accounts = next || accounts;
+        // Kept from the last summary that carried an address, so one without it
+        // cannot blank the note the settings sheet shows.
+        if (about && about.redirectUri) {
+          signInAddress = { redirectUri: String(about.redirectUri), browser: about.browser || FCM.BROWSER };
+        }
         // A successful connection retires whatever the last failure was.
         if (authProblem && accounts[authProblem.platform]
           && accounts[authProblem.platform].connected) authProblem = null;

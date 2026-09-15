@@ -15,15 +15,18 @@
   'use strict';
 
   // Bounded because these are the largest thing this extension stores: a big
-  // account's Twitch emotes alone run to a megabyte of JSON, and storage.local
-  // is ten. Least recently used goes first.
+  // account's Twitch emotes alone run to a megabyte of JSON, and Chrome gives
+  // storage.local ten. Firefox holds it to the limits of the add-on's own
+  // IndexedDB storage instead, which are no fixed figure, but a store that is
+  // read whole is worth keeping small in either. Least recently used goes first.
   const MAX_CHANNELS = 6;
   // Old enough to be worth distrusting on its own. Nothing depends on this —
   // the fetch corrects whatever is stale — so it only stops the store filling
   // with channels that were visited once a year ago.
   const MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
   // A store larger than this is not written at all. One runaway channel must
-  // not be able to push everything else out, or exceed the quota by itself.
+  // not be able to push everything else out, or reach the browser's storage
+  // limit by itself.
   const MAX_ENTRIES_PER_STORE = 20000;
 
   /**

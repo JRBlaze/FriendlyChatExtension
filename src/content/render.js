@@ -921,10 +921,13 @@
     broadcaster: '<path d="M1.5 4.5A1.5 1.5 0 0 1 3 3h6.2a1.5 1.5 0 0 1 1.5 1.5v7a1.5 1.5 0 0 1-1.5 1.5H3a1.5 1.5 0 0 1-1.5-1.5zm10.2 2.3 2.8-1.6v5.6l-2.8-1.6z"/>',
     // A gem.
     vip: '<path d="M4.2 2h7.6l3 4.1L8 14.2.8 6.1z"/>',
-    // A shield with the letters on it.
+    // A shield with the letters on it. Their font is set in overlay.css rather
+    // than as an attribute here: a var() inside an SVG presentation attribute
+    // is not something every browser can be relied on to resolve, and the
+    // default font it falls back to may not fit the shield.
     og: '<path d="M8 .8 14 3.9v5.6c0 2.8-2.4 5-6 6.2-3.6-1.2-6-3.4-6-6.2V3.9z"/>'
       + '<text class="fcm-kbadge-cut" x="8" y="10.4" text-anchor="middle" font-size="5.6"'
-      + ' font-weight="700" font-family="var(--fcm-mono)">OG</text>',
+      + ' font-weight="700">OG</text>',
     // A shield with a star cut out of it.
     founder: '<path d="M8 .8 14 3.9v5.6c0 2.8-2.4 5-6 6.2-3.6-1.2-6-3.4-6-6.2V3.9z"/>'
       + '<path class="fcm-kbadge-cut" d="M8 4.1l1.1 2.3 2.5.3-1.8 1.7.5 2.5L8 9.7l-2.3 1.2.5-2.5-1.8-1.7 2.5-.3z"/>',

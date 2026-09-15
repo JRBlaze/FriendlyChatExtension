@@ -4,26 +4,42 @@
 // reasons: the host page's connect-src CSP cannot interfere, and a Kick socket
 // opened from a twitch.tv tab (or the reverse) is a plain cross-origin request
 // that only the extension's host permissions can make.
-importScripts(
-  '/src/shared/namespace.js',
-  '/src/shared/constants.js',
-  '/src/shared/util.js',
-  '/src/shared/irc.js',
-  '/src/shared/emote-parsers.js',
-  '/src/shared/kick-events.js',
-  '/src/shared/clips.js',
-  '/src/background/discovery.js',
-  '/src/background/emotes.js',
-  '/src/background/twitch-source.js',
-  '/src/background/kick-source.js',
-  '/src/background/auth.js',
-  '/src/background/send.js',
-  '/src/background/moderation.js',
-  '/src/background/profile.js',
-  '/src/background/emote-cache.js',
-  '/src/background/clips.js',
-  '/src/background/updates.js'
-);
+//
+// Chrome runs this file as a service worker, and the worker loads everything
+// else it needs itself, below. Firefox has no extension service workers. It
+// runs the same file as an event page, which is a window rather than a worker,
+// so `importScripts` does not exist there — and calling it anyway would throw
+// on the first statement, before a single listener below was registered, and
+// leave an extension that loads without complaint and does nothing at all.
+// The Firefox build lists these files in `background.scripts` instead, ahead
+// of this one, and by the time this line runs they have already run.
+//
+// That list is not written down a second time. tools/pack.js reads it out of
+// the call below when it builds the Firefox manifest, so this stays the only
+// place the order is decided, and the paths stay plain single-quoted strings
+// that a regular expression can read back.
+if (typeof importScripts === 'function') {
+  importScripts(
+    '/src/shared/namespace.js',
+    '/src/shared/constants.js',
+    '/src/shared/util.js',
+    '/src/shared/irc.js',
+    '/src/shared/emote-parsers.js',
+    '/src/shared/kick-events.js',
+    '/src/shared/clips.js',
+    '/src/background/discovery.js',
+    '/src/background/emotes.js',
+    '/src/background/twitch-source.js',
+    '/src/background/kick-source.js',
+    '/src/background/auth.js',
+    '/src/background/send.js',
+    '/src/background/moderation.js',
+    '/src/background/profile.js',
+    '/src/background/emote-cache.js',
+    '/src/background/clips.js',
+    '/src/background/updates.js'
+  );
+}
 
 const FCM = self.FCM;
 
@@ -77,6 +93,65 @@ function post(session, payload) {
 // counterpart offers, update notices and the port's own replies are about the
 // tab rather than about one channel's chat connection.
 const send = post;
+
+/**
+ * The account summary a tab is sent, with what the overlay needs to explain a
+ * sign-in alongside it.
+ *
+ * The redirect URL a platform has to list is the extension's own sign-in
+ * address, and only the background can ask for it: chrome.identity is not
+ * there for content scripts in either browser, so the overlay's note about it
+ * used to print an empty box. It is a different address in each browser —
+ * Chrome's is the extension ID under chromiumapp.org, Firefox's a hash of the
+ * add-on ID under extensions.allizom.org — so which browser this is travels
+ * with it. Every account summary goes out through here, so none can arrive
+ * without them.
+ */
+function authMessage(accounts) {
+  let redirectUri = '';
+  try {
+    redirectUri = String(chrome.identity.getRedirectURL() || '');
+  } catch (e) { /* no identity API here: the overlay leaves the note out */ }
+  return { type: 'auth', accounts, redirectUri, browser: FCM.BROWSER };
+}
+
+/**
+ * Tells a tab, once, which of the services behind the overlay Firefox is not
+ * letting the add-on reach.
+ *
+ * Firefox lets a person take back any site an add-on was allowed at install,
+ * and an update that adds one goes in without it. The services are where that
+ * does its harm without a word: a request to one the add-on may not reach
+ * fails like any refused cross-origin request, the extension reads that as the
+ * service having nothing to give, and the viewer is left with a chat that has
+ * no 7TV emotes, or no history, and nothing saying why. So the feed says why,
+ * and where to put it right.
+ *
+ * Twitch and Kick themselves are left to the toolbar badge. The tab being told
+ * is running the content script that said hello, so its own site is allowed,
+ * and the badge is where the add-on says it is kept off one.
+ *
+ * Once for the session rather than once per hello, which comes with every
+ * channel the page goes to and would stack the same line up in the feed. And
+ * only on Firefox: Chrome gets none of this.
+ */
+function tellSiteAccess(session) {
+  if (FCM.BROWSER !== 'firefox' || session.siteAccessTold || session.siteAccessAsking) return;
+  session.siteAccessAsking = true;
+  FCM.hostAccess().then((access) => {
+    // The badge is kept to the same answer, since it has been asked for anyway.
+    FCM.showSiteAccess(access);
+    const services = access.missing.filter((origin) => !access.sitesMissing.includes(origin));
+    if (!services.length) return;
+    session.siteAccessTold = true;
+    const names = [...new Set(services.map(FCM.originLabel))].join(', ');
+    send(session, {
+      type: 'sys',
+      text: `[Merged] Firefox has not allowed access to ${names} — emotes, history or sign-in that depend on `
+        + "them will be missing. Allow it from the extension's options page (Site access).",
+    });
+  }).catch(() => {}).then(() => { session.siteAccessAsking = false; });
+}
 
 /**
  * A sink is the narrow surface a chat source talks to. It tags everything with
@@ -162,7 +237,7 @@ function makeSink(session, platform, generation) {
       if (!current()) return;
       conn.auth = null;
       FCM.auth.clear(platform).then(async () => {
-        send(session, { type: 'auth', accounts: await FCM.auth.summary() });
+        send(session, authMessage(await FCM.auth.summary()));
       });
     },
     joined: (chatroomId) => {
@@ -890,7 +965,9 @@ chrome.runtime.onConnect.addListener((port) => {
   async function handleCommand(session, msg) {
     switch (msg.cmd) {
       case 'ping':
-        // Keeps the service worker alive while sockets are open.
+        // Keeps the background alive while sockets are open: a message that
+        // arrives on a port resets its idle timer, in Chrome's service worker
+        // and in Firefox's event page alike.
         send(session, { type: 'pong' });
         break;
 
@@ -939,6 +1016,11 @@ chrome.runtime.onConnect.addListener((port) => {
         });
 
         if (!channel) break;
+
+        // On Firefox, once for the tab: any service the add-on is not allowed
+        // to reach. Only from a page on a channel, which is a page with a panel
+        // for the line to appear in.
+        tellSiteAccess(session);
 
         // A reload is a new page on the same channel. The sockets in here carry
         // on regardless, so nothing re-joins — and history, badges and emotes
@@ -1035,14 +1117,14 @@ chrome.runtime.onConnect.addListener((port) => {
         break;
 
       case 'authStatus':
-        send(session, { type: 'auth', accounts: await FCM.auth.summary() });
+        send(session, authMessage(await FCM.auth.summary()));
         break;
 
       case 'connectAccount': {
         const settings = await FCM.loadSettings();
         try {
           const result = await FCM.auth.connect(msg.platform, settings);
-          send(session, { type: 'auth', accounts: await FCM.auth.summary() });
+          send(session, authMessage(await FCM.auth.summary()));
           send(session, {
             type: 'sys',
             text: `[Account] Connected ${FCM.PLATFORM_META[msg.platform].name}`
@@ -1054,8 +1136,9 @@ chrome.runtime.onConnect.addListener((port) => {
           const explained = FCM.explainAuthFailure(msg.platform, e.message, e.authUrl, {
             redirect: e.usedRedirect,
             detail: e.detail,
+            alreadyExplained: e.alreadyExplained,
           });
-          send(session, { type: 'auth', accounts: await FCM.auth.summary() });
+          send(session, authMessage(await FCM.auth.summary()));
           send(session, { type: 'authError', platform: msg.platform, ...explained });
         }
         break;
@@ -1066,7 +1149,7 @@ chrome.runtime.onConnect.addListener((port) => {
         // And the other way: a socket opened with a token that has just been
         // taken away would go on claiming this viewer can moderate here.
         rejoinForAuth(session, msg.platform);
-        send(session, { type: 'auth', accounts: await FCM.auth.summary() });
+        send(session, authMessage(await FCM.auth.summary()));
         send(session, {
           type: 'sys',
           text: `[Account] Disconnected ${FCM.PLATFORM_META[msg.platform].name}`,
@@ -1251,21 +1334,34 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
  * the tooltip, and only found out when a message came back refused.
  */
 FCM.auth.onCleared = async () => {
-  const accounts = await FCM.auth.summary();
-  sessions.forEach((session) => send(session, { type: 'auth', accounts }));
+  const message = authMessage(await FCM.auth.summary());
+  sessions.forEach((session) => send(session, message));
 };
 
 /**
- * A periodic alarm gives the worker a heartbeat even if a channel goes silent.
+ * A periodic alarm gives the background a heartbeat even if a channel goes
+ * silent.
  *
  * Only while there is a tab to serve. Created unconditionally it went on firing
  * twice a minute for the life of the browser with every Twitch and Kick tab
  * long since closed — nearly three thousand service-worker cold starts a day,
  * each one loading the whole background bundle to find there was nothing to do.
+ *
+ * How often is different in each browser, because what it keeps awake is.
+ * Chrome's service worker is kept alive by traffic on its sockets, and the PING
+ * this sends is traffic, so thirty seconds is plenty there — and no shorter
+ * than Chrome allows a packed extension. Firefox's event page is put away after
+ * thirty seconds without an event, an open socket does not count as one, and
+ * an alarm on the same thirty seconds is a race with that timer rather than a
+ * guard against it. The content script's ping usually wins the race, but a
+ * tab's timers are slowed down once it is in the background. So on Firefox the
+ * alarm comes every fifteen seconds: an alarm firing is an event, and Firefox
+ * sets no shortest period, so the page stays up for as long as a tab is being
+ * served without depending on that tab to keep it up.
  */
 function syncHeartbeat() {
   try {
-    if (sessions.size) chrome.alarms.create('fcm-heartbeat', { periodInMinutes: 0.5 });
+    if (sessions.size) chrome.alarms.create('fcm-heartbeat', { periodInMinutes: FCM.BROWSER === 'firefox' ? 0.25 : 0.5 });
     else chrome.alarms.clear('fcm-heartbeat');
   } catch (e) { /* no alarms available */ }
 }
@@ -1296,5 +1392,11 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 
 // Whether there is a newer release than the one running. Nothing here installs
 // it — an extension cannot replace itself — but the badge and the popup turn
-// "go and look" into two clicks.
+// "go and look" into two clicks. Except in a Firefox build that names an
+// update_url, which Firefox updates by itself: there this schedules nothing,
+// and takes away a check an earlier build left scheduled (see updates.js).
 FCM.watchForUpdates();
+
+// And, on Firefox, whether the add-on is still allowed on Twitch and Kick at
+// all — which, when it is not, the same badge says before anything else.
+FCM.watchSiteAccess();

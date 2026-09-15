@@ -832,6 +832,10 @@
    surface so it reads as a hole in it. */
 .fcm-kbadge-icon { width: 16px; height: 16px; vertical-align: middle; flex-shrink: 0; fill: currentColor; }
 .fcm-kbadge-icon .fcm-kbadge-cut { fill: var(--surface); }
+/* The letters on the OG shield take their font from here rather than from an
+   attribute in render.js, where a var() is not something every browser can be
+   relied on to resolve. */
+.fcm-kbadge-icon-og .fcm-kbadge-cut { font-family: var(--fcm-mono); }
 .fcm-kbadge-icon-moderator, .fcm-kbadge-icon-verified { color: var(--kick-text); }
 .fcm-kbadge-icon-broadcaster { color: var(--badge-host); }
 .fcm-kbadge-icon-vip { color: var(--badge-vip); }

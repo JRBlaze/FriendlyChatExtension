@@ -1,12 +1,28 @@
-// Noticing that a newer release has been published.
+// Noticing that a newer release has been published, in the builds the browser
+// does not keep up to date by itself.
 //
-// This extension is installed from a zip rather than from the Chrome Web Store,
-// so Chrome never checks for updates and never will. Nothing here can install
-// one either — an extension cannot replace itself, and no amount of permissions
-// changes that. What it can do is stop the update being something you only find
-// out about by going and looking: the releases page is checked in the
-// background, the toolbar icon gets a badge when there is something newer, and
-// the popup turns that into the two clicks it actually takes.
+// Neither browser looks for an update to a build installed the way these are.
+// Chrome's is loaded from a zip rather than from the Chrome Web Store, so
+// Chrome never checks for one and never will; a Firefox package built without
+// an update_url gives Firefox nowhere to ask. Nothing here can install an
+// update either — an extension cannot replace itself, and no amount of
+// permissions changes that. What it can do is stop the update being something
+// you only find out about by going and looking: the releases page is checked
+// in the background, the toolbar icon gets a badge when there is something
+// newer, and the popup turns that into the few clicks it actually takes — the
+// zip and the extensions page in Chrome, the signed .xpi in Firefox.
+//
+// A signed Firefox release is the other way round. Its manifest names an
+// update_url (tools/pack.js, UPDATE_URL); Firefox asks that address for newer
+// versions on its own and installs them, and everything above would only
+// repeat it — a second check, spent from GitHub's hourly allowance for the
+// whole address, announcing an update already on its way, and a download
+// button offering to install by hand what arrives without one. So wherever the
+// running manifest names an update_url (FCM.updatedByBrowser) none of it runs:
+// no alarm, no request to GitHub, no dot, nothing reported as available, and
+// the popup says Firefox keeps the add-on up to date instead. A Firefox package
+// built without an update_url gets no updates from Firefox at all, so it is
+// told about releases the way Chrome is, and pointed at the signed .xpi.
 (function (FCM) {
   'use strict';
 
@@ -21,8 +37,9 @@
   const CHECK_INTERVAL_MINUTES = 6 * 60;
   const ALARM = 'fcm-update-check';
   // How long a failed check waits before the next one is allowed. Without it a
-  // worker that restarts often — which is normal, they are killed constantly —
-  // would re-ask on every wake.
+  // background that restarts often — which is normal: Chrome's service worker
+  // and Firefox's event page are both put away constantly — would re-ask on
+  // every wake.
   const RETRY_AFTER_MS = 30 * 60 * 1000;
 
   /**
@@ -60,6 +77,24 @@
     try { return chrome.runtime.getManifest().version; } catch (e) { return '0.0.0'; }
   }
 
+  /**
+   * The file a release carries for this browser, by the exact name it is
+   * published under.
+   *
+   * Chrome's is the zip tools/pack.js builds. Firefox's is the .xpi Mozilla
+   * signs from the Firefox package pack.js builds beside it, because the
+   * signed file is the one Firefox will keep installed; the unsigned package
+   * (`-firefox-unsigned.xpi`) only loads until the browser restarts. Nothing
+   * but Chrome's ends in .zip, and nothing else ever may: Chrome builds from
+   * before names were matched exactly take the first .zip they find
+   * (tools/pack.js, ASSET_SUFFIXES).
+   */
+  FCM.releaseAssetName = function (version) {
+    return FCM.BROWSER === 'firefox'
+      ? `FriendlyChatExtension-v${version}-firefox.xpi`
+      : `FriendlyChatExtension-v${version}.zip`;
+  };
+
   async function readState() {
     try {
       const stored = await chrome.storage.local.get(FCM.STORAGE_KEYS.update);
@@ -73,10 +108,19 @@
     try {
       await chrome.storage.local.set({ [FCM.STORAGE_KEYS.update]: state });
     } catch (e) {
-      // The badge is a convenience; a storage failure must not take the worker
-      // down with it.
+      // The badge is a convenience; a storage failure must not take the
+      // background down with it.
     }
   }
+
+  // Whether Firefox is keeping the add-on off Twitch or Kick, as the last
+  // site-access check found (see FCM.showSiteAccess below), and whether there
+  // has been a check yet. Never set on Chrome, which does not check.
+  let sitesBlocked = false;
+  let sitesKnown = false;
+
+  // The paint in progress, so the next one waits for it.
+  let painting = Promise.resolve();
 
   /**
    * Puts the badge on the toolbar icon, or takes it off.
@@ -84,14 +128,43 @@
    * A dot rather than a version number: the icon is 16 pixels wide and "1.11.0"
    * in it is a smear. What the badge has to say is "there is something to look
    * at", and the popup says the rest.
+   *
+   * Except while Firefox is keeping the add-on off Twitch or Kick. Then the
+   * badge says that instead, whatever it would have said about a release: an
+   * update is something to look at, but an overlay that cannot appear at all is
+   * the thing to look at first. The dot comes back once the site is allowed.
+   *
+   * One paint at a time. A paint is three calls with a wait after each, and two
+   * that overlapped — the release check's and the site check's both run as the
+   * background starts — could leave one's text on the other's colours.
+   *
+   * Never the dot on a build Firefox updates by itself, whatever the caller
+   * asked for: an update that installs without anyone doing anything is not
+   * something to look at. The site-access "!" is still painted there, since
+   * Firefox does nothing about that.
    */
-  async function paintBadge(on) {
+  function paintBadge(on) {
+    const dot = !!on && !FCM.updatedByBrowser();
+    painting = painting.then(() => paintNow(dot));
+    return painting;
+  }
+
+  async function paintNow(on) {
     try {
+      if (sitesBlocked) {
+        await chrome.action.setBadgeText({ text: '!' });
+        await chrome.action.setBadgeBackgroundColor({ color: '#ffb400' });
+        if (chrome.action.setBadgeTextColor) {
+          await chrome.action.setBadgeTextColor({ color: '#000000' });
+        }
+        return;
+      }
       await chrome.action.setBadgeText({ text: on ? '●' : '' });
       if (!on) return;
       await chrome.action.setBadgeBackgroundColor({ color: '#7c6bff' });
-      // Only where it is supported: setBadgeTextColor arrived after the minimum
-      // Chrome this extension declares, so it must not be the call that throws.
+      // Only where it is supported: setBadgeTextColor came to Chrome well after
+      // the other badge calls, and a browser without it must not be where this
+      // throws.
       if (chrome.action.setBadgeTextColor) {
         await chrome.action.setBadgeTextColor({ color: '#ffffff' });
       }
@@ -108,10 +181,26 @@
    * user chose, and making them wait on a network call to see their own
    * settings would be a worse trade than showing an answer up to six hours old.
    *
+   * On a build Firefox updates by itself there is never anything available,
+   * whatever an earlier build without an update_url left stored: a release
+   * Firefox has not installed yet is on its way, not something to go and get.
+   * Storage is not even read.
+   *
    * @returns {Promise<{available: boolean, version: string, url: string,
    *   downloadUrl: string, notes: string, installed: string}>}
    */
   FCM.updateStatus = async function () {
+    if (FCM.updatedByBrowser()) {
+      return {
+        available: false,
+        version: '',
+        installed: installedVersion(),
+        url: FCM.GITHUB_RELEASES_URL,
+        downloadUrl: '',
+        notes: '',
+        checkedAt: 0,
+      };
+    }
     const state = await readState();
     const installed = installedVersion();
     const latest = state.latest || '';
@@ -151,9 +240,14 @@
    * that stops working because the check did not happen, so a rate limit, an
    * outage or a machine that is offline should cost nothing and say nothing.
    *
+   * Not asked at all on a build Firefox updates by itself, where Firefox has
+   * its own address to ask and GitHub's answer could change nothing. What comes
+   * back says no check was made, which is true, and that nothing is available.
+   *
    * @param {boolean} [force] skip the retry delay, for a check the user asked for
    */
   FCM.checkForUpdate = async function (force) {
+    if (FCM.updatedByBrowser()) return { ...(await FCM.updateStatus()), checked: false };
     const state = await readState();
     const now = Date.now();
     if (!force && state.failedAt && now - state.failedAt < RETRY_AFTER_MS) {
@@ -175,10 +269,17 @@
 
     const latest = String(data.tag_name).replace(/^v/i, '');
     // The release asset, so the popup can offer the file itself rather than a
-    // page with the file somewhere on it. Matched by name because a release
-    // carries more than one asset once source archives are counted.
+    // page with the file somewhere on it.
+    //
+    // Matched by its exact name, and the name is this browser's. A release
+    // carries a package for each browser, and "the first .zip" was whichever
+    // of them GitHub happened to list first: Firefox's archive offered to
+    // Chrome as the update to install, or Chrome's to Firefox. A release
+    // without this browser's file gets the release page instead, which is a
+    // step further from the file but never the wrong one.
+    const wanted = FCM.releaseAssetName(latest);
     const asset = (Array.isArray(data.assets) ? data.assets : [])
-      .find((a) => a && typeof a.name === 'string' && /\.zip$/i.test(a.name));
+      .find((a) => a && a.name === wanted);
 
     const next = {
       latest,
@@ -201,21 +302,40 @@
   /**
    * Starts the periodic check.
    *
-   * The alarm survives the worker being killed, which a timer would not — and
-   * the worker is killed constantly. The check on start covers a browser that
-   * has been closed for longer than the interval.
+   * The alarm survives the background being put away, which a timer would not
+   * — and Chrome's service worker and Firefox's event page are both put away
+   * constantly. The check on start covers a browser that has been closed for
+   * longer than the interval.
+   *
+   * None of it on a build Firefox updates by itself. Nothing is scheduled
+   * there, and a check that is already scheduled — left by a build of the
+   * add-on that had no update_url, since alarms outlive the background that
+   * made them — is taken away, rather than left waking the background every
+   * six hours to find it has nothing to do. The badge needs no repaint from
+   * here either: the status there is never available, so there is no dot to
+   * put up, and the site-access check paints its own.
    */
   FCM.watchForUpdates = function () {
+    if (FCM.updatedByBrowser()) {
+      try {
+        Promise.resolve(chrome.alarms.clear(ALARM)).catch(() => {});
+      } catch (e) {
+        // No alarms available, so none left behind to take away.
+      }
+      return;
+    }
     try {
       // Only when there is not one already. `create` replaces an alarm of the
-      // same name, and this runs on every worker start — which is constantly —
-      // so re-arming pushed the check one minute into a future that kept being
-      // moved. On a busy machine it never arrived at all, and a new release was
-      // never noticed; on a quieter one every restart bought another call
-      // against GitHub's hourly budget for the whole address.
+      // same name, and this runs every time the background starts — which is
+      // constantly — so re-arming pushed the check one minute into a future
+      // that kept being moved. On a busy machine it never arrived at all, and a
+      // new release was never noticed; on a quieter one every restart bought
+      // another call against GitHub's hourly budget for the whole address.
       //
-      // Alarms outlive the worker and the browser, and Chrome fires an overdue
-      // one shortly after start, so nothing is lost by leaving it alone.
+      // Alarms outlive the background. Chrome keeps them through a browser
+      // restart as well, and fires an overdue one shortly after start; a
+      // browser that has not kept one finds none here, and is given a new one a
+      // minute out. Either way nothing is lost by leaving one that exists alone.
       Promise.resolve(chrome.alarms.get(ALARM)).then((existing) => {
         if (existing) return;
         chrome.alarms.create(ALARM, {
@@ -228,9 +348,60 @@
     } catch (e) {
       // No alarms available; the check on wake below still runs.
     }
-    // Repaint from what is already known, so the badge survives the worker
-    // being collected without waiting on the network to come back.
+    // Repaint from what is already known, so the badge survives the background
+    // being put away without waiting on the network to come back.
     FCM.updateStatus().then((status) => paintBadge(status.available)).catch(() => {});
+  };
+
+  // ── The badge's other job: site access, on Firefox ──────────────────────────
+  //
+  // Firefox lets a person take Twitch or Kick back from the add-on in
+  // about:addons, and an update that adds a site is installed without it. The
+  // overlay is simply not there afterwards, and with no overlay there is no
+  // panel to explain its own absence. The toolbar icon is the one place left
+  // that can, so the badge says so, and the popup underneath it has the button
+  // that puts it right. The other services the add-on reaches are told about
+  // in the overlay instead (service-worker.js, tellSiteAccess), where what goes
+  // missing without them shows.
+
+  /**
+   * Takes what a site-access check found and repaints the badge from it.
+   *
+   * Nothing is repainted when the answer is the one already showing, since the
+   * background asks every time it starts and every time a tab first says hello.
+   *
+   * @param {{sitesMissing?: string[]}} access what FCM.hostAccess() answered
+   */
+  FCM.showSiteAccess = async function (access) {
+    if (FCM.BROWSER !== 'firefox') return;
+    const blocked = !!(access && Array.isArray(access.sitesMissing) && access.sitesMissing.length);
+    if (sitesKnown && blocked === sitesBlocked) return;
+    sitesKnown = true;
+    sitesBlocked = blocked;
+    try {
+      const status = await FCM.updateStatus();
+      await paintBadge(status.available);
+    } catch (e) { /* the badge is a convenience */ }
+  };
+
+  /**
+   * Checks site access as the background starts, and again whenever Firefox
+   * grants or takes back a permission, so the badge follows a site allowed from
+   * the popup or the options page, or one taken back in about:addons, without
+   * waiting for the next start. Registered at the top level, as an event page's
+   * listeners have to be. Nothing on Chrome.
+   */
+  FCM.watchSiteAccess = function () {
+    if (FCM.BROWSER !== 'firefox') return;
+    const check = () => FCM.hostAccess().then(FCM.showSiteAccess).catch(() => {});
+    try {
+      chrome.permissions.onAdded.addListener(check);
+      chrome.permissions.onRemoved.addListener(check);
+    } catch (e) {
+      // No permission events to follow. Every start still checks, and an event
+      // page starts often.
+    }
+    check();
   };
 
   FCM.isUpdateAlarm = (name) => name === ALARM;

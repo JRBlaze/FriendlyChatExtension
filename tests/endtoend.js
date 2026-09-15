@@ -8,6 +8,7 @@
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const { loadBackground, backgroundManifest, extensionOrigin } = require('./load-background.js');
 
 const ROOT = path.join(__dirname, '..');
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -79,7 +80,14 @@ function bootPair(startPath, opts = {}) {
   });
 
   // ── Worker ────────────────────────────────────────────────────────────────
+  //
+  // Booted the Chrome way unless `opts.loadPath` is 'scripts', which runs the
+  // same files as Firefox's event page does; `opts.browser` says which browser
+  // the extension API should claim to be.
   const workerListeners = {};
+  const workerBrowser = opts.browser === 'firefox' ? 'firefox' : 'chrome';
+  const workerManifest = backgroundManifest(opts);
+  const workerAlarms = new Map();
   const workerSandbox = {
     console, URL, URLSearchParams, TextEncoder,
     WebSocket: FakeWebSocket,
@@ -112,27 +120,23 @@ function bootPair(startPath, opts = {}) {
         onConnect: { addListener: (fn) => { workerListeners.connect = fn; } },
         onMessage: { addListener: () => {} },
         lastError: null,
+        getURL: (p = '') => `${extensionOrigin(workerBrowser)}/${String(p).replace(/^\//, '')}`,
+        getManifest: () => JSON.parse(JSON.stringify(workerManifest)),
       },
       tabs: { onRemoved: { addListener: () => {} } },
-      alarms: { create: () => {}, onAlarm: { addListener: () => {} } },
+      // Kept, and answerable, so the heartbeat and the update check each find
+      // the alarm they look for rather than an exception where `get` should be.
+      alarms: {
+        create: (name, info) => { workerAlarms.set(name, info); },
+        clear: async (name) => workerAlarms.delete(name),
+        get: async (name) => workerAlarms.get(name),
+        onAlarm: { addListener: () => {} },
+      },
       storage: { local: storageApi('local'), sync: storageApi('sync') },
       identity: { getRedirectURL: () => 'https://ext.chromiumapp.org/' },
     },
-    importScripts: (...paths) => {
-      paths.forEach((rel) => {
-        const file = String(rel).replace(/^\//, '');
-        vm.runInContext(fs.readFileSync(path.join(ROOT, file), 'utf8'),
-          workerSandbox, { filename: file });
-      });
-    },
   };
-  workerSandbox.self = workerSandbox;
-  workerSandbox.globalThis = workerSandbox;
-  vm.createContext(workerSandbox);
-  vm.runInContext(
-    fs.readFileSync(path.join(ROOT, 'src/background/service-worker.js'), 'utf8'),
-    workerSandbox, { filename: 'service-worker.js' }
-  );
+  loadBackground(workerSandbox, { loadPath: opts.loadPath, manifest: workerManifest });
 
   // ── One port, both ends, delivering asynchronously ────────────────────────
   const portLog = [];

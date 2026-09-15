@@ -1,21 +1,29 @@
 # Friendly Chat Extension
 
-A Chrome extension that puts [Friendly Chat](https://github.com/JRBlaze/FriendlyChat)'s merged
-chat feed directly on the page you are already watching.
+A Chrome and Firefox extension that puts [Friendly Chat](https://github.com/JRBlaze/FriendlyChat)'s
+merged chat feed directly on the page you are already watching.
 
 Open a Twitch channel and the merged chat overlay appears over Twitch's own chat. If that
 streamer is also live on Kick, the overlay says so and offers to add the Kick chat to the same
 feed. Open a Kick channel and it works the other way round.
 
 ![Platform](https://img.shields.io/badge/Chrome-MV3-blue)
+![Firefox](https://img.shields.io/badge/Firefox-140%2B-orange)
 [![Version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FJRBlaze%2FFriendlyChatExtension%2Fmain%2Fmanifest.json&query=%24.version&label=version&color=green)](../../releases/latest)
 
 ## Install
 
+Both browsers run the same extension, built from the same source, and every release carries a
+package for each. They are installed differently, because the two browsers trust different
+things: Chrome loads the extension from a folder you unzip, and Firefox installs a copy Mozilla
+has signed. Chrome is first below; Firefox is [further down](#install-in-firefox).
+
+### Install in Chrome
+
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.20.1.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.21.0.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and an extra folder named `FriendlyChatExtension-main`
@@ -39,6 +47,49 @@ That is the whole install. Now open any channel — for example `twitch.tv/somec
 
 **Worth doing:** click the jigsaw-piece icon in Chrome's toolbar and pin *Friendly Chat Extension*,
 so its button is always visible for quick settings.
+
+### Install in Firefox
+
+You need **Firefox 140 or newer, on a desktop computer** — Windows, macOS or Linux. That includes
+Firefox ESR 140. Firefox for Android is not supported: the sign-in API the extension connects
+accounts with does not exist there.
+
+**[⬇ Download the latest release](../../releases/latest)** — grab
+`FriendlyChatExtension-v1.21.0-firefox.xpi` from the Assets list. That file is the add-on, signed
+by Mozilla, and there is nothing to unzip.
+
+1. **Open the file with Firefox.** Click it in Firefox's downloads list, or drag the file from
+   wherever it was saved onto any Firefox window. (Firefox's own *Add-ons and themes* page does
+   the same from its gear menu → *Install Add-on From File…*.)
+2. **Confirm the prompt.** Firefox names the add-on, the sites it asks to use — Twitch, Kick, and
+   the emote, history and sign-in services the feed is built from — and the kinds of data it sends
+   elsewhere to do its job, which are your sign-in to Kick (to the proxy that finishes it), the
+   messages you type (to Twitch and Kick) and the channel you are watching (to the emote and
+   history services). Press **Add**.
+3. **Pin it.** Firefox puts an extension's button in the Extensions menu — the jigsaw-piece icon
+   in the toolbar — until it is pinned. Open that menu, press the gear beside *Friendly Chat
+   Extension* and choose *Pin to Toolbar*.
+
+That is the whole install, and **it then updates itself automatically.** Every release tells
+Firefox where the next version is, and Firefox fetches and installs it on its own schedule, with
+your settings and sign-ins kept — there is no file to download a second time. See
+[In Firefox](#in-firefox), under *Updating or removing it*.
+
+Now open any channel, as in Chrome. A Twitch or Kick tab that was already open when the add-on
+went in needs reloading first.
+
+The add-on is not on addons.mozilla.org, and will not be: Mozilla signs it without listing it,
+and this repository's releases are the only place it is published.
+
+**Trying an unsigned build.** Each release also carries
+`FriendlyChatExtension-v1.21.0-firefox-unsigned.xpi`, the same package before Mozilla signed it.
+Opened the ordinary way, release Firefox refuses it as unverified; it loads only as a temporary
+add-on: open `about:debugging`, choose *This Firefox*, press *Load Temporary Add-on…* and pick the
+file itself, without unpacking it. A temporary add-on is removed when Firefox restarts, and its
+settings go with it, and Firefox never updates it — its popup says *Loaded temporarily, so Firefox
+does not update it*, and nothing announces a newer release — so it is for trying a build rather
+than for using one. Install the signed `.xpi` for that. (It is not a `.zip`, though it is one
+inside, because Chrome builds up to v1.20.1 take the first `.zip` on a release as their update.)
 
 ## What it does
 
@@ -78,7 +129,8 @@ so its button is always visible for quick settings.
   the page when you close it. It is *moved*, not copied: the same panel, the same connections,
   the same composer still typing into the page's own chat box when that is how a message has to
   go. Which means Cheers and anything else that needs the site's own controls keep working while
-  it is out there. See [Popping the panel out](#popping-the-panel-out).
+  it is out there. Chrome, and Firefox 151 or newer on the desktop; where the browser cannot do
+  it, the button is not shown. See [Popping the panel out](#popping-the-panel-out).
 - **Where a message goes is remembered per channel.** Pick *Kick only* on one stream and it stays
   Kick only on that stream, next time too — without changing anything on the other streams you
   have open in other tabs. See [Which chats a message goes to](#which-chats-a-message-goes-to).
@@ -183,6 +235,8 @@ so its button is always visible for quick settings.
   the toolbar icon gets a dot when there is something newer; the popup turns that into the file
   and the page to drop it on. Nothing installs itself — no extension outside the Web Store can —
   but the steps that are left are two clicks rather than a trip to GitHub you had to think of.
+  That is Chrome. In Firefox the signed add-on is updated by Firefox itself, so none of it appears
+  there, and the popup says *Kept up to date by Firefox* instead.
 - **Follows the site's own theme.** Twitch or Kick in dark mode gets a dark overlay, light mode
   gets a light one, and it switches the moment you change it on the site.
 - **Several streams at once.** Each tab keeps its own sockets, channels and feed.
@@ -195,10 +249,19 @@ so its button is always visible for quick settings.
 | The card loaded but no overlay on a channel | Reload the Twitch or Kick tab. The extension only attaches to pages opened after it was installed. |
 | No overlay, and you are on a directory or settings page | The overlay only appears on an actual channel page, not on browse, search or settings pages. |
 | Your own Kick channel opens on Home/About/Videos instead of your stream | That is Kick's own layout for a channel's owner. The overlay presses its *Watch now* for you on arrival; if you would rather it did not, turn off *Open the stream when Kick shows the channel's profile* in settings. |
-| The pop-out button does nothing | Picture-in-picture windows need Chrome 116 or newer, and Chrome refuses a second one while the first is open. Close the existing pop-out and try again. |
+| The pop-out button does nothing | A pop-out is probably already open, perhaps behind another window — Chrome and Firefox each allow only one at a time. Close it and try again. Where the browser cannot pop the panel out at all, the button is not shown in the first place (see the Firefox row below). |
 | Nothing at all after a Chrome restart | Developer-mode extensions stay installed, but Chrome may prompt you to keep them. Re-enable it on `chrome://extensions`. |
+| Firefox: the add-on is gone after a restart, settings and all | It was loaded as a temporary add-on from `about:debugging`, and Firefox removes those every time it closes. Install the signed `.xpi` instead — see [Install in Firefox](#install-in-firefox). |
+| Firefox: no panel on Twitch or Kick, and an amber **!** on the toolbar icon | Firefox has been told not to let the add-on use that site — any site can be taken back from `about:addons` or the Extensions menu, at any time. Open the add-on's popup and press **Allow access**, then reload the Twitch or Kick tab: Firefox does not add the panel to a page that was loaded before the site was allowed. |
+| Firefox: no pop-out button in the title bar | The pop-out needs Document Picture-in-Picture, which Firefox has from version 151, on the desktop. On anything older — ESR 140 included — the button is left out rather than offered and refused. |
+| Firefox: the Twitch sign-in window sits on a page that will not load | The Twitch application does not list Firefox's redirect URL, so Twitch sent the sign-in somewhere Firefox never picks up. Close the window; the overlay's *Settings → Accounts* then shows the exact URL, and the Twitch app it signs in against has to list it. For the shared app that is the maintainer's to add; if you put your own client ID in the options page, add it to your own app. See [Connecting accounts](#connecting-accounts). |
 
 ### Updating or removing it
+
+The two browsers could hardly be further apart here. Chrome never updates this extension and
+Firefox always does, so each has a half of its own.
+
+#### In Chrome
 
 Chrome only updates extensions it installed itself, and it did not install this one. So the
 extension watches for you: it asks GitHub for the latest release every six hours, and when there
@@ -221,6 +284,42 @@ changes that — what this removes is having to remember to go and look.
 You can move or rename the folder freely. `manifest.json` pins the extension's ID with a `key`
 field, so it stays `bbjieacidkcngofgddlfipiajcchdaik` wherever it lives — which is what keeps an OAuth
 redirect registration valid. See [Connecting accounts](#connecting-accounts).
+
+#### In Firefox
+
+The signed add-on keeps itself up to date, and there is nothing to do. Its manifest names an update
+address —
+`https://github.com/JRBlaze/FriendlyChatExtension/releases/latest/download/updates.json` — and
+Firefox asks it for a newer version on its own schedule, then downloads that version's signed
+`.xpi` from the same release and installs it over this one. Settings, favourites and sign-ins
+carry across, because they belong to the add-on's ID, and an update does not change it. To ask
+now rather than wait, open `about:addons` and choose *Check for Updates* from the gear menu.
+
+So everything the Chrome half describes is switched off in a signed Firefox build: no request to
+GitHub of the extension's own, no dot on the icon, no strip in the overlay and no update card in
+the popup, whose footer says *Kept up to date by Firefox* where *Check for updates* would be. They
+could only announce an update already on its way. The Firefox package does not even ask for access
+to `api.github.com`, which only that check used, so it is not among the sites Firefox lists at
+install.
+
+One thing an update does not bring with it is a site the new version has started asking for.
+Firefox installs the update without it and asks nobody, so the add-on asks instead: the popup
+shows a *Site access* card, and the options page a *Site access* section, naming what is missing.
+
+- **To turn it off temporarily**, use its switch on `about:addons`.
+- **To remove it**, choose *Remove* from its menu on `about:addons`. Firefox deletes the add-on's
+  storage when it goes, so export your settings first if you might want them back — see
+  [Backing your settings up](#backing-your-settings-up).
+- **A temporary add-on** loaded from `about:debugging` is not updated at all, and is removed when
+  Firefox restarts. Its popup says *Loaded temporarily, so Firefox does not update it* in place of
+  *Kept up to date by Firefox*, and nothing tells it about a newer release.
+
+The add-on's ID is `friendly-chat-extension@jrblaze.org`, written into the Firefox package's
+manifest by `tools/pack.js` in place of Chrome's `key`. It is how Firefox knows that a new version
+is this add-on, and Firefox works the add-on's sign-in redirect URL out from it —
+`https://91e887612fc28278646a28c0b1f4cceded6586a2.extensions.allizom.org/`, the same on every
+machine and every install, temporary ones included. Neither will ever change: a new ID would be a
+different add-on, with a redirect nobody has registered.
 
 ## How the cross-platform match works
 
@@ -714,8 +813,52 @@ own Twitch application because Twitch refused the sign-in, put its id in the ext
 page and it wins outright — the proxy is not asked at all.
 
 Tokens live in `chrome.storage.local`, never in `storage.sync`, so they are not replicated across
-your browsers. Kick tokens refresh silently; a Twitch implicit token cannot be refreshed, so when
-it expires the overlay says so and asks you to reconnect.
+your browsers — in Chrome and Firefox alike. Kick tokens refresh silently; a Twitch implicit token
+cannot be refreshed, so when it expires the overlay says so and asks you to reconnect.
+
+### Where each browser's sign-in comes back to
+
+A sign-in window ends by sending the browser to a redirect URL, and each browser only picks up
+the one it made for the extension itself — which is different in Chrome and Firefox, because
+Chrome's comes from the extension's ID and Firefox's from a hash of the add-on's:
+
+| Browser | Redirect URL |
+| --- | --- |
+| Chrome | `https://bbjieacidkcngofgddlfipiajcchdaik.chromiumapp.org/` |
+| Firefox | `https://91e887612fc28278646a28c0b1f4cceded6586a2.extensions.allizom.org/` |
+
+**Twitch** sends the sign-in straight back to that address, so the Twitch application lists both
+of them — one application can hold several redirect URLs. The overlay's *Settings → Accounts*
+shows the address for the browser it is running in, and says so in Firefox, because it is not the
+one a Chrome user registered. `node tools/pack.js` prints the Firefox one whenever it builds a
+Firefox package. If you registered your own Twitch application, it needs the address for each
+browser you sign in from.
+
+In Firefox a Twitch redirect nobody registered does not fail with an error. The sign-in window
+simply sits on a page that will not load, and all Firefox ever reports is that the window was
+closed. So in Firefox, a closed Twitch sign-in is answered with the URL to register, alongside
+saying it was closed — the one thing actually known.
+
+**Kick** has three ways back, under *Where Kick returns after sign-in* in the options page, and
+Firefox has two of them:
+
+- **Reuse the desktop app's URL** (the default) works the same in both. A tab opens on Kick's
+  sign-in, Kick sends it to `http://localhost:8080/friendly-chat.html`, and the extension reads
+  the code off the tab's address; nothing has to be listening there. Firefox only tells an add-on
+  a tab's address when the add-on is allowed that site, though, so this needs *localhost* allowed
+  under *Site access*. Taken back, the sign-in says so straight away instead of waiting for an
+  address it will never be shown.
+- **Via the proxy worker** works in Firefox too, with a proxy recent enough. Firefox will not open
+  a sign-in window for a link whose `redirect_uri` is not the add-on's own address, and the proxy's
+  `/kick-callback` is not, so in Firefox the sign-in starts at the proxy's `/kick-authorize`
+  instead, which adds Kick's client id and the callback itself. A proxy deployed before that
+  existed says nothing about it in `/kick-config`, and the sign-in then asks for it to be
+  redeployed rather than failing somewhere less clear. See [Deploying the proxy](#deploying-the-proxy).
+- **Straight back to the extension** is not offered in Firefox, and shows as *(not in Firefox)*.
+  It needs the browser's own address registered with the Kick application, Firefox's is not
+  Chrome's, and Kick's documentation describes only one redirect per application. A backup from
+  Chrome that chose it signs in the default way in Firefox, and the choice is left as it was, so
+  the same file still means the same thing back in Chrome.
 
 ## Backing your settings up
 
@@ -731,6 +874,13 @@ difference between those two is invisible while you are doing it and total after
 in an extension can prevent the first one. `storage.sync` covers some of it, but only for
 somebody signed into Chrome with sync switched on.
 
+Firefox is kinder and stricter by turns. A signed install is updated in place, under an ID that
+never changes, so updating never touches storage at all. But removing the add-on deletes it, and
+a temporary add-on loaded from `about:debugging` loses it every time Firefox restarts, which the
+options page says there. `storage.sync` in Firefox only syncs for somebody signed in to a Mozilla
+account with *Add-ons* ticked among the things Sync keeps; for everyone else it stays on the one
+computer, and the file is the only copy that can leave it.
+
 **Account sign-ins are not in the file.** Tokens are per-device credentials — it is why they live
 in `storage.local` and never in `storage.sync` — and a file you might mail yourself is
 not where one belongs. Importing never signs you in anywhere.
@@ -745,7 +895,10 @@ does.
 
 ## Where the data comes from
 
-Nothing is proxied through a server, and no API key or sign-in is involved.
+Chat, history and emotes come straight from Twitch, Kick and the emote services, with no server of
+ours in between. Signing in is the one exception: which application each platform signs in against,
+and Kick's token exchange and refresh, go through the Cloudflare Worker — see
+[Connecting accounts](#connecting-accounts).
 
 | What | Source |
 | --- | --- |
@@ -758,6 +911,9 @@ Nothing is proxied through a server, and no API key or sign-in is involved.
 | Sending, when an account is connected | `api.twitch.tv/helix/chat/messages`, `api.kick.com/public/v1/chat` |
 | Cheermotes, so a Cheer draws as one | `api.twitch.tv/helix/bits/cheermotes`, on join |
 | Which application to sign in against | the Cloudflare Worker's `/twitch-config` and `/kick-config`, at sign-in only |
+| Kick sign-in: the token exchange and each refresh | the Cloudflare Worker's `/kick-token` and `/kick-refresh`, which hold Kick's client secret — plus `/kick-authorize` and `/kick-callback` when Kick returns through the proxy |
+| Whether a newer release exists (Chrome) | `api.github.com`, every six hours |
+| Updates to the signed Firefox add-on | fetched by Firefox itself from `github.com/JRBlaze/FriendlyChatExtension/releases/latest/download/updates.json` |
 
 Reading chat is anonymous — no account, no API key. Requests to Kick are made with
 `credentials: 'omit'` so your Kick cookies are never attached. What gets stored is your settings,
@@ -767,17 +923,21 @@ token in `chrome.storage.local`.
 ## Architecture
 
 ```
-manifest.json
+manifest.json      Chrome's manifest; Firefox's is generated from it by tools/pack.js
 src/
-  shared/          loaded by BOTH the service worker (importScripts) and the content script
-    namespace.js     the single FCM global everything hangs off
+  shared/          loaded by BOTH the background and the content script
+    namespace.js     the single FCM global everything hangs off, and FCM.BROWSER
     constants.js     endpoints, limits, defaults, reserved URL segments
     util.js          escaping, settings storage, system-message formatting
     irc.js           Twitch IRCv3 line/tag/emote-position parsing
     kick-events.js   Pusher event names -> readable summaries
     emote-parsers.js Kick emote payloads, 7TV url building
-  background/      everything that touches the network
-    service-worker.js  per-tab sessions, the port protocol, live polling
+  background/      everything that touches the network: Chrome's service worker,
+                   Firefox's event page
+    service-worker.js  per-tab sessions, the port protocol, live polling; in
+                       Chrome it loads everything else with importScripts, and
+                       that call's list is what Firefox's background.scripts
+                       is generated from
     twitch-source.js   IRC socket, reconnect/backoff, history
     kick-source.js     Pusher socket, reconnect/backoff, history
     discovery.js       platform lookups, badges, counterpart matching
@@ -787,6 +947,8 @@ src/
     profile.js         who a chatter is: join date, follow date, sub length
     emote-cache.js     last visit's emote lists, so a channel you have been
                        in before has them on arrival
+    updates.js         the release check and the toolbar badge; off in a
+                       Firefox build that Firefox updates itself
   content/         everything that touches the page
     boot.js          channel detection, SPA navigation, the port
     overlay.js       the shadow-DOM panel, prompt, targets and settings sheet
@@ -801,15 +963,52 @@ src/
     sites.js         per-site selectors, the native composer and the
                      bits/points controls
     overlay.css
-  options/ popup/
+  options/ popup/  including Site access, which only Firefox ever shows
+tools/
+  pack.js          builds the packages: --target chrome|firefox|all, and
+                   --unpacked <dir> for a folder to load straight from disk
+  release.js       what a release run does and in what order: check the
+                   packages, sign the Firefox one, draft, upload, publish
 tests/
   run.js           offline test suite
-  background.js    boots the real service worker with the platforms stubbed
-  harness.html     the overlay against a mock channel page
+  background.js    boots the real background with the platforms stubbed,
+                   either the way Chrome loads it or the way Firefox does
+  load-background.js  the two ways: importScripts in a service worker, or
+                   Firefox's background.scripts one after another in a window
+  endtoend.js      the real content script against the real background
+  harness.html     the overlay against a mock channel page (?browser=firefox)
+  options-harness.html  the real options page over stubbed storage
+                   (?browser=firefox&grants=...)
   contrast.js      WCAG AA auditor, run from the harness or either page
 cloudflare-worker.js   the token-exchange proxy and client-id source, deployed separately
 wrangler.toml
+.github/workflows/
+  tests.yml        the suite, on every pull request and push to main
+  release.yml      runs tools/release.js when a v* tag is pushed
 ```
+
+### One background, loaded two ways
+
+Chrome runs the background as a service worker. `service-worker.js` is the one file its manifest
+names, and it pulls in everything else with a single `importScripts` call, listing the shared
+modules and the background ones in the order they have to run.
+
+Firefox runs no extension service workers. Its background is an *event page*: a window, with no
+`importScripts` to call, loading each file its manifest lists under `background.scripts` in turn.
+That list is not written anywhere by hand. `tools/pack.js` reads it out of the `importScripts`
+call itself and puts `service-worker.js` last, so the two browsers cannot drift into loading
+different files, or the same files in a different order — and the call is guarded with
+`typeof importScripts === 'function'`, so that by the time Firefox reaches `service-worker.js`
+the files it would import are already loaded. `manifest.json` stays exactly Chrome's; the Firefox
+package carries a manifest generated from it, and only that file differs between the two.
+
+Being a window is not free. Every background file's top-level names share a scope with the
+window's own, so none of them may be called `window`, `document`, `location` or `top`, and the
+`firefox` suite checks that no two files declare the same name either.
+
+Which browser the code is in is read from the extension's own address, `moz-extension:` in
+Firefox, and is `FCM.BROWSER`. It is never guessed from whether a `browser` global exists: Chrome
+has had one of those too, since 148.
 
 ### Reading redemptions off the page
 
@@ -873,6 +1072,17 @@ socket opened from a `twitch.tv` tab is a cross-origin connection that only the 
 permissions can make, and running there also puts the connections out of reach of the host page's
 `connect-src` policy. The content script holds one long-lived `chrome.runtime` port, pings it
 every 20 seconds to keep the worker alive, and re-issues its joins if the worker is ever recycled.
+
+The same is true of Firefox's event page, which is where the sockets live there — and staying
+alive is harder for it. Firefox puts an event page away after thirty seconds without an *event*,
+and an open WebSocket is not one, however busy it is; a message arriving on the port is, which is
+what the ping is for, but a background tab's timers are slowed down, so the ping cannot be the
+only thing holding the page up. So while any tab has a session, a heartbeat alarm fires as well:
+every thirty seconds in Chrome, and every fifteen in Firefox. An alarm firing is an event, Firefox
+sets no shortest period for one, and thirty seconds there would be a race with the very timer it
+is meant to beat. With no sessions left the alarm is cleared and the page is allowed to go. If
+Firefox puts it away anyway, the port closes and the content script reconnects and replays its
+joins — the same recovery a recycled Chrome worker gets.
 
 ### How the overlay is sized
 
@@ -959,6 +1169,12 @@ draw one, nothing is found, nothing is pressed, and nothing appears in the panel
 The pop-out button in the title bar moves the panel into a
 [document picture-in-picture](https://developer.chrome.com/docs/web-platform/document-picture-in-picture)
 window, and moves it back when that window closes.
+
+Not every browser this runs in can open one. Chrome has had document picture-in-picture since 116,
+which is this extension's floor, so every Chrome that can run the extension can pop it out.
+Firefox has it from 151, and only on the desktop — not on ESR 140, which the add-on still supports.
+Where the browser does not have it, the button is not drawn at all: a button whose only possible
+answer is an apology is not worth the room it takes in the title bar.
 
 *Moves*, not copies, and everything else follows from that. The content script never leaves the
 tab, so the port to the background worker, the feed, the emote picker and the bridge that reads
@@ -1151,7 +1367,7 @@ DOM, so nothing in the page's layout or stacking contexts has to be fought with.
 node tests/run.js
 ```
 
-1400+ assertions, no network. It drives the real parsers with real payload shapes: IRC lines with
+2600+ assertions, no network. It drives the real parsers with real payload shapes: IRC lines with
 tags and emote positions, Kick Pusher events, emote sets from every provider, and the
 counterpart matcher against stubbed platform APIs — including the cases that matter most, like a
 manual mapping beating a same-name guess and a failing emote provider not taking the others down.
@@ -1160,7 +1376,11 @@ manual mapping beating a same-name guess and a failing emote provider not taking
 stubbed, then drives it exactly as a content script does — connect a port, say hello, join
 channels, push raw IRC and Pusher frames in, and read back what it posts to the tab. That covers
 the handshake order, ping/pong, reconnect backoff, moderation permissions, session teardown and
-multi-tab isolation.
+multi-tab isolation. It boots the background either way a browser does, through
+`tests/load-background.js`: as Chrome's service worker with `importScripts`, or, given
+`loadPath: 'scripts'` and `browser: 'firefox'`, as Firefox's event page loading
+`background.scripts` in order with no `importScripts` to call. `tests/endtoend.js` joins the real
+content script to the real background the same two ways.
 
 Two suites exist specifically to break things rather than to confirm they work:
 
@@ -1178,7 +1398,33 @@ Run one suite with `node tests/run.js <name>` (
 `sites`, `discovery`, `twitchEmotes`, `emotes`, `theme`, `native`, `auth`, `send`,
 `states`, `resilience`, `errors`, `feed`, `navigation`, `moderation`, `channelswitch`,
 `endtoend`, `reload`, `linking`, `multitab`, `background`, `pack`, `rowheight`, `gifs`,
-`giferrand`, `cheersend`, `replymention`, `giftab`).
+`giferrand`, `cheersend`, `replymention`, `giftab`, `firefox`, `release`, `popup`, `options`,
+`emoteinput`).
+
+Five of those are about there being two browsers:
+
+- **`firefox`** is where the Firefox way of doing things is shown to arrive at the same place: the
+  manifest `tools/pack.js` generates, the background booted through `background.scripts` posting
+  exactly what Chrome's worker posts, `FCM.BROWSER`, the redirect URL, the proxy's
+  `/kick-authorize` and what `/kick-callback` will forward to, the fifteen-second heartbeat, the
+  release file the update check asks for, and Site access in the background, the badge and both
+  harnesses.
+- **`release`** runs `tools/release.js` with a stand-in for `gh` and `web-ext` that records every
+  command and fails when told to, and holds it to its rules: publishing is the last command and
+  never follows a failure, nothing is created without the credentials to sign, a published release
+  is only looked at, a draft that already holds the signed add-on is not signed again or uploaded
+  again, only a newer version becomes the latest, and each command is handed only the credentials
+  it needs. It also runs the update matcher every Chrome build up to v1.20.1 still uses over a
+  release's files in every order, which has to find Chrome's zip each time. The packages and the
+  signed file are checked against real archives built for the test, and broken in the ways that
+  matter.
+- **`popup`** and **`options`** run the real pages' scripts, in each browser: the update card and
+  what it tells a Chrome user and a Firefox one, the Site access card and section and the rule
+  that Firefox only asks from a click, the Kick sign-in choice Firefox cannot offer, and the backup
+  text.
+- **`emoteinput`** is the caret, which Chrome reads from the shadow root's own selection and
+  Firefox from the standard one, before and after Firefox 142 had it — and puts back after an
+  emote, a paste or a completion, in the pop-out window's selection once the panel is popped out.
 
 The **`native`** suite covers the part of the overlay that reads the page rather than a protocol:
 splitting the message list's siblings into the cards above and the bar below against both sites'
@@ -1237,17 +1483,76 @@ per-platform result, which is how the partial-failure and expired-token paths ge
 `readonly` or `no-submit` switches how the mock composer behaves, which covers each branch of
 the send path.
 
+### Working on the Firefox build
+
+The repository loads in Chrome as it stands — *Load unpacked*, pointed at the repository folder —
+but not in Firefox, because its manifest names only a service worker, which Firefox never starts.
+So a Firefox build is written to a folder first:
+
+```bash
+node tools/pack.js --target firefox --unpacked dist/firefox
+```
+
+`--unpacked` takes the folder and no output directory beside it, builds Firefox's package unless
+told `--target chrome`, never deletes anything already in the folder, and refuses to write into
+the repository itself, which would put Firefox's manifest over Chrome's. It prints the Firefox
+redirect URL too. Then open `about:debugging` in Firefox, choose *This Firefox*, press *Load
+Temporary Add-on…* and pick `manifest.json` inside that folder. After changing a file, run the
+same command again, press *Reload* on the add-on's card there, and reload the Twitch or Kick tab.
+The add-on is gone when Firefox restarts, as every temporary one is.
+
+To lint that folder the way a release does:
+
+```bash
+npx --yes web-ext@8.10.0 lint --source-dir dist/firefox --self-hosted
+```
+
+`--self-hosted` is not optional. Without it the linter assumes a listing on addons.mozilla.org,
+where an `update_url` is refused, and fails the package for carrying one. The warnings about
+`innerHTML` are expected.
+
+Both harnesses take `?browser=firefox`, which has their stubs answer the way Firefox does wherever
+the code can tell — `FCM.BROWSER`, the redirect URL — so the Firefox copy, the disabled Kick
+choice and the redirect note can be looked at without Firefox. The options harness also takes
+`&grants=twitch.tv,7tv.io`, naming the sites Firefox is letting the add-on use, to show *Site
+access* with every other one missing; `grants=` with nothing after it allows none.
+
+Three rules keep the Chrome build what it was while the Firefox one changes around it:
+
+- **`manifest.json` is Chrome's.** Anything only Firefox's manifest says belongs in
+  `firefoxManifest()` in `tools/pack.js`, which the `pack` suite holds to what Firefox and Mozilla
+  need; the Chrome package ships the file on disk byte for byte.
+- **Anything Firefox does differently asks `FCM.BROWSER === 'firefox'`**, and never whether a
+  `browser` global exists. The one exception is the update check, which asks
+  `FCM.updatedByBrowser()` — whether the running manifest names an `update_url` — because that,
+  not the browser, is what decides whether Firefox is updating the add-on.
+- **A new host permission has to work through Site access.** Firefox grants host permissions
+  when the add-on is installed, and an update that adds one is installed *without* it: nobody who
+  already has the add-on is asked, and nothing tells them. Anyone can take any site back at any
+  time, too. So a host added to `manifest.json` must never be assumed granted. Whatever depends on
+  it has to hold up until the add-on's own request is answered — `FCM.hostAccess()` finds what is
+  missing, the popup's *Allow access* card and the options page's *Site access* section ask for it
+  from a click, and meanwhile the feed names a missing service and the toolbar badge a missing
+  site. The comment on `firefoxManifest()` says the same, at the point a host permission is handed
+  on to Firefox. Twitch or Kick allowed only on the address its channel pages are on —
+  `www.twitch.tv`, `kick.com`, as Firefox's Extensions menu can leave it — counts as allowed,
+  since the overlay is drawn there. And `https://api.github.com/*` is left out of any Firefox
+  package that names an `update_url`, because only the update check such a package switches off
+  uses it; a Firefox build without an `update_url` keeps it, and one ever shipped as an update to
+  installs that lack it would find it not granted.
+
 ### Cutting a release
 
 ```bash
 node tools/pack.js          # -> dist/FriendlyChatExtension-v<version>.zip
+                            #    dist/FriendlyChatExtension-v<version>-firefox-unsigned.xpi
 ```
 
-The archive has **no wrapper directory**. It opens straight onto `manifest.json`, next to `src`
+The archives have **no wrapper directory**. Each opens straight onto `manifest.json`, next to `src`
 and `icons`, because Chrome's *Load unpacked* wants the folder the manifest is directly inside
 and Windows already makes a folder of its own when it extracts. A wrapper puts the manifest one
 level deeper than the install steps say it will be, and the install fails with *Manifest file is
-missing or unreadable*.
+missing or unreadable*. Firefox, and Mozilla's signing, want a package laid out the same way.
 
 That is not hypothetical: v1.18.2 and v1.18.3 both shipped wrapped, because the zip was whatever
 the person making the release happened to select and nothing checked afterwards. So there is now
@@ -1262,8 +1567,79 @@ git tag v1.2.3 && git push origin v1.2.3
 ```
 
 `.github/workflows/release.yml` runs the suite, checks the tag against `manifest.json`, builds
-the zip and attaches it. Bump `manifest.json` and the README's download link together — the
-`repo` suite fails if they drift, and the workflow fails if the tag disagrees with either.
+both packages and checks them with `node tools/release.js verify-packages`, then hands everything
+else to `node tools/release.js publish`, which is where the order below is decided and where the
+`release` suite can walk it without a network. A release carries four files:
+
+| File | What it is |
+| --- | --- |
+| `FriendlyChatExtension-v<version>.zip` | Chrome's package, for *Load unpacked* |
+| `FriendlyChatExtension-v<version>-firefox-unsigned.xpi` | Firefox's package, unsigned, for `about:debugging` |
+| `FriendlyChatExtension-v<version>-firefox.xpi` | the same package signed by Mozilla, which is what Firefox users install |
+| `updates.json` | where every signed Firefox install finds this version |
+
+Bump `manifest.json` and the README's file names together — the Chrome zip and both Firefox files.
+The `repo` suite fails if they drift, and the workflow fails if the tag disagrees with either.
+
+**Only Chrome's file may end in `.zip`.** Every Chrome build from v1.11.0 to v1.20.1 finds its
+update by taking the first `.zip` on the latest release, in whatever order GitHub lists the files
+— and GitHub lists them by name, where a `-firefox.zip` would come first. Those builds are
+installed and cannot be changed, and that notice is how their users reach every later version, so
+a second `.zip` would hand them Firefox's package, which Chrome cannot run. That is why the
+unsigned Firefox package is an `.xpi`. The run refuses a draft holding any other `.zip`, and the
+`release` suite puts a release's files to that old matcher in every order.
+
+**Signing.** Mozilla signs the Firefox package *unlisted*: signed, so any Firefox will install it,
+and never listed on addons.mozilla.org. The run does it with `web-ext sign --channel unlisted`,
+pinned to web-ext 8.10.0, using the add-on's API credentials from the addons.mozilla.org Developer
+Hub, kept as the repository secrets **`AMO_JWT_ISSUER`** and **`AMO_JWT_SECRET`**. They reach
+web-ext as `WEB_EXT_API_KEY` and `WEB_EXT_API_SECRET` in its environment, never on a command line
+or in the log, and a run without both is refused before anything is created. They are in no other
+command's environment: `web-ext lint` runs without them, and without gh's token, which reaches gh
+alone. The package is linted first, with `--self-hosted`; the file Mozilla sends back is checked
+for its signature files, the add-on's ID and the version, and compared file by file with the
+package it was signed from, before any of it is uploaded. The two packages are held to the bytes
+that were checked, too, and a run whose packages changed on disk in the meantime uploads nothing.
+
+**Draft first, publish last — and never a release without `updates.json` and the signed `.xpi`.**
+Every signed Firefox install asks
+`https://github.com/JRBlaze/FriendlyChatExtension/releases/latest/download/updates.json` for its
+next version, and GitHub answers with the file from whichever release was published last. A
+published release without `updates.json` answers every one of those checks with a 404 for as long
+as it is the latest. No harm comes of it — Firefox simply asks again later — but no update gets
+through either, to anybody. So the run makes the release as a draft, attaches all four files,
+reads the draft back to see them there, and publishes it as the very last thing it does. Anything
+that fails before that leaves the draft unpublished, and the previous release still the latest.
+That address is written into every install there is, and must never change.
+
+A few rules follow from that:
+
+- **Notes written by hand go on a draft.** Create the release yourself as a draft for the tag
+  before pushing it (`gh release create v1.2.3 --draft --notes-file notes.md`), and the run fills
+  that draft and publishes it. A release that is already published is refused, with nothing
+  changed, because filling it in afterwards is exactly the window the order exists to close: turn
+  it back into a draft with `gh release edit v1.2.3 --draft=true` and re-run the workflow.
+- **Anything that must not become the latest goes out as a prerelease.** Mark the draft as a
+  prerelease before the run, and it is published as one. GitHub never counts a prerelease as the
+  latest, so Firefox installs go on reading the `updates.json` of the release that is.
+- **Re-running is safe.** Mozilla signs each version once and refuses to sign it again, so a run
+  that finds the signed `.xpi` already on the draft downloads that file, checks it — file by file
+  against the package the run has just built — and carries on from there, without asking Mozilla,
+  and without uploading that file again either: gh replaces a file by deleting the one on the
+  draft first, and an upload failing after that would lose the only copy. If Mozilla signed a
+  version but the run stopped before the file reached the draft, download it from the Developer
+  Hub or from the `signed-firefox-xpi` artifact of the run that signed it, attach it to the draft
+  under its release name, and re-run. Only a file signed from the tagged commit's package gets
+  through; one signed from other code is refused, and the log says to release the next version.
+  The log of a failed run says which of these applies, and whether anything was left behind.
+- **An older version never takes "latest" back.** Whether a release becomes the latest is decided
+  as it is published, against the release that is latest at that moment: only a newer version
+  takes it. A draft for an older version — a stopped run re-run after the next version shipped,
+  or two tags whose signing finished in the wrong order — is published without becoming the
+  latest, and the log says so, so Firefox installs keep reading the newer `updates.json`.
+- **To release again, bump the version.** Once Mozilla has signed a version, nothing different can
+  go out under that number, so a fix is never released by moving a tag that has been signed: it
+  is the next version.
 
 ### Deploying the proxy
 
@@ -1314,6 +1690,39 @@ set without ever echoing one back:
 
 A `false` there is the whole diagnosis. If `twitch_client_id` is false the Twitch sign-in fails
 with a message naming the secret to set, rather than failing silently later on.
+
+**Where `/kick-callback` sends a browser back to.** A Kick sign-in made through the proxy returns
+to the worker's `/kick-callback`, which passes Kick's answer on to the address the extension named
+in the sign-in's `state` — but only to an address shaped like a browser's own extension sign-in
+redirect. That is `https://`, then 32 letters from *a* to *p* and `.chromiumapp.org`, which is
+Chrome's, or 40 lowercase hex characters and `.extensions.allizom.org`, which is Firefox's, with
+nothing after the host but an optional `/`. Anything else gets an error page instead, so the
+worker cannot be used to send anybody anywhere else.
+
+**`/kick-authorize` exists for Firefox.** Firefox will not open a sign-in window for a link that
+names any `redirect_uri` but the add-on's own, so a Firefox sign-in in proxy mode starts here,
+naming none. The worker adds its own Kick client id and its own `/kick-callback`, passes on only
+the scope, the PKCE challenge and the state, and sends the browser to Kick — the one place it can
+send it. `/kick-config` lists the endpoint under `features`, which is how the extension tells a
+worker that has it from one deployed before it existed.
+
+**Redeploy before a release that relies on it.** Everything the worker has gained only adds to
+what it answers, so an older extension goes on working against a newer worker. It is the other way
+round that fails: a Firefox install in proxy mode, in front of a worker without `/kick-authorize`,
+is told the proxy is older than the extension and needs redeploying. Chrome is unaffected either
+way, and so is the default *Reuse the desktop app's URL*.
+
+**Pinning it to this extension, if you want to.** Set `ALLOWED_REDIRECT_HOSTS` — as a variable,
+or with `wrangler secret put` — to a comma-separated list of exact hosts, and `/kick-callback`
+forwards to those extensions alone. For this one, in both browsers:
+
+```
+bbjieacidkcngofgddlfipiajcchdaik.chromiumapp.org,91e887612fc28278646a28c0b1f4cceded6586a2.extensions.allizom.org
+```
+
+It can only narrow the shapes above, never widen them. Unset, which is the default, any Chrome or
+Firefox extension's address is forwarded to, which is what a fork signing in through the shared
+proxy needs — and pinning it breaks exactly that.
 
 ## Bugs this testing found
 
@@ -1584,7 +1993,20 @@ was never going to see in a friendly test:
 - **Sign-in needs a one-off registration step.** Both platforms reject the OAuth redirect until
   the extension's redirect URL is registered with them. The overlay's *Settings -> Accounts*
   panel shows the URL to register and whatever the platform actually said, and keeps it there
-  until the account connects. Nothing in the extension can do that part for you.
+  until the account connects. Nothing in the extension can do that part for you. Chrome and
+  Firefox each have a redirect URL of their own, so a Twitch application has to list both — see
+  [Where each browser's sign-in comes back to](#where-each-browsers-sign-in-comes-back-to).
+- **Firefox for Android is not supported.** Firefox's sign-in API does not exist there, and the
+  add-on is neither built for Android nor tested on it: the package names desktop Firefox 140 as
+  its floor and says nothing about Android at all.
+- **No pop-out before Firefox 151.** Firefox 140 to 150, which includes ESR 140, have no document
+  picture-in-picture, so the button is not shown there and the panel stays on the page.
+- **Kick signed in only inside a Firefox container tab.** The background reads Kick's session
+  cookie from Firefox's default cookie store, and a container keeps its cookies apart from that
+  store, so the background finds none. On a kick.com page in that container the content script
+  reads the page's own cookie instead, the same fallback as when Kick declines, and moderating
+  works as usual. From a Twitch tab there is no kick.com page to ask, so the Kick half of a merged
+  feed offers no moderation tools — the same limit as the one below, reached a different way.
 - **Cheers only animate with a Twitch account connected.** The Cheermote list comes from
   `helix/bits/cheermotes`, and Helix answers nobody without a token — so an anonymous viewer,
   who is the one case reading chat otherwise needs no account for, still sees `Cheer100` as the
