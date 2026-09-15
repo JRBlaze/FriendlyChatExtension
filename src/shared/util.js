@@ -293,11 +293,21 @@
    * to say why. Anything dropped simply falls back to its default, because
    * loadSettings merges over those anyway.
    */
+  // Settings a file is never allowed to set, however it came to be written.
+  //
+  //   kickProxyUrl  where Kick's sign-in code and refresh token are posted. A
+  //                 backup somebody hands you could name their own server here,
+  //                 and the next refresh would give them the account — with
+  //                 the import dialog promising sign-ins were not affected. It
+  //                 is set by typing it into the options page or not at all.
+  const NOT_IMPORTED = new Set(['kickProxyUrl']);
+
   function cleanSettings(value) {
     if (!plainObject(value)) return null;
     const out = {};
     Object.keys(FCM.DEFAULT_SETTINGS).forEach((key) => {
       if (!(key in value)) return;
+      if (NOT_IMPORTED.has(key)) return;
       const fallback = FCM.DEFAULT_SETTINGS[key];
       const incoming = value[key];
 
