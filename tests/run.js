@@ -1326,6 +1326,18 @@ suites.backup = function () {
       'backup: a panel box with a missing number is not restored as a panel of no size');
   }
 
+  // A file must not be able to say where account tokens are sent.
+  {
+    const redirected = FCM.readBackup({
+      format: FCM.BACKUP_FORMAT, backupVersion: 1,
+      settings: { kickProxyUrl: 'https://attacker.example', opacity: 50 },
+    });
+    ok(redirected.ok, 'backup: a file naming a proxy still imports the rest');
+    eq(redirected.stores.settings.kickProxyUrl, undefined,
+      'backup: but the proxy the Kick refresh token is posted to is not taken from it');
+    eq(redirected.stores.settings.opacity, 50, 'backup: while the ordinary settings come through');
+  }
+
   // Prototype pollution, which a JSON file is a natural way to attempt.
   {
     const parsed = JSON.parse('{"format":"' + FCM.BACKUP_FORMAT
