@@ -249,7 +249,7 @@ inside, because Chrome builds up to v1.20.1 take the first `.zip` on a release a
 | The card loaded but no overlay on a channel | Reload the Twitch or Kick tab. The extension only attaches to pages opened after it was installed. |
 | No overlay, and you are on a directory or settings page | The overlay only appears on an actual channel page, not on browse, search or settings pages. |
 | Your own Kick channel opens on Home/About/Videos instead of your stream | That is Kick's own layout for a channel's owner. The overlay presses its *Watch now* for you on arrival; if you would rather it did not, turn off *Open the stream when Kick shows the channel's profile* in settings. |
-| The pop-out button does nothing | Picture-in-picture windows need Chrome 116 or newer, and Chrome refuses a second one while the first is open. Close the existing pop-out and try again. |
+| The pop-out button does nothing | A pop-out is probably already open, perhaps behind another window — Chrome and Firefox each allow only one at a time. Close it and try again. Where the browser cannot pop the panel out at all, the button is not shown in the first place (see the Firefox row below). |
 | Nothing at all after a Chrome restart | Developer-mode extensions stay installed, but Chrome may prompt you to keep them. Re-enable it on `chrome://extensions`. |
 | Firefox: the add-on is gone after a restart, settings and all | It was loaded as a temporary add-on from `about:debugging`, and Firefox removes those every time it closes. Install the signed `.xpi` instead — see [Install in Firefox](#install-in-firefox). |
 | Firefox: no panel on Twitch or Kick, and an amber **!** on the toolbar icon | Firefox has been told not to let the add-on use that site — any site can be taken back from `about:addons` or the Extensions menu, at any time. Open the add-on's popup and press **Allow access**, then reload the Twitch or Kick tab: Firefox does not add the panel to a page that was loaded before the site was allowed. |
@@ -895,7 +895,10 @@ does.
 
 ## Where the data comes from
 
-Nothing is proxied through a server, and no API key or sign-in is involved.
+Chat, history and emotes come straight from Twitch, Kick and the emote services, with no server of
+ours in between. Signing in is the one exception: which application each platform signs in against,
+and Kick's token exchange and refresh, go through the Cloudflare Worker — see
+[Connecting accounts](#connecting-accounts).
 
 | What | Source |
 | --- | --- |
@@ -908,6 +911,9 @@ Nothing is proxied through a server, and no API key or sign-in is involved.
 | Sending, when an account is connected | `api.twitch.tv/helix/chat/messages`, `api.kick.com/public/v1/chat` |
 | Cheermotes, so a Cheer draws as one | `api.twitch.tv/helix/bits/cheermotes`, on join |
 | Which application to sign in against | the Cloudflare Worker's `/twitch-config` and `/kick-config`, at sign-in only |
+| Kick sign-in: the token exchange and each refresh | the Cloudflare Worker's `/kick-token` and `/kick-refresh`, which hold Kick's client secret — plus `/kick-authorize` and `/kick-callback` when Kick returns through the proxy |
+| Whether a newer release exists (Chrome) | `api.github.com`, every six hours |
+| Updates to the signed Firefox add-on | fetched by Firefox itself from `github.com/JRBlaze/FriendlyChatExtension/releases/latest/download/updates.json` |
 
 Reading chat is anonymous — no account, no API key. Requests to Kick are made with
 `credentials: 'omit'` so your Kick cookies are never attached. What gets stored is your settings,
