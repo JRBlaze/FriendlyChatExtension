@@ -2304,16 +2304,25 @@
      *
      * The toolbar icon already carries a dot for this, but only people who
      * pinned the icon ever see it. The overlay is where everyone else is
-     * looking, so it gets one line: the version, a link to the release, and
+     * looking, so it gets one line: the version, the way to the release, and
      * a way to dismiss it that the worker remembers per version — the same
      * dismissal the popup uses, so closing it in either place closes it in
      * both.
      *
-     * Never a link on a build Firefox keeps up to date by itself. The
-     * background makes no check there and so never sends one of these
+     * The way to the release is one link or two. A release carrying a file for
+     * this browser gets *Get it* for the file and *What's new* for the notes,
+     * because a version number is no reason to update and the file link on its
+     * own left reading the notes to whoever thought to go looking. A release
+     * with no file for this browser gets the one link it always had: its page
+     * is where the file would be and where the notes are, so a second link to
+     * the same page would say nothing.
+     *
+     * Never a link to a file on a build Firefox keeps up to date by itself.
+     * The background makes no check there and so never sends one of these
      * (updates.js), but a strip that did arrive must not offer a file to
-     * install by hand over the update Firefox is already fetching: it says
-     * that Firefox does it, and nothing more.
+     * install by hand over the update Firefox is already fetching. The notes
+     * stay: they fetch nothing and offer nothing, and that build is the one
+     * whose updates arrive without anybody being told what was in them.
      */
     function renderUpdate(status) {
       if (!status || !status.available || !status.version) {
@@ -2321,7 +2330,6 @@
         updateEl.replaceChildren();
         return;
       }
-      const url = String(status.downloadUrl || status.url || FCM.GITHUB_RELEASES_URL || '');
       const byBrowser = FCM.updatedByBrowser();
       updateEl.replaceChildren();
       const text = document.createElement('span');
@@ -2330,15 +2338,28 @@
         ? `v${status.version} is out · Firefox updates it by itself`
         : `v${status.version} is out`;
       updateEl.appendChild(text);
-      if (!byBrowser && /^https:\/\//i.test(url)) {
+
+      // Everything put in an href here has been through FCM.releasePageUrl,
+      // which answers with this repo's own releases or with nothing else at
+      // all — so there is no second, weaker check of the same thing here.
+      const addLink = (url, label) => {
         const link = document.createElement('a');
         link.className = 'fcm-update-link';
         link.href = url;
         link.target = '_blank';
         link.rel = 'noopener noreferrer';
-        link.textContent = status.downloadUrl ? 'Get it' : 'See release';
+        link.textContent = label;
         updateEl.appendChild(link);
-      }
+      };
+
+      // The release's own page, as GitHub gave it, or the one this version is
+      // published under when the check has no address to give.
+      const page = FCM.releasePageUrl(status.url, status.version);
+      if (byBrowser) addLink(page, "What's new");
+      else if (status.downloadUrl) {
+        addLink(FCM.releasePageUrl(status.downloadUrl, status.version), 'Get it');
+        addLink(page, "What's new");
+      } else addLink(page, 'See release');
       const close = document.createElement('button');
       close.type = 'button';
       close.className = 'fcm-update-close';

@@ -275,9 +275,9 @@
       return store;
     },
 
-    async kickNative(slug) {
+    async kickNative(slug, opts) {
       try {
-        return await FCM.kickApi.emotes(slug);
+        return await FCM.kickApi.emotes(slug, opts);
       } catch (e) {
         return {};
       }

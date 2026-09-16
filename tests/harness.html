@@ -601,6 +601,21 @@ function loadSources(bust) {
   overlay.setEmotes('kick', 'thirdparty', {
     KEKW: { url: 'https://cdn.7tv.app/emote/01F6MZGCNG0002DND34H6VDZ9J/2x.webp', source: '7TV' },
   });
+  // What a signed-in viewer's Kick list holds: this channel's own set, the
+  // globals, the emotes this account has collected — some of which are wide
+  // rather than square — and a channel they subscribe to somewhere else.
+  overlay.setEmotes('kick', 'native', {
+    somechannelPog:  { url: 'https://files.kick.com/emotes/4001/fullsize', source: 'Kick Channel', channel: true, owner: 'somechannel' },
+    somechannelSad:  { url: 'https://files.kick.com/emotes/4002/fullsize', source: 'Kick Channel', channel: true, owner: 'somechannel' },
+    emojiAngel:      { url: 'https://files.kick.com/emotes/1730752/fullsize', source: 'Kick Emoji' },
+    asmonSmash:      { url: 'https://files.kick.com/emotes/3753119/fullsize', source: 'Kick Global' },
+    collectibles4HEad:   { url: 'https://files.kick.com/emotes/5747848/fullsize', source: 'Kick Collectibles', collectible: true },
+    collectiblesCAUGHT:  { url: 'https://files.kick.com/emotes/5747856/fullsize', source: 'Kick Collectibles', collectible: true },
+    collectiblesClueless:{ url: 'https://files.kick.com/emotes/5747857/fullsize', source: 'Kick Collectibles', collectible: true },
+    collectiblesHYPERS:  { url: 'https://files.kick.com/emotes/5747884/fullsize', source: 'Kick Collectibles', collectible: true },
+    collectiblesPepeHands:{ url: 'https://files.kick.com/emotes/5747911/fullsize', source: 'Kick Collectibles', collectible: true },
+    bwanaChaos:      { url: 'https://files.kick.com/emotes/5612606/fullsize', source: 'Kick Channel', owner: 'Bwana' },
+  });
   overlay.setBadges('twitch', {
     global: {
       moderator:  { 1: { image_url_1x: 'https://static-cdn.jtvnw.net/badges/v1/3267646d-33f0-4b17-b3df-f923a41db1d0/1' } },

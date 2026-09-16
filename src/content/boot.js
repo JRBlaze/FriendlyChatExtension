@@ -160,7 +160,7 @@
       case 'chat': overlay.chat(msg.msg); break;
       case 'batch': overlay.batch(msg.rows || []); break;
       case 'emotes': overlay.setEmotes(msg.platform, msg.kind, msg.store); break;
-      case 'needKickEmotes': fetchKickEmotesFromPage(msg.channel); break;
+      case 'needKickEmotes': fetchKickEmotesFromPage(msg.channel, msg.loaded); break;
       case 'needKickModerator': reportKickStandingFromPage(msg.channel); break;
       case 'badges': overlay.setBadges(msg.platform, msg.badges); break;
       case 'cheermotes': overlay.setCheermotes(msg.prefixes, msg.tiers); break;
@@ -329,16 +329,6 @@
   }
 
   /**
-   * Fetches Kick's emote list from the page itself.
-   *
-   * Kick sits behind Cloudflare, which can refuse a request that did not come
-   * from a browser tab — and the background worker is not one. This tab is, so
-   * when the worker comes back empty-handed it asks here instead. Only when the
-   * tab is actually on Kick: from anywhere else this would be a cross-origin
-   * request, and a content script does not carry the extension's permission to
-   * make one.
-   */
-  /**
    * Asks Kick whether this viewer moderates the channel, from the page's own
    * origin — the only place Kick will answer it.
    *
@@ -432,29 +422,84 @@
     return '';
   }
 
-  async function fetchKickEmotesFromPage(channel) {
+  /**
+   * Fetches Kick's emote list from the page itself.
+   *
+   * Kick sits behind Cloudflare, which can refuse a request that did not come
+   * from a browser tab — and the background worker is not one. This tab is, so
+   * when the worker comes back empty-handed it asks here instead. Only when the
+   * tab is actually on Kick: from anywhere else this would be a cross-origin
+   * request, and a content script does not carry the extension's permission to
+   * make one.
+   *
+   * The worker also asks on every kick.com tab, list or no list, because this
+   * is the only place the signed request can be made correctly. Signed, Kick
+   * answers with this account's collectibles and the sets of the other channels
+   * it subscribes to — and the cookie that identifies the account is the tab's
+   * own, which in a Firefox container or a private window is not the one the
+   * worker's jar would hand over. So the worker asks as a stranger and the
+   * personal half is fetched from here. See loadKickEmotes in the worker.
+   */
+  async function fetchKickEmotesFromPage(channel, loaded) {
     if (site.id !== 'kick' || !overlay) return;
     const slug = FCM.normalizeChannel(channel || '');
     if (!slug) return;
     const epoch = navEpoch;
+    const already = Number(loaded) || 0;
+
+    // The same bearer the rest of Kick's API is asked with. Signed, the list
+    // also holds this account's collectibles and the sets of the other channels
+    // it subscribes to.
+    //
+    // Asked again unsigned when that comes back with nothing. A session Kick no
+    // longer accepts is answered 401 where a stranger is answered with a list,
+    // and this is the path that runs when the worker got nothing at all — so a
+    // stale cookie would take the picker from a poorer answer to no answer.
+    //
+    // Nothing means nothing, refused or merely empty, which is how the worker
+    // decides it too: a 200 carrying no sets this can read leaves the picker
+    // just as bare as a 401 does.
+    // A request that never lands at all counts as nothing too. Left to throw,
+    // it took the unsigned retry down with it — which is the one thing that
+    // still had a chance of answering.
+    const ask = async (token) => {
+      try {
+        const headers = { Accept: 'application/json' };
+        if (token) headers.Authorization = `Bearer ${token}`;
+        const res = await fetch(`https://kick.com/emotes/${encodeURIComponent(slug)}`, {
+          headers, credentials: 'include',
+        });
+        if (!res.ok) return null;
+        const store = FCM.parseKickEmotePayload(await res.json(), slug);
+        return Object.keys(store).length ? store : null;
+      } catch (e) {
+        return null;
+      }
+    };
+
     try {
-      const res = await fetch(`https://kick.com/emotes/${encodeURIComponent(slug)}`, {
-        headers: { Accept: 'application/json' },
-      });
-      if (!res.ok) return;
-      const store = FCM.parseKickEmotePayload(await res.json(), slug);
-      const count = Object.keys(store).length;
+      const token = readCookie('session_token');
+      // Nothing to add. The worker already has the list a stranger gets, and
+      // with no session here this would fetch the same thing again and hand it
+      // back for a second write of the whole cache.
+      if (already && !token) return;
+      const store = (token && await ask(token)) || await ask('');
+      const count = store ? Object.keys(store).length : 0;
       // The fetch is a real wait and a channel change lands inside it often
       // enough to matter, so this is one channel's emote list and it must not
       // be poured into the next channel's picker.
       if (!count || !overlay || epoch !== navEpoch) return;
       overlay.setEmotes('kick', 'native', store);
-      overlay.sys(`Loaded ${count} Kick emotes for this channel`);
-      // Sent back to be remembered. The worker only asks the page for this list
-      // when Kick's edge refused it — so the channels this path exists for were
-      // exactly the ones that were never cached, and every visit to one of them
-      // started with an empty picker and emote names rendering as plain text
-      // until the page fetched it again.
+      // Only when this found more than the worker did. The worker may already
+      // have announced a list of its own, and the same line twice over reads as
+      // a bug rather than as the fuller answer arriving.
+      if (count > already) overlay.sys(FCM.kickEmoteCountLine(store));
+      // Sent back to be remembered. When Kick's edge refused the worker this is
+      // the only place the list came from — so the channels that path exists
+      // for were exactly the ones that were never cached, and every visit to
+      // one of them started with an empty picker and emote names rendering as
+      // plain text until the page fetched it again. The worker keeps the
+      // channel's half of what is sent and drops this viewer's own.
       post({ cmd: 'cacheKickEmotes', channel: slug, store });
     } catch (e) { /* the picker simply has fewer emotes in it */ }
   }

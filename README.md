@@ -23,7 +23,7 @@ has signed. Chrome is first below; Firefox is [further down](#install-in-firefox
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.21.1.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.22.0.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and an extra folder named `FriendlyChatExtension-main`
@@ -55,7 +55,7 @@ Firefox ESR 140. Firefox for Android is not supported: the sign-in API the exten
 accounts with does not exist there.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.21.1-firefox.xpi` from the Assets list. That file is the add-on, signed
+`FriendlyChatExtension-v1.22.0-firefox.xpi` from the Assets list. That file is the add-on, signed
 by Mozilla, and there is nothing to unzip.
 
 1. **Open the file with Firefox.** Click it in Firefox's downloads list, or drag the file from
@@ -82,7 +82,7 @@ The add-on is not on addons.mozilla.org, and will not be: Mozilla signs it witho
 and this repository's releases are the only place it is published.
 
 **Trying an unsigned build.** Each release also carries
-`FriendlyChatExtension-v1.21.1-firefox-unsigned.xpi`, the same package before Mozilla signed it.
+`FriendlyChatExtension-v1.22.0-firefox-unsigned.xpi`, the same package before Mozilla signed it.
 Opened the ordinary way, release Firefox refuses it as unverified; it loads only as a temporary
 add-on: open `about:debugging`, choose *This Firefox*, press *Load Temporary Add-on…* and pick the
 file itself, without unpacking it. A temporary add-on is removed when Firefox restarts, and its
@@ -145,12 +145,15 @@ inside, because Chrome builds up to v1.20.1 take the first `.zip` on a release a
 - **One merged feed.** Twitch and Kick messages interleave in a single scroll, each tagged with
   a coloured dot and the platform's own username colour, and each filterable on and off.
 - **Every emote you can actually use.** Twitch global, channel, subscriber, follower, bits-tier,
-  hype-train, rewards and Prime emotes; Kick's channel, global and emoji sets; and 7TV, BetterTTV
-  and FrankerFaceZ on both platforms. They are grouped by where they came from in the picker, and
-  the Twitch list is the one Twitch itself says your account may send. Badges render inline on
-  both platforms: Twitch's from its badge images, Kick's from the channel's own subscriber
-  badges, the pictures Kick sends (the level badge), and drawn icons for the roles Kick sends
-  only as a word — moderator, VIP, OG, founder, verified, gifter and the rest.
+  hype-train, rewards and Prime emotes; Kick's channel, global and emoji sets, the emotes your
+  Kick account has collected, and the sets of the other Kick channels you subscribe to; and 7TV,
+  BetterTTV and FrankerFaceZ on both platforms. They are grouped by where they came from in the
+  picker — collectibles get a heading of their own, above the channel you are watching, the way
+  Kick's own picker lists them — and the Twitch list is the one Twitch itself says your account
+  may send. Badges render inline on both platforms: Twitch's from its badge images, Kick's from
+  the channel's own subscriber badges, the pictures Kick sends (the level badge), and drawn icons
+  for the roles Kick sends only as a word — moderator, VIP, OG, founder, verified, gifter and the
+  rest.
 - **Recent history on join,** with the original timestamps, so you are not staring at an empty
   panel when you arrive mid-stream.
 - **Events**: subs, resubs, gifted subs, raids, cheers, hype trains, redemptions, timeouts and
@@ -231,12 +234,14 @@ inside, because Chrome builds up to v1.20.1 take the first `.zip` on a release a
   — share your watch streak, share your resub and how long you have subscribed — were drawn under
   the panel where you could not see them. They now appear as a row in the feed with Twitch's own
   Share button behind it. See [Share reminders](#share-reminders-read-off-the-page).
-- **Tells you when there is a new release.** The releases page is checked in the background and
-  the toolbar icon gets a dot when there is something newer; the popup turns that into the file
-  and the page to drop it on. Nothing installs itself — no extension outside the Web Store can —
-  but the steps that are left are two clicks rather than a trip to GitHub you had to think of.
-  That is Chrome. In Firefox the signed add-on is updated by Firefox itself, so none of it appears
-  there, and the popup says *Kept up to date by Firefox* instead.
+- **Tells you when there is a new release, and what is in it.** The releases page is checked in
+  the background and the toolbar icon gets a dot when there is something newer; the popup turns
+  that into the file and the page to drop it on, and both it and the strip in the overlay carry a
+  *What's new* link to that release's notes. Nothing installs itself — no extension outside the
+  Web Store can — but the steps that are left are two clicks rather than a trip to GitHub you had
+  to think of. That is Chrome. In Firefox the signed add-on is updated by Firefox itself, so none
+  of the rest appears there: the popup says *Kept up to date by Firefox*, and the version number
+  in its footer links what changed in the version you are now running.
 - **Follows the site's own theme.** Twitch or Kick in dark mode gets a dark overlay, light mode
   gets a light one, and it switches the moment you change it on the site.
 - **Several streams at once.** Each tab keeps its own sockets, channels and feed.
@@ -267,10 +272,23 @@ Chrome only updates extensions it installed itself, and it did not install this 
 extension watches for you: it asks GitHub for the latest release every six hours, and when there
 is one newer than the version running, the toolbar icon gets a dot and a one-line strip appears
 at the top of the overlay — the icon is only there for people who pinned it, and the overlay is
-where everyone else is looking. The strip names the version and links the zip; the popup names
-it too, offers the zip and offers `chrome://extensions` to drop it on. Dismissing it in either
-place hides that one version, not every future one. *Check for updates* in the popup's footer
-asks now.
+where everyone else is looking. The strip names the version, links the zip and links *What's
+new*; the popup names it too, offers the zip, offers `chrome://extensions` to drop it on, and
+carries the same *What's new* link. Dismissing it in either place hides that one version, not
+every future one. *Check for updates* in the popup's footer asks now.
+
+*What's new* opens that release on GitHub, where the notes are. It is there because a version
+number is not a reason to update, and the strip's one link went straight to the file whenever the
+release carried one — so on exactly the releases you would most want to read about, nothing on
+the strip led anywhere you could. A release with no file for this browser keeps the single *See
+release* link it always had: that page is both the notes and where the file would be, and a
+second link to it would say nothing.
+
+Where the check has the release's own address, that is where the link goes. Where it has none —
+a build whose check has never reached GitHub, or one that never asks — the tag a version is
+published under is worked out from the version itself, so there is something to open either way.
+An address that is not this repo's own releases is not opened at all; it falls back to the one
+worked out here.
 
 Nothing here can install the update. An extension cannot replace itself, and no permission
 changes that — what this removes is having to remember to go and look.
@@ -298,9 +316,22 @@ now rather than wait, open `about:addons` and choose *Check for Updates* from th
 So everything the Chrome half describes is switched off in a signed Firefox build: no request to
 GitHub of the extension's own, no dot on the icon, no strip in the overlay and no update card in
 the popup, whose footer says *Kept up to date by Firefox* where *Check for updates* would be. They
-could only announce an update already on its way. The Firefox package does not even ask for access
-to `api.github.com`, which only that check used, so it is not among the sites Firefox lists at
-install.
+could only announce an update already on its way.
+
+What is not switched off is the version number in the popup's footer, which is a link to what
+changed in that version. An update that installs itself is the case where you are least likely to
+know what changed — nobody is asked and nothing is announced — and a signed install came from a
+release, so the page for its version is there to open. It is worked out from the version rather
+than fetched, which is why it needs no check and no access to GitHub: the Firefox package does
+not even ask for access to `api.github.com`, which only that check used, so it is not among the
+sites Firefox lists at install.
+
+Two builds get a different answer, because for them that page does not exist. An add-on loaded
+temporarily from `about:debugging` names the same update address but was never installed from a
+release — it is whatever was built locally — and the popup already knows which it is, so its
+version links the releases page instead. On the builds that do check, a version newer than
+anything published is the same story told a different way, and the check is what notices: those
+go to the releases page too, rather than to a tag that is not there.
 
 One thing an update does not bring with it is a site the new version has started asking for.
 Firefox installs the update without it and asks nobody, so the add-on asks instead: the popup
@@ -386,9 +417,10 @@ Dismissing the banner keeps it dismissed for that channel until you reload the p
 Everything below is in the overlay's own message box, so it works the same whichever site you
 are on.
 
-- **Emote picker** — the smiley button opens every emote currently loaded, grouped by source
-  (Twitch, Kick Channel/Global/Emoji, 7TV, BTTV, FFZ) with a search box. Clicking one inserts it
-  at the cursor.
+- **Emote picker** — the smiley button opens every emote currently loaded, under the heading it
+  came from: ★ Favourites, then Kick Collectibles, then the channel you are watching, then the
+  other channels you subscribe to by name, then Twitch, Kick Global, Kick Emoji, 7TV, BTTV and
+  FFZ. There is a search box, and clicking one inserts it at the cursor.
 - **`:emote` autocomplete** — type a colon and at least two characters. Exact prefix matches sort
   first. **Tab** completes the highlighted row, arrows move, Escape closes.
 - **`@name` autocomplete** — type an at-sign and a letter to complete from everyone who has
@@ -656,11 +688,48 @@ more than once and each pass adds to what is there. The view merges emote stores
 replacing them, so nothing an earlier pass found is lost, and the label from the most specific
 source is the one that survives.
 
-Kick answers `/emotes/<channel>` with the channel's set, the global set and the emoji set. That
-request is made from the background worker, which is not a browser tab — and Kick sits behind
-Cloudflare, which sometimes minds. When it comes back empty and the tab is on Kick, the page is
-asked to fetch the same list from its own origin instead, which Cloudflare has no reason to
-refuse.
+Kick answers `/emotes/<channel>` with the channel's set, the global set and the emoji set — to a
+stranger. Signed in it answers with two more: **Collectibles**, the emotes this account has gone
+and collected, and a set for every other channel this viewer subscribes to. The only difference
+between the two requests is whether the session goes with it, as the `session_token` cookie read
+back as an `Authorization: Bearer` header — which is what Kick's own site does, and the same
+header the moderator check already sends. A session Kick no longer accepts is answered 401 where a
+stranger is answered with a list, so a stale one is asked again as a stranger rather than leaving
+the picker emptier than it was before anyone signed in.
+
+**Who signs it is the whole question.** On a Kick page the page itself does, because it reads the
+cookie of the tab it is in — and in a Firefox container tab or a private window that is a
+different account from the one the background worker's cookie jar would hand over. Signing with
+the wrong account's cookie is worse than not signing at all: the answer looks right, offers emotes
+this viewer does not have and cannot send, and the store is only ever added to, so nothing later
+takes them back out. So on Kick the worker asks as a stranger and leaves the personal half to the
+page, which is asked every time and says nothing unless it found more. Only where there is no Kick
+page to ask — Kick merged into a Twitch tab — does the worker sign the request itself, from the
+browser's default cookie store.
+
+Collectibles belong to the viewer rather than to anywhere they are used, so they carry no channel
+and get a section of their own at the top of the picker, above the channel being watched — which
+is where Kick's own picker puts them. The other channels' sets are grouped under their own names,
+because filing another streamer's subscriber emotes under the streamer on screen would claim the
+room can see you use emotes it cannot. A collectible that turns up in a message before the list
+has loaded is labelled by guesswork — a message carries an emote's id and its name and says
+nothing about which set it came from — and the list corrects it when it lands, picture included.
+That last part matters: a message names its own emote id, so anybody in the room can bind any
+picture on Kick's CDN to any name by typing it, and keeping that picture under a corrected label
+would hang a stranger's choice of image under this viewer's own collectibles.
+
+Asking the page also covers the older reason it existed. Kick sits behind Cloudflare, which can
+refuse a request that did not come from a browser tab, and the worker is not one — so when the
+worker's request comes back empty the page's own fetch is what fills the picker at all. A page
+with no Kick session of its own does not make that second request when the worker already brought
+back a list: there is nothing it could add, and it would only hand the same thing back to be
+written to the cache again.
+
+None of the personal half is written to the emote cache. That cache is keyed by the account
+connected in settings, which is not the account kick.com is signed in as and is empty for everyone
+who connected none — so a collectible kept there would be offered to whoever opened the channel
+next, who does not have it. What is remembered is the answer a stranger gets, which is the same
+answer for everybody.
 
 ## Moderating
 

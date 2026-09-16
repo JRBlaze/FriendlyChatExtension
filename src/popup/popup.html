@@ -32,7 +32,8 @@
       <strong id="update-title">Update available</strong>
       <button id="update-dismiss" type="button" title="Hide this until the next release">&times;</button>
     </div>
-    <p class="muted" id="update-note"></p>
+    <p class="muted"><span id="update-note"></span>
+      <a id="update-whats-new" href="#" title="Read the release notes on GitHub">What's new</a></p>
     <div class="update-actions">
       <button id="update-get" type="button" class="primary">Download</button>
       <button id="update-install" type="button" title="Open chrome://extensions">Extensions page</button>
@@ -87,7 +88,7 @@
     <a id="open-options" href="#">All settings</a>
     <a id="check-updates" href="#">Check for updates</a>
     <small id="updated-by-browser" class="hidden">Kept up to date by Firefox</small>
-    <span id="version"></span>
+    <a id="version" href="#" title="What changed in the version you are running"></a>
   </footer>
 
   <script src="../shared/namespace.js"></script>

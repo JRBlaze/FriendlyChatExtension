@@ -193,23 +193,29 @@
 
         // Emotes seen in a live message top up the store, so one posted before
         // the full list finishes loading still renders as an image.
+        //
+        // The label on one is a guess, and is marked as one. A message carries
+        // an emote's id and its name and says nothing about which set it came
+        // from, so "this channel's" is only the likeliest answer — and for a
+        // collectible it is the wrong one. The real list knows, and is allowed
+        // to correct a guess when it lands.
         const learned = {};
+        const guess = (id, name) => {
+          learned[name] = {
+            url: `https://files.kick.com/emotes/${id}/fullsize`,
+            source: 'Kick Channel',
+            learned: true,
+          };
+        };
         if (Array.isArray(payload.emotes)) {
           payload.emotes.forEach((em) => {
-            if (em && em.id && em.name) {
-              learned[em.name] = {
-                url: `https://files.kick.com/emotes/${em.id}/fullsize`,
-                source: 'Kick Channel',
-              };
-            }
+            if (em && em.id && em.name) guess(em.id, em.name);
           });
         }
         for (const m of text.matchAll(/\[emote:(\d+):([^\]]+)\]/g)) {
           const id = m[1];
           const name = m[2];
-          if (!learned[name]) {
-            learned[name] = { url: `https://files.kick.com/emotes/${id}/fullsize`, source: 'Kick Channel' };
-          }
+          if (!learned[name]) guess(id, name);
         }
         if (Object.keys(learned).length) sink.emotes('native', learned);
 

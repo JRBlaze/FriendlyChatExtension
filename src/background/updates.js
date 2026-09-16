@@ -26,8 +26,8 @@
 (function (FCM) {
   'use strict';
 
-  FCM.GITHUB_REPO = 'JRBlaze/FriendlyChatExtension';
-  FCM.GITHUB_RELEASES_URL = `https://github.com/${FCM.GITHUB_REPO}/releases/latest`;
+  // The repo itself is named in constants.js, which every context loads; only
+  // the API address is needed here, and only the background ever asks it.
   const LATEST_API = `https://api.github.com/repos/${FCM.GITHUB_REPO}/releases/latest`;
 
   // Once every six hours. A release is not an event anybody needs told about
@@ -186,8 +186,14 @@
    * Firefox has not installed yet is on its way, not something to go and get.
    * Storage is not even read.
    *
+   * `installedUrl` is where to read what is in the version running, and is
+   * only worked out on the builds that check — a build the browser updates by
+   * itself never asks GitHub anything, so it has nothing to work it out from
+   * and the popup answers that question for itself.
+   *
    * @returns {Promise<{available: boolean, version: string, url: string,
-   *   downloadUrl: string, notes: string, installed: string}>}
+   *   downloadUrl: string, notes: string, installed: string,
+   *   installedUrl?: string}>}
    */
   FCM.updateStatus = async function () {
     if (FCM.updatedByBrowser()) {
@@ -214,6 +220,15 @@
       version: latest,
       installed,
       url: state.url || FCM.GITHUB_RELEASES_URL,
+      // Where to read what is in the version actually running. A version newer
+      // than anything GitHub has published was built here rather than installed
+      // from a release, and nothing is published under that name — so that one
+      // goes to the releases page rather than to a tag that 404s. Only a build
+      // that checks can tell the difference, which is why this is worked out
+      // here rather than in the popup.
+      installedUrl: (latest && FCM.compareVersions(installed, latest) > 0)
+        ? FCM.GITHUB_RELEASES_URL
+        : FCM.releaseNotesUrl(installed),
       downloadUrl: state.downloadUrl || '',
       notes: state.notes || '',
       checkedAt: state.checkedAt || 0,

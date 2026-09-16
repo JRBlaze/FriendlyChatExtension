@@ -89,22 +89,57 @@
       };
     },
 
-    async emotes(slug) {
+    /**
+     * The emote sets Kick will offer for this channel.
+     *
+     * Signed in, Kick answers with more than it does to a stranger: the emotes
+     * this account has collected, and the sets of the other channels it
+     * subscribes to. None of that is in the anonymous answer, and the only
+     * difference between the two requests is whether the session goes with it —
+     * so the caller hands in the same headers the rest of Kick's own API is
+     * asked with, and an unsigned request is exactly what it always was.
+     *
+     * @param {object} opts { headers } the session headers, when there are any
+     */
+    async emotes(slug, { headers = null } = {}) {
       const key = FCM.normalizeChannel(slug);
       // Two published paths for the same list; the second is the newer one.
       const urls = [
         `https://kick.com/emotes/${encodeURIComponent(key)}`,
         `https://kick.com/api/v2/channels/${encodeURIComponent(key)}/emotes`,
       ];
-      for (const url of urls) {
-        const data = await FCM.getJson(url, {
-          headers: { Accept: 'application/json' },
-          credentials: 'omit',
-        });
-        const store = FCM.parseKickEmotePayload(data, slug);
-        if (Object.keys(store).length) return store;
+
+      const ask = async (signed) => {
+        for (const url of urls) {
+          // eslint-disable-next-line no-await-in-loop
+          const data = await FCM.getJson(url, {
+            headers: signed
+              ? { Accept: 'application/json', ...headers }
+              : { Accept: 'application/json' },
+            credentials: signed ? 'include' : 'omit',
+            // This is the one request in the extension that carries a live
+            // session as a bearer, and a redirect is not something Kick's
+            // answer needs. Refused rather than followed, so where the header
+            // ends up does not rest on what a redirect strips: refusing it
+            // falls through to the unsigned ask, which is the request this
+            // always made.
+            ...(signed ? { redirect: 'error' } : {}),
+          });
+          const store = FCM.parseKickEmotePayload(data, slug);
+          if (Object.keys(store).length) return store;
+        }
+        return {};
+      };
+
+      if (headers && headers.Authorization) {
+        const mine = await ask(true);
+        if (Object.keys(mine).length) return mine;
+        // A session Kick no longer accepts is answered 401 where a stranger is
+        // answered with a list, so a token that has gone stale would empty the
+        // picker rather than merely leave the personal half of it out. Asked
+        // again as a stranger, which is the request this always made.
       }
-      return {};
+      return ask(false);
     },
   };
 

@@ -55,6 +55,31 @@
   // rather than raced. See write() below.
   let writeChain = Promise.resolve();
 
+  /**
+   * The half of a Kick emote store that is about the channel rather than about
+   * whoever is signed in to kick.com in this browser.
+   *
+   * The cache is keyed by the channel and by the account connected in settings,
+   * which is not the same thing as the account the kick.com session belongs to
+   * — and is empty for every viewer who never connected one. So the personal
+   * half of a signed-in answer stays out of it: this viewer's collectibles, and
+   * the sets of the other channels they subscribe to. Replayed to whoever opens
+   * this channel next, those are emotes they do not have and cannot send, and
+   * the store is only ever added to, so the picker would go on offering them
+   * for the rest of the visit.
+   *
+   * What it costs is the second before the real list lands, which is the one
+   * thing the cache was for. What the cache still holds is the answer a
+   * stranger gets, which is the same answer for everybody.
+   */
+  FCM.kickEmotesWorthCaching = function (store) {
+    const kept = {};
+    Object.keys(store || {}).forEach((name) => {
+      if (FCM.isSharedKickEmote(store[name])) kept[name] = store[name];
+    });
+    return kept;
+  };
+
   FCM.emoteCache = {
     /**
      * The emotes last seen for this channel, or null.

@@ -73,6 +73,63 @@
     'moderation:ban', 'moderation:chat_message:manage',
   ].join(' ');
 
+  // Where the releases live, and where the notes for one are read.
+  //
+  // Here rather than beside the update check, because the check only runs in
+  // the background and these are wanted where it never loads: the panel's
+  // update strip and the popup. The strip was already naming the releases
+  // address as its last resort and getting `undefined` for it — harmless only
+  // because the worker never sends a status without an address of its own.
+  FCM.GITHUB_REPO = 'JRBlaze/FriendlyChatExtension';
+  const RELEASES = `https://github.com/${FCM.GITHUB_REPO}/releases`;
+  FCM.GITHUB_RELEASES_URL = `${RELEASES}/latest`;
+
+  /**
+   * Where to read what changed in one version.
+   *
+   * A release is published under the tag its version is named for, and that
+   * page is the notes. Anything that is not a plain version goes to the
+   * releases page instead: this ends up in an address the browser is asked to
+   * open, and the version reaching it comes from a manifest or from GitHub's
+   * answer rather than from anything here.
+   */
+  FCM.releaseNotesUrl = function (version) {
+    const tag = String(version || '').trim().replace(/^v/i, '');
+    if (!/^\d+(\.\d+){0,3}(-[0-9A-Za-z.]+)?$/.test(tag)) return FCM.GITHUB_RELEASES_URL;
+    return `${RELEASES}/tag/v${tag}`;
+  };
+
+  /**
+   * A release address to put in front of somebody, from what the check stored.
+   *
+   * The stored one came back from GitHub and is the release it actually
+   * published, so it is preferred — but it goes into an href and into
+   * `tabs.create`, and "it came from GitHub" is a thing to check rather than
+   * assume. Anything that is not this repo's own releases falls back to the
+   * page for the version, which is worked out here and cannot be anything else.
+   *
+   * The generic "latest" address falls back too. That is what the check stores
+   * before it has ever reached GitHub, and a link offering one version's notes
+   * should not quietly land on whatever is newest.
+   */
+  FCM.releasePageUrl = function (stored, version) {
+    const fallback = FCM.releaseNotesUrl(version);
+    let url;
+    // Parsed rather than matched as text. `…/releases/../../somewhere-else`
+    // starts with all the right characters and is not the right page: the
+    // browser resolves those segments away before it goes anywhere, so a check
+    // that does not resolve them first is checking an address that will never
+    // be visited. What comes back is the resolved form, for the same reason.
+    try { url = new URL(String(stored || '')); } catch (e) { return fallback; }
+    if (url.origin !== 'https://github.com') return fallback;
+    if (!url.pathname.startsWith(`/${FCM.GITHUB_REPO}/releases/`)) return fallback;
+    // The generic "latest" address is what the check stores before it has ever
+    // reached GitHub, and a link offering one version's notes should not
+    // quietly land on whatever is newest.
+    if (url.href === FCM.GITHUB_RELEASES_URL) return fallback;
+    return url.href;
+  };
+
   FCM.KICK_PUSHER_KEY = '32cbd69e4b950bf97679';
   FCM.KICK_PUSHER_URL =
     `wss://ws-us2.pusher.com/app/${FCM.KICK_PUSHER_KEY}?protocol=7&client=js&version=7.4.0&flash=false`;
