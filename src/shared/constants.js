@@ -77,11 +77,12 @@
   //
   // Here rather than beside the update check, because the check only runs in
   // the background and these are wanted where it never loads: the panel's
-  // update strip, and the popup's card and footer. The strip already reached
-  // for the releases address and got `undefined`, which its `|| ''` quietly
-  // turned into no link at all.
+  // update strip and the popup. The strip was already naming the releases
+  // address as its last resort and getting `undefined` for it — harmless only
+  // because the worker never sends a status without an address of its own.
   FCM.GITHUB_REPO = 'JRBlaze/FriendlyChatExtension';
-  FCM.GITHUB_RELEASES_URL = `https://github.com/${FCM.GITHUB_REPO}/releases/latest`;
+  const RELEASES = `https://github.com/${FCM.GITHUB_REPO}/releases`;
+  FCM.GITHUB_RELEASES_URL = `${RELEASES}/latest`;
 
   /**
    * Where to read what changed in one version.
@@ -95,7 +96,26 @@
   FCM.releaseNotesUrl = function (version) {
     const tag = String(version || '').trim().replace(/^v/i, '');
     if (!/^\d+(\.\d+){0,3}(-[0-9A-Za-z.]+)?$/.test(tag)) return FCM.GITHUB_RELEASES_URL;
-    return `https://github.com/${FCM.GITHUB_REPO}/releases/tag/v${tag}`;
+    return `${RELEASES}/tag/v${tag}`;
+  };
+
+  /**
+   * A release address to put in front of somebody, from what the check stored.
+   *
+   * The stored one came back from GitHub and is the release it actually
+   * published, so it is preferred — but it goes into an href and into
+   * `tabs.create`, and "it came from GitHub" is a thing to check rather than
+   * assume. Anything that is not this repo's own releases falls back to the
+   * page for the version, which is worked out here and cannot be anything else.
+   *
+   * The generic "latest" address falls back too. That is what the check stores
+   * before it has ever reached GitHub, and a link offering one version's notes
+   * should not quietly land on whatever is newest.
+   */
+  FCM.releasePageUrl = function (stored, version) {
+    const url = String(stored || '');
+    if (url.startsWith(`${RELEASES}/`) && url !== FCM.GITHUB_RELEASES_URL) return url;
+    return FCM.releaseNotesUrl(version);
   };
 
   FCM.KICK_PUSHER_KEY = '32cbd69e4b950bf97679';

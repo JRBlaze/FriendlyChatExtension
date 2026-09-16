@@ -187,7 +187,8 @@
    * Storage is not even read.
    *
    * @returns {Promise<{available: boolean, version: string, url: string,
-   *   downloadUrl: string, notes: string, installed: string}>}
+   *   downloadUrl: string, notes: string, installed: string,
+   *   installedUrl: string}>}
    */
   FCM.updateStatus = async function () {
     if (FCM.updatedByBrowser()) {
@@ -196,6 +197,9 @@
         version: '',
         installed: installedVersion(),
         url: FCM.GITHUB_RELEASES_URL,
+        // A build the browser updates by itself was installed from a release,
+        // so the tag its version is named for is there to be read.
+        installedUrl: FCM.releaseNotesUrl(installedVersion()),
         downloadUrl: '',
         notes: '',
         checkedAt: 0,
@@ -214,6 +218,15 @@
       version: latest,
       installed,
       url: state.url || FCM.GITHUB_RELEASES_URL,
+      // Where to read what is in the version actually running. A version newer
+      // than anything GitHub has published was built here rather than installed
+      // from a release, and nothing is published under that name — so that one
+      // goes to the releases page rather than to a tag that 404s. Only a build
+      // that checks can tell the difference, which is why this is worked out
+      // here rather than in the popup.
+      installedUrl: (latest && FCM.compareVersions(installed, latest) > 0)
+        ? FCM.GITHUB_RELEASES_URL
+        : FCM.releaseNotesUrl(installed),
       downloadUrl: state.downloadUrl || '',
       notes: state.notes || '',
       checkedAt: state.checkedAt || 0,

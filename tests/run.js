@@ -850,12 +850,27 @@ suites.firefox = function () {
       text: 'v9.9.9 is out · Firefox updates it by itself',
       links: [available.url],
     }, 'firefox: strip: a build Firefox updates by itself says so, and links what changed but no file');
-    // A release the check never reached leaves no address behind. The tag a
-    // version is published under is one that can be worked out rather than
-    // fetched, so the link is there regardless.
-    eq(strip(manifest, { ...available, url: '', downloadUrl: '' }).links,
-      ['https://github.com/JRBlaze/FriendlyChatExtension/releases/tag/v9.9.9'],
-      'firefox: strip: with no address stored, the notes are found from the version itself');
+    // A release with no file for this browser keeps the one link it always had.
+    // Its page is where the file would be and where the notes are, so a second
+    // link to the same page would say nothing.
+    eq(strip(manifest, { ...available, downloadUrl: '' }), {
+      shown: true,
+      parts: ['fcm-update-text', 'fcm-update-link', 'fcm-update-close'],
+      text: 'v9.9.9 is out',
+      links: [available.url],
+    }, 'firefox: strip: a release with no file for this browser still offers its page, as before');
+
+    // A release the check never reached leaves only the generic "latest"
+    // address behind. The tag a version is published under can be worked out
+    // rather than fetched, so the link is there regardless — and points at the
+    // version being offered rather than at whatever is newest.
+    const tag = 'https://github.com/JRBlaze/FriendlyChatExtension/releases/tag/v9.9.9';
+    eq(strip(manifest, { ...available, url: 'https://github.com/JRBlaze/FriendlyChatExtension/releases/latest', downloadUrl: '' }).links,
+      [tag], 'firefox: strip: with no release address stored, the version is enough to find its notes');
+    // And an address that is not this repo's releases at all is not put in an
+    // href — it falls back to the one worked out here rather than disappearing.
+    eq(strip(manifest, { ...available, url: 'https://evil.example/x', downloadUrl: '' }).links,
+      [tag], "firefox: strip: nor is one that is not this repo's, which falls back rather than vanishing");
     eq(strip(fm, { available: false }).shown, false, 'firefox: strip: and with nothing available, shows nothing at all');
   }
 
@@ -1360,6 +1375,12 @@ suites.firefox = function () {
           const status = await w.sandbox.FCM.updateStatus();
           eq([status.available, status.version, status.downloadUrl, status.installed], [false, '', '', manifest.version],
             'firefox: self-updating: nothing is reported as available, even with a newer release stored');
+          // Except where to read what is in the version running. This build was
+          // installed from a release, so its tag is there — and it is the one
+          // build whose updates arrive with nobody being told what was in them.
+          eq(status.installedUrl,
+            `https://github.com/JRBlaze/FriendlyChatExtension/releases/tag/v${manifest.version}`,
+            'firefox: self-updating: but it still says where to read what changed in what is running');
           const checked = await w.sandbox.FCM.checkForUpdate(true);
           eq([checked.available, checked.checked, checked.downloadUrl], [false, false, ''],
             'firefox: self-updating: a check asked for directly makes none, says it made none, and finds nothing');
@@ -1391,6 +1412,20 @@ suites.firefox = function () {
         } finally { w.teardown(); }
       }
 
+      // A version newer than anything GitHub has published was built here rather
+      // than installed from a release, so nothing is published under that name
+      // and its tag is a 404. Only a build that checks can tell, which is why
+      // the background works it out and the popup follows.
+      {
+        const { w } = booted({ seed: { local: { [UPDATE]: { latest: '0.0.1', url: `${releases}/tag/v0.0.1` } } } });
+        try {
+          const status = await w.sandbox.FCM.updateStatus();
+          ok(!status.available, 'firefox: unreleased: a build newer than every release is not offered one');
+          eq(status.installedUrl, `${releases}/latest`,
+            'firefox: unreleased: and its notes go to the releases page rather than to a tag that is not there');
+        } finally { w.teardown(); }
+      }
+
       for (const [what, opts] of [
         ['Chrome', {}],
         ['a Firefox package without an update_url', { ...SIGNED, updateUrl: null }],
@@ -1402,6 +1437,9 @@ suites.firefox = function () {
             await wait(60);
             ok(w.alarms.has('fcm-update-check'), `firefox: ${what}: still schedules the update check`);
             ok((await w.sandbox.FCM.updateStatus()).available, `firefox: ${what}: still reports the stored update`);
+            eq((await w.sandbox.FCM.updateStatus()).installedUrl,
+              `${releases}/tag/v${manifest.version}`,
+              `firefox: ${what}: and says where to read what is in the version running`);
             eq(w.badge.text, '●', `firefox: ${what}: still paints the dot`);
             const tab = w.makeTab(1).connect();
             tab.send({ cmd: 'hello', site: 'twitch', channel: 'alpha', hints: [] });
@@ -3780,6 +3818,24 @@ suites.updates = function () {
   eq(notes('../../evil'), FCM.GITHUB_RELEASES_URL, 'updates: and so does anything that is not one');
   eq(notes('1.0.0 onerror=alert(1)'), FCM.GITHUB_RELEASES_URL, 'updates: including one with something after it');
   eq(notes(null), FCM.GITHUB_RELEASES_URL, 'updates: and nothing at all');
+
+  // Which of the two a surface should put in front of somebody: what GitHub
+  // actually published, when that is what it is, and the worked-out page when
+  // it is anything else.
+  const page = FCM.releasePageUrl;
+  const real = 'https://github.com/JRBlaze/FriendlyChatExtension/releases/tag/v1.22.0';
+  eq(page(real, '1.22.0'), real, "updates: a stored release address is this repo's, so it is used");
+  eq(page('https://github.com/JRBlaze/FriendlyChatExtension/releases/download/v1.22.0/x.zip', '1.22.0'),
+    'https://github.com/JRBlaze/FriendlyChatExtension/releases/download/v1.22.0/x.zip',
+    'updates: including the file the release carries');
+  eq(page(FCM.GITHUB_RELEASES_URL, '1.22.0'), real,
+    'updates: but the generic latest address is not one version’s notes, so the version wins');
+  eq(page('https://evil.example/releases/tag/v1.22.0', '1.22.0'), real,
+    'updates: and nothing from anywhere else is used at all');
+  eq(page('javascript:alert(1)', '1.22.0'), real, 'updates: nor anything that is not a web address');
+  eq(page('https://github.com/JRBlaze/FriendlyChatExtension-evil/releases/tag/v1', '1.22.0'), real,
+    'updates: nor a repo whose name merely starts the same way');
+  eq(page('', ''), FCM.GITHUB_RELEASES_URL, 'updates: with neither, the releases page');
 };
 
 // ── The extension's own pages ─────────────────────────────────────────────────
@@ -4040,37 +4096,54 @@ suites.popup = function () {
       {
         const p = openPopup();
         await settle();
-        await p.$('update-notes').click();
+        await p.$('update-whats-new').click();
         eq(p.created, [status().url], 'popup: the card links the notes for the release being offered');
       }
       {
-        // A check that stored no address — an older build's state, or a release
-        // GitHub answered oddly — still has the version, and a version is
-        // enough to work out where its notes are.
-        const p = openPopup({ update: status({ url: '' }) });
+        // A check that has never reached GitHub stores no release address, only
+        // the generic "latest" one — and a link offering one version's notes
+        // must not quietly land on whatever is newest. The version is enough to
+        // work out where its own notes are.
+        const p = openPopup({ update: status({ url: `${release}/latest` }) });
         await settle();
-        await p.$('update-notes').click();
+        await p.$('update-whats-new').click();
         eq(p.created, [`${release}/tag/v9.9.9`], 'popup: and falls back to the tag that version is published under');
       }
       {
-        // What the check stored came from GitHub and goes straight into
-        // tabs.create. The strip has always refused anything but https before
-        // putting it in an href; this side refuses it too.
-        const p = openPopup({ update: status({ url: 'javascript:alert(1)', downloadUrl: 'data:text/html,x' }) });
+        // What the check stored came back from GitHub and goes straight into
+        // tabs.create. Both surfaces check what it is rather than assume, and
+        // an address that is not this repo's releases falls back to the one
+        // that is worked out here.
+        const p = openPopup({
+          update: status({ url: 'https://evil.example/x', downloadUrl: 'javascript:alert(1)' }),
+        });
         await settle();
-        await p.$('update-notes').click();
+        await p.$('update-whats-new').click();
         await p.$('update-get').click();
-        eq(p.created, [`${release}/latest`, `${release}/latest`],
-          'popup: a stored address that is not https opens the releases page, not itself');
+        eq(p.created, [`${release}/tag/v9.9.9`, `${release}/tag/v9.9.9`],
+          "popup: a stored address that is not this repo's releases is not opened");
       }
       {
-        // The footer's own link is about the version running, not the one on
-        // offer, so it answers "what changed in the update I just got".
-        const p = openPopup({ update: { available: false } });
+        // The version in the footer is about the build running, not the one on
+        // offer, so it answers "what changed in the update I just got" — and it
+        // is labelled by its number, so it cannot be mistaken for the card's
+        // link to a different release.
+        const p = openPopup({ update: { available: false, installed: '1.2.3', installedUrl: `${release}/tag/v1.2.3` } });
         await settle();
         ok(p.$('update').classList.contains('hidden'), 'popup: with nothing newer there is no card');
-        await p.$('whats-new').click();
-        eq(p.created, [`${release}/tag/v1.2.3`], 'popup: and the footer still links what is in the installed version');
+        eq(p.$('version').textContent, 'v1.2.3', 'popup: the footer still shows the version it always did');
+        await p.$('version').click();
+        eq(p.created, [`${release}/tag/v1.2.3`], 'popup: and it links what is in that version');
+      }
+      {
+        // A version newer than anything published was built here, not installed
+        // from a release, so its tag is a 404. The background works that out —
+        // only it knows what the last check found — and the footer follows.
+        const p = openPopup({ update: { available: false, installed: '9.9.9', installedUrl: `${release}/latest` } });
+        await settle();
+        await p.$('version').click();
+        eq(p.created, [`${release}/latest`],
+          'popup: a version with no release of its own goes to the releases page, not a 404');
       }
 
       // ── Closing only once the tab is there ──
@@ -4170,12 +4243,13 @@ suites.popup = function () {
         ok(!p.$('updated-by-browser').classList.contains('hidden'), 'popup: and shows a line in its place');
         eq(p.$('updated-by-browser').textContent, 'Kept up to date by Firefox', 'popup: saying that Firefox keeps it up to date');
         ok(p.$('update').classList.contains('hidden'), 'popup: with no update card, even with a background that would report one');
-        // Which leaves the footer as the only place this build can say what an
-        // update contained — and it is the build where nobody is ever asked
-        // before one arrives.
-        await p.$('whats-new').click();
+        // Which leaves the version in the footer as the only place this build
+        // can say what an update contained — and it is the build where nobody
+        // is ever asked before one arrives. It needs no check for it: this
+        // build was installed from a release, so its tag is there to be read.
+        await p.$('version').click();
         eq(p.created, [`${release}/tag/v1.2.3`],
-          'popup: so the footer links what changed, on the build that updates itself');
+          'popup: so the version links what changed, on the build that updates itself');
         p.created.length = 0;
         await p.$('check-updates').click();
         await p.$('update-get').click();

@@ -160,16 +160,6 @@
     } catch (e) { /* refused on the spot */ }
   }
 
-  /**
-   * A release address, or the releases page when it is not one.
-   *
-   * What the check stored came from GitHub and goes back out into
-   * `tabs.create`, and the overlay's strip has always refused anything but
-   * https before putting it in an href. This is the same guard on this side of
-   * it, so one surface cannot be stricter than the other about the same value.
-   */
-  const release = (url) => (/^https:\/\//i.test(String(url || '')) ? String(url) : FCM.GITHUB_RELEASES_URL);
-
   function renderUpdate(status) {
     const card = $('update');
     if (!status || !status.available) { card.classList.add('hidden'); return; }
@@ -185,14 +175,16 @@
     $('update-get').textContent = status.downloadUrl
       ? (FCM.BROWSER === 'firefox' ? 'Download the add-on' : 'Download the zip')
       : 'Open the release';
-    $('update-get').onclick = () => openTab(release(status.downloadUrl || status.url));
-    // What changed, which the card could not say before: the note above it is
-    // the release's title, and the button beside it downloads a file. Pointed
-    // at the release GitHub actually published when the check found one, and at
-    // the tag for that version otherwise — a page that exists either way.
-    $('update-notes').onclick = (e) => {
-      e.preventDefault();
-      openTab(status.url ? release(status.url) : FCM.releaseNotesUrl(status.version));
+    $('update-get').onclick = () => openTab(
+      FCM.releasePageUrl(status.downloadUrl || status.url, status.version)
+    );
+    // What changed in the release being offered — which the card could not say
+    // before, its note being the release's title and its button a file to
+    // download. The footer's version says the same about the version running,
+    // which is the other question and is asked from the other place.
+    $('update-whats-new').onclick = (ev) => {
+      ev.preventDefault();
+      openTab(FCM.releasePageUrl(status.url, status.version));
     };
     $('update-dismiss').onclick = async () => {
       await ask('updateDismiss', { version: status.version });
@@ -253,22 +245,38 @@
     });
   }
 
-  // What changed in the version that is actually running, whether or not there
-  // is a newer one. This is the only route to the notes on a build the browser
-  // updates by itself: there the card above never appears, because there is
-  // never anything to go and fetch — the update simply arrives, and until now
-  // the first anyone knew of it was that something had moved.
-  $('whats-new').addEventListener('click', (e) => {
-    e.preventDefault();
-    openTab(FCM.releaseNotesUrl(installed));
-  });
-
   $('open-options').addEventListener('click', (e) => {
     e.preventDefault();
     chrome.runtime.openOptionsPage();
   });
 
+  // The version is also the way to what changed in it, which is the only route
+  // to the notes on a build the browser updates by itself: there the card above
+  // never appears, because there is never anything to go and fetch — the update
+  // simply arrives, and the first anyone knows of it is that something has
+  // moved. Its own tag, until the background says otherwise; see below.
   $('version').textContent = `v${installed}`;
+  let versionUrl = FCM.releaseNotesUrl(installed);
+  $('version').href = versionUrl;
+  $('version').addEventListener('click', (e) => {
+    e.preventDefault();
+    openTab(versionUrl);
+  });
+
+  /**
+   * Points the version at the releases page instead, when its own tag would be
+   * a 404.
+   *
+   * A version newer than anything GitHub has published was built here rather
+   * than installed from a release, so nothing is published under that name.
+   * Only the builds that check can know this: one the browser updates by itself
+   * came from a release by definition, and never asks.
+   */
+  function setVersionLink(status) {
+    if (!status || !status.installedUrl) return;
+    versionUrl = status.installedUrl;
+    $('version').href = versionUrl;
+  }
 
   if (FCM.BROWSER === 'firefox') {
     // Firefox asks the person before it grants anything, and only for a request
@@ -311,5 +319,7 @@
   // From what the last background check stored, so the banner is there the
   // moment the popup opens rather than a beat later. Not on a build Firefox
   // updates by itself, where no check has stored anything.
-  if (!updatedByBrowser) ask('updateStatus').then(renderUpdate);
+  if (!updatedByBrowser) {
+    ask('updateStatus').then((status) => { renderUpdate(status); setVersionLink(status); });
+  }
 })(self.FCM);

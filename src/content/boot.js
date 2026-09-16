@@ -450,17 +450,23 @@
     // also holds this account's collectibles and the sets of the other channels
     // it subscribes to.
     //
-    // Asked again unsigned if that is refused. A session Kick no longer accepts
-    // is answered 401 where a stranger is answered with a list, and this is the
-    // path that runs when the worker got nothing at all — so a stale cookie
-    // would take the picker from a poorer answer to no answer.
+    // Asked again unsigned when that comes back with nothing. A session Kick no
+    // longer accepts is answered 401 where a stranger is answered with a list,
+    // and this is the path that runs when the worker got nothing at all — so a
+    // stale cookie would take the picker from a poorer answer to no answer.
+    //
+    // Nothing means nothing, refused or merely empty, which is how the worker
+    // decides it too: a 200 carrying no sets this can read leaves the picker
+    // just as bare as a 401 does.
     const ask = async (token) => {
       const headers = { Accept: 'application/json' };
       if (token) headers.Authorization = `Bearer ${token}`;
       const res = await fetch(`https://kick.com/emotes/${encodeURIComponent(slug)}`, {
         headers, credentials: 'include',
       });
-      return res.ok ? FCM.parseKickEmotePayload(await res.json(), slug) : null;
+      if (!res.ok) return null;
+      const store = FCM.parseKickEmotePayload(await res.json(), slug);
+      return Object.keys(store).length ? store : null;
     };
 
     try {

@@ -240,8 +240,8 @@ inside, because Chrome builds up to v1.20.1 take the first `.zip` on a release a
   *What's new* link to that release's notes. Nothing installs itself — no extension outside the
   Web Store can — but the steps that are left are two clicks rather than a trip to GitHub you had
   to think of. That is Chrome. In Firefox the signed add-on is updated by Firefox itself, so none
-  of the rest appears there: the popup says *Kept up to date by Firefox*, with *What's new* beside
-  it for the version you are now running.
+  of the rest appears there: the popup says *Kept up to date by Firefox*, and the version number
+  in its footer links what changed in the version you are now running.
 - **Follows the site's own theme.** Twitch or Kick in dark mode gets a dark overlay, light mode
   gets a light one, and it switches the moment you change it on the site.
 - **Several streams at once.** Each tab keeps its own sockets, channels and feed.
@@ -278,12 +278,17 @@ carries the same *What's new* link. Dismissing it in either place hides that one
 every future one. *Check for updates* in the popup's footer asks now.
 
 *What's new* opens that release on GitHub, where the notes are. It is there because a version
-number is not a reason to update: before it, the only link on the strip went straight to a
-download whenever there was one to go to, so the only way to find out what was in a release was
-to install it and look. Where the check has an address for the release, that is where it goes;
-where it has none — a build that has never reached GitHub, or one that never asks — the tag a
-version is published under is worked out from the version itself, so the link is there either
-way.
+number is not a reason to update, and the strip's one link went straight to the file whenever the
+release carried one — so on exactly the releases you would most want to read about, nothing on
+the strip led anywhere you could. A release with no file for this browser keeps the single *See
+release* link it always had: that page is both the notes and where the file would be, and a
+second link to it would say nothing.
+
+Where the check has the release's own address, that is where the link goes. Where it has none —
+a build whose check has never reached GitHub, or one that never asks — the tag a version is
+published under is worked out from the version itself, so there is something to open either way.
+An address that is not this repo's own releases is not opened at all; it falls back to the one
+worked out here.
 
 Nothing here can install the update. An extension cannot replace itself, and no permission
 changes that — what this removes is having to remember to go and look.
@@ -313,12 +318,17 @@ GitHub of the extension's own, no dot on the icon, no strip in the overlay and n
 the popup, whose footer says *Kept up to date by Firefox* where *Check for updates* would be. They
 could only announce an update already on its way.
 
-What is not switched off is *What's new*, in the popup's footer beside that line. An update that
-installs itself is the case where you are least likely to know what changed — nobody is asked and
-nothing is announced — so the link points at the release for the version now running, worked out
-from the version rather than fetched, which is why it needs no check and no access to GitHub. The Firefox package does not even ask for access
-to `api.github.com`, which only that check used, so it is not among the sites Firefox lists at
-install.
+What is not switched off is the version number in the popup's footer, which is a link to what
+changed in that version. An update that installs itself is the case where you are least likely to
+know what changed — nobody is asked and nothing is announced — and this build was installed from
+a release, so the page for its version is there to open. It is worked out from the version rather
+than fetched, which is why it needs no check and no access to GitHub: the Firefox package does
+not even ask for access to `api.github.com`, which only that check used, so it is not among the
+sites Firefox lists at install.
+
+On the builds that do check, the same link takes one more thing into account. A version newer
+than anything published was built here rather than installed from a release, so nothing exists
+under that tag — those go to the releases page instead of to a 404.
 
 One thing an update does not bring with it is a site the new version has started asking for.
 Firefox installs the update without it and asks nobody, so the add-on asks instead: the popup
