@@ -133,7 +133,9 @@
   // The version this install actually is, which the footer shows and the
   // release-notes link points at.
   let installed = '';
-  try { installed = String(chrome.runtime.getManifest().version || ''); } catch (err) { /* not an extension page */ }
+  try {
+    installed = String(chrome.runtime.getManifest().version || '');
+  } catch (e) { /* not an extension page */ }
 
   function ask(cmd, extra) {
     return new Promise((resolve) => {
@@ -182,9 +184,17 @@
     // before, its note being the release's title and its button a file to
     // download. The footer's version says the same about the version running,
     // which is the other question and is asked from the other place.
+    const notes = FCM.releasePageUrl(status.url, status.version);
+    // A release with no file for this browser is already offered as its page by
+    // the button above, and two controls opening the same page is one of them
+    // saying nothing. The strip does the same.
+    $('update-whats-new').hidden = !status.downloadUrl;
+    // A real href, not only a handler: a middle-click or a ctrl-click opens
+    // what the anchor says, and "#" is nowhere.
+    $('update-whats-new').href = notes;
     $('update-whats-new').onclick = (ev) => {
       ev.preventDefault();
-      openTab(FCM.releasePageUrl(status.url, status.version));
+      openTab(notes);
     };
     $('update-dismiss').onclick = async () => {
       await ask('updateDismiss', { version: status.version });
@@ -228,6 +238,12 @@
       const line = $('updated-by-browser');
       if (temporary) line.textContent = 'Loaded temporarily, so Firefox does not update it';
       line.classList.remove('hidden');
+      // A signed install came from a release, so the page for its version is
+      // there to open. One loaded from about:debugging did not — it is whatever
+      // was built locally, and nothing is published under that name — so it goes
+      // to the releases page rather than to a tag that is not there. Nothing
+      // here checks, so this is the only thing that can tell the two apart.
+      if (temporary) setVersionUrl(FCM.GITHUB_RELEASES_URL);
     });
   } else {
     $('check-updates').addEventListener('click', async (e) => {
@@ -236,6 +252,11 @@
       link.textContent = 'Checking…';
       const status = await ask('updateCheck');
       renderUpdate(status);
+      // A check is the first thing that can know the running version was never
+      // published — it is the only thing that learns what the newest release
+      // is. Pressing this is also the likeliest way to find out, so the answer
+      // has to reach the version below as well as the card above.
+      setVersionLink(status);
       // `checked === false` is a check that could not be made, which is a
       // different thing from one that found nothing new. The plain read below
       // carries no `checked` at all, so it keeps saying what it always did.
@@ -263,19 +284,24 @@
     openTab(versionUrl);
   });
 
+  function setVersionUrl(url) {
+    versionUrl = url;
+    $('version').href = url;
+  }
+
   /**
-   * Points the version at the releases page instead, when its own tag would be
-   * a 404.
+   * Points the version somewhere else when its own tag would be a 404.
    *
    * A version newer than anything GitHub has published was built here rather
    * than installed from a release, so nothing is published under that name.
-   * Only the builds that check can know this: one the browser updates by itself
-   * came from a release by definition, and never asks.
+   * Only a build that checks can know that, since knowing it means knowing what
+   * the newest release is — so the answer is worked out where the check is and
+   * handed over here. A build the browser updates by itself never asks, and
+   * says which it is a different way; see above.
    */
   function setVersionLink(status) {
     if (!status || !status.installedUrl) return;
-    versionUrl = status.installedUrl;
-    $('version').href = versionUrl;
+    setVersionUrl(status.installedUrl);
   }
 
   if (FCM.BROWSER === 'firefox') {

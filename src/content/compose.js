@@ -33,9 +33,16 @@
             // first store to have it decides how it looks. Whose it is, though,
             // is only ever learnt: the platform's own list and a provider's list
             // do not both know, so whichever does gets to say.
+            //
+            // Being a collectible is not that kind of fact. It says which set
+            // the record being drawn came from, and the record being drawn is
+            // the first one in — so it is not carried across from a later one.
+            // This map is keyed by bare name across both platforms and Twitch
+            // is walked first, so carrying it meant one shared name marking a
+            // Twitch emote as a Kick collectible, and the picker files a whole
+            // section by that mark.
             if (emote.channel) already.channel = true;
             if (emote.owner && !already.owner) already.owner = emote.owner;
-            if (emote.collectible) already.collectible = true;
             return;
           }
           const entry = {
@@ -66,6 +73,98 @@
     emoteIndex = items;
     emoteIndexVersion = FCM.view.emoteVersion;
     return items;
+  };
+
+  /**
+   * The picker's sections, in the order they are drawn.
+   *
+   * Lifted out of the panel so it can be asked what it would draw. Everything
+   * it needs is its arguments: the emotes to lay out and the favourites in the
+   * order they were starred. What comes back is `{ title, entries }`, where a
+   * title is already escaped — it carries the "this channel" marker as markup —
+   * and an entry is `{ item, index }`, the index being the emote's place in
+   * the list handed in, which is what a click reads back.
+   */
+  FCM.pickerSections = function (matches, favouriteOrder) {
+    // Grouped by the channel an emote belongs to, and by what kind of emote
+    // it is when no channel owns it. A subscriber to thirty channels had all
+    // of it under one "Twitch Sub" heading, which is a list of every emote
+    // they have rather than an answer to "what can I send here".
+    const groups = new Map();   // lowercased key -> { title, entries }
+    const favs = [];
+    const order = Array.isArray(favouriteOrder) ? favouriteOrder : [];
+
+    const groupFor = (item) => {
+      // Collectibles belong to the viewer rather than to any channel, so they
+      // are grouped by what they are, and nothing a channel says about them
+      // is read here. Kick's own picker does the same, and somebody who went
+      // and collected an emote wants to find it as a set rather than
+      // scattered through whichever channel it came from. It also keeps one
+      // section at a time as the room you are in: an emote that shares a name
+      // with something in the channel's own set arrives marked both ways.
+      const mine = !!item.collectible;
+      const owner = mine ? '' : (item.owner || '');
+      const title = owner || item.source || 'Emotes';
+      // Keyed case-insensitively: the same channel arrives as a login from
+      // the third-party providers and as a display name from Twitch, and
+      // "jynxzi" and "Jynxzi" are not two channels.
+      const key = title.toLowerCase();
+      let group = groups.get(key);
+      if (!group) {
+        group = {
+          title, owner: !!owner, channel: false, collectible: false, entries: [],
+        };
+        groups.set(key, group);
+      }
+      if (mine) { group.collectible = true; return group; }
+      // Prefer the spelling that carries capitals, which is the one the
+      // platform shows people.
+      if (owner && title !== title.toLowerCase() && group.title === group.title.toLowerCase()) {
+        group.title = title;
+      }
+      if (item.channel) group.channel = true;
+      return group;
+    };
+
+    matches.forEach((item, index) => {
+      const entry = { item, index };
+      // A favourite is listed once, at the top, rather than again under its
+      // channel — the same emote twice in one list is a worse answer than
+      // either placement on its own.
+      if (order.indexOf(item.name) !== -1) { favs.push(entry); return; }
+      groupFor(item).entries.push(entry);
+    });
+    // In the order they were starred, not the order the providers list them.
+    favs.sort((a, b) => order.indexOf(a.item.name) - order.indexOf(b.item.name));
+
+    // Collectibles first, then the channel being watched, then the other
+    // channels by name, then everything that belongs to nobody — globals,
+    // Prime, hype train.
+    //
+    // Collectibles lead for the same reason favourites do: it is a short set
+    // this viewer went and earned, it is usable in every channel, and it is
+    // the one section that is about them rather than about where they are.
+    // Kick's own picker puts it first too, straight after recently used.
+    const ordered = [...groups.values()].sort((a, b) => {
+      if (a.collectible !== b.collectible) return a.collectible ? -1 : 1;
+      if (a.channel !== b.channel) return a.channel ? -1 : 1;
+      if (a.owner !== b.owner) return a.owner ? -1 : 1;
+      return a.title.localeCompare(b.title);
+    });
+
+    // No cap. Every emote loaded is drawn, because "+340 more — type to
+    // search" asked people to remember a name in order to find a picture,
+    // which is what a picker is for in the first place.
+    const sections = [];
+    if (favs.length) sections.push({ title: '★ Favourites', entries: favs });
+    ordered.forEach((group) => sections.push({
+      // The channel being watched is worth saying so, because it is the one
+      // set everyone in the room can see you use.
+      title: FCM.escapeHtml(group.title) + (group.channel ? ' <em>· this channel</em>' : ''),
+      entries: group.entries,
+    }));
+
+    return sections;
   };
 
   /**
@@ -296,83 +395,7 @@
         return;
       }
 
-      // Grouped by the channel an emote belongs to, and by what kind of emote
-      // it is when no channel owns it. A subscriber to thirty channels had all
-      // of it under one "Twitch Sub" heading, which is a list of every emote
-      // they have rather than an answer to "what can I send here".
-      const groups = new Map();   // lowercased key -> { title, entries }
-      const favs = [];
-      const order = favourites();
-
-      const groupFor = (item) => {
-        // Collectibles belong to the viewer rather than to any channel, so they
-        // are grouped by what they are, and nothing a channel says about them
-        // is read here. Kick's own picker does the same, and somebody who went
-        // and collected an emote wants to find it as a set rather than
-        // scattered through whichever channel it came from. It also keeps one
-        // section at a time as the room you are in: an emote that shares a name
-        // with something in the channel's own set arrives marked both ways.
-        const mine = !!item.collectible;
-        const owner = mine ? '' : (item.owner || '');
-        const title = owner || item.source || 'Emotes';
-        // Keyed case-insensitively: the same channel arrives as a login from
-        // the third-party providers and as a display name from Twitch, and
-        // "jynxzi" and "Jynxzi" are not two channels.
-        const key = title.toLowerCase();
-        let group = groups.get(key);
-        if (!group) {
-          group = {
-            title, owner: !!owner, channel: false, collectible: false, entries: [],
-          };
-          groups.set(key, group);
-        }
-        if (mine) { group.collectible = true; return group; }
-        // Prefer the spelling that carries capitals, which is the one the
-        // platform shows people.
-        if (owner && title !== title.toLowerCase() && group.title === group.title.toLowerCase()) {
-          group.title = title;
-        }
-        if (item.channel) group.channel = true;
-        return group;
-      };
-
-      matches.forEach((item, index) => {
-        const entry = { item, index };
-        // A favourite is listed once, at the top, rather than again under its
-        // channel — the same emote twice in one list is a worse answer than
-        // either placement on its own.
-        if (isFavourite(item.name)) { favs.push(entry); return; }
-        groupFor(item).entries.push(entry);
-      });
-      // In the order they were starred, not the order the providers list them.
-      favs.sort((a, b) => order.indexOf(a.item.name) - order.indexOf(b.item.name));
-
-      // Collectibles first, then the channel being watched, then the other
-      // channels by name, then everything that belongs to nobody — globals,
-      // Prime, hype train.
-      //
-      // Collectibles lead for the same reason favourites do: it is a short set
-      // this viewer went and earned, it is usable in every channel, and it is
-      // the one section that is about them rather than about where they are.
-      // Kick's own picker puts it first too, straight after recently used.
-      const ordered = [...groups.values()].sort((a, b) => {
-        if (a.collectible !== b.collectible) return a.collectible ? -1 : 1;
-        if (a.channel !== b.channel) return a.channel ? -1 : 1;
-        if (a.owner !== b.owner) return a.owner ? -1 : 1;
-        return a.title.localeCompare(b.title);
-      });
-
-      // No cap. Every emote loaded is drawn, because "+340 more — type to
-      // search" asked people to remember a name in order to find a picture,
-      // which is what a picker is for in the first place.
-      const sections = [];
-      if (favs.length) sections.push({ title: '★ Favourites', entries: favs });
-      ordered.forEach((group) => sections.push({
-        // The channel being watched is worth saying so, because it is the one
-        // set everyone in the room can see you use.
-        title: esc(group.title) + (group.channel ? ' <em>· this channel</em>' : ''),
-        entries: group.entries,
-      }));
+      const sections = FCM.pickerSections(matches, favourites());
 
       body.innerHTML = '';
       fillSections(body, sections);

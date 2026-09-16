@@ -117,6 +117,13 @@
               ? { Accept: 'application/json', ...headers }
               : { Accept: 'application/json' },
             credentials: signed ? 'include' : 'omit',
+            // This is the one request in the extension that carries a live
+            // session as a bearer, and a redirect is not something Kick's
+            // answer needs. Refused rather than followed, so where the header
+            // ends up does not rest on what a redirect strips: refusing it
+            // falls through to the unsigned ask, which is the request this
+            // always made.
+            ...(signed ? { redirect: 'error' } : {}),
           });
           const store = FCM.parseKickEmotePayload(data, slug);
           if (Object.keys(store).length) return store;

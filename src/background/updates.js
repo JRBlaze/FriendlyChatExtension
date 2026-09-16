@@ -186,9 +186,14 @@
    * Firefox has not installed yet is on its way, not something to go and get.
    * Storage is not even read.
    *
+   * `installedUrl` is where to read what is in the version running, and is
+   * only worked out on the builds that check — a build the browser updates by
+   * itself never asks GitHub anything, so it has nothing to work it out from
+   * and the popup answers that question for itself.
+   *
    * @returns {Promise<{available: boolean, version: string, url: string,
    *   downloadUrl: string, notes: string, installed: string,
-   *   installedUrl: string}>}
+   *   installedUrl?: string}>}
    */
   FCM.updateStatus = async function () {
     if (FCM.updatedByBrowser()) {
@@ -197,9 +202,6 @@
         version: '',
         installed: installedVersion(),
         url: FCM.GITHUB_RELEASES_URL,
-        // A build the browser updates by itself was installed from a release,
-        // so the tag its version is named for is there to be read.
-        installedUrl: FCM.releaseNotesUrl(installedVersion()),
         downloadUrl: '',
         notes: '',
         checkedAt: 0,

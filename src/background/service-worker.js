@@ -341,9 +341,13 @@ async function loadKickEmotes(session, sink, channel) {
 
   // Kick also sits behind Cloudflare, which can refuse a request that did not
   // come from a browser tab — so the page is the fallback for an empty answer
-  // as well as the place the signed one comes from. It says nothing unless it
-  // finds more than this did, and nothing at all when it has no session either.
-  send(session, { type: 'needKickEmotes', channel, loaded: count });
+  // as well as the place the signed one comes from. What it found is what it
+  // says: nothing, when that is no more than this already had.
+  //
+  // Only ever asked of a page that is on Kick. Anywhere else there is no
+  // same-origin request to make and the tab turns the errand away, so sending
+  // one is a message about a channel to a page that cannot act on it.
+  if (onKick) send(session, { type: 'needKickEmotes', channel, loaded: count });
 }
 
 /**

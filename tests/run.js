@@ -830,6 +830,7 @@ suites.firefox = function () {
         parts: el.children.map((c) => c.className),
         text: (el.children.find((c) => c.className === 'fcm-update-text') || {}).textContent,
         links: el.children.filter((c) => c.href).map((c) => c.href),
+        labels: el.children.filter((c) => c.href).map((c) => c.textContent),
       };
     };
     for (const [what, m] of [['Chrome', manifest], ['a Firefox package without an update_url', pack.firefoxManifest(manifest, sw, { updateUrl: null })]]) {
@@ -838,6 +839,7 @@ suites.firefox = function () {
         parts: ['fcm-update-text', 'fcm-update-link', 'fcm-update-link', 'fcm-update-close'],
         text: 'v9.9.9 is out',
         links: [available.downloadUrl, available.url],
+        labels: ['Get it', "What's new"],
       }, `firefox: strip: ${what} is shown the version, the file, what changed in it, and a way to dismiss it`);
     }
     // The one that installs itself still offers no file — there is nothing to
@@ -849,6 +851,7 @@ suites.firefox = function () {
       parts: ['fcm-update-text', 'fcm-update-link', 'fcm-update-close'],
       text: 'v9.9.9 is out · Firefox updates it by itself',
       links: [available.url],
+      labels: ["What's new"],
     }, 'firefox: strip: a build Firefox updates by itself says so, and links what changed but no file');
     // A release with no file for this browser keeps the one link it always had.
     // Its page is where the file would be and where the notes are, so a second
@@ -858,6 +861,7 @@ suites.firefox = function () {
       parts: ['fcm-update-text', 'fcm-update-link', 'fcm-update-close'],
       text: 'v9.9.9 is out',
       links: [available.url],
+      labels: ['See release'],
     }, 'firefox: strip: a release with no file for this browser still offers its page, as before');
 
     // A release the check never reached leaves only the generic "latest"
@@ -871,6 +875,12 @@ suites.firefox = function () {
     // href — it falls back to the one worked out here rather than disappearing.
     eq(strip(manifest, { ...available, url: 'https://evil.example/x', downloadUrl: '' }).links,
       [tag], "firefox: strip: nor is one that is not this repo's, which falls back rather than vanishing");
+    // The file link is the one this writes into an href inside somebody else's
+    // page, so it is held to the same rule.
+    eq(strip(manifest, { ...available, downloadUrl: 'https://evil.example/x.zip' }).links,
+      [tag, available.url], 'firefox: strip: a download address that is not this repo is not put in an href');
+    eq(strip(manifest, { ...available, downloadUrl: `${releases}/../../elsewhere` }).links,
+      [tag, available.url], 'firefox: strip: nor one that climbs out of the releases it names');
     eq(strip(fm, { available: false }).shown, false, 'firefox: strip: and with nothing available, shows nothing at all');
   }
 
@@ -1375,12 +1385,12 @@ suites.firefox = function () {
           const status = await w.sandbox.FCM.updateStatus();
           eq([status.available, status.version, status.downloadUrl, status.installed], [false, '', '', manifest.version],
             'firefox: self-updating: nothing is reported as available, even with a newer release stored');
-          // Except where to read what is in the version running. This build was
-          // installed from a release, so its tag is there — and it is the one
-          // build whose updates arrive with nobody being told what was in them.
-          eq(status.installedUrl,
-            `https://github.com/JRBlaze/FriendlyChatExtension/releases/tag/v${manifest.version}`,
-            'firefox: self-updating: but it still says where to read what changed in what is running');
+          // And says nothing about where to read what is in the version
+          // running: working that out means knowing what the newest release is,
+          // which is the one thing this build never asks. The popup answers it
+          // for itself there.
+          eq(status.installedUrl, undefined,
+            'firefox: self-updating: and offers no answer it has no way to work out');
           const checked = await w.sandbox.FCM.checkForUpdate(true);
           eq([checked.available, checked.checked, checked.downloadUrl], [false, false, ''],
             'firefox: self-updating: a check asked for directly makes none, says it made none, and finds nothing');
@@ -3573,7 +3583,7 @@ suites.kick = function () {
     },
     { id: 668, slug: 'xqc', user: { username: 'xQc' }, emotes: [{ id: 4001, name: 'Pog' }] },
   ], 'xqc');
-  eq(clash.Pog.owner, 'xqc', 'kick: a name in two sets is the watched channel’s');
+  eq(clash.Pog.owner, 'xqc', 'kick: a name in two sets is the watched channel’s (listed last, so also the old rule)');
   const clashFirst = FCM.parseKickEmotePayload([
     { id: 668, slug: 'xqc', user: { username: 'xQc' }, emotes: [{ id: 4001, name: 'Pog' }] },
     {
@@ -3607,6 +3617,23 @@ suites.kick = function () {
   eq(unknown.someRewardEmote.channel, undefined, 'kick: an unknown set is not this channel’s');
   eq(unknown.someRewardEmote.owner, undefined, 'kick: and belongs to no channel');
   eq(unknown.someRewardEmote.source, 'Kick', 'kick: it is offered under a plain label');
+  ok(!FCM.isSharedKickEmote(unknown.someRewardEmote),
+    'kick: and is not kept for whoever opens this channel next');
+
+  // A foreign set that names itself by slug alone is owned by the slug.
+  const slugOnly = FCM.parseKickEmotePayload([
+    { id: 172839, slug: 'bwana', emotes: [{ id: 999, name: 'slugOnly' }] },
+  ], 'xqc');
+  eq(slugOnly.slugOnly.owner, 'bwana', 'kick: a set with no user record is owned by its slug');
+  eq(slugOnly.slugOnly.channel, undefined, 'kick: and is still not this channel');
+
+  // Asked without naming a channel — which is what the feed does when it parses
+  // a payload it was handed rather than one it went for — every channel set is
+  // the only one it could be about.
+  const unnamed = FCM.parseKickEmotePayload([
+    { id: 668, slug: 'xqc', emotes: [{ id: 1, name: 'noWatched' }] },
+  ]);
+  eq(unnamed.noWatched.channel, true, 'kick: with no channel named, a channel set is that channel');
 
   // A name two sets both use. Everything a stranger is also shown ranks alike,
   // so the last of those listed still wins as it always did — but a set that is
@@ -3616,7 +3643,7 @@ suites.kick = function () {
     { id: 'Global', name: 'Global', emotes: [{ id: 9, name: 'KEKW' }] },
   ], 'xqc');
   eq(globalLast.KEKW.source, 'Kick Global',
-    'kick: a signed-out answer resolves a shared name the way it always did');
+    'kick: a signed-out answer resolves a shared name the way it always did (global listed last)');
   const subLast = FCM.parseKickEmotePayload([
     { id: 'Global', name: 'Global', emotes: [{ id: 9, name: 'KEKW' }] },
     { id: 172839, slug: 'bwana', user: { username: 'Bwana' }, emotes: [{ id: 999, name: 'KEKW' }] },
@@ -3626,6 +3653,15 @@ suites.kick = function () {
     'kick: and a global keeps its name against a set that is only this viewer’s');
   eq(subLast.KEKW.url, 'https://files.kick.com/emotes/9/fullsize',
     'kick: so the room and this viewer see the same picture');
+  // Two sets that are both only this viewer's rank alike, so the last listed
+  // wins as it always did. Pinned so the tie is a decision rather than an
+  // accident of how Kick happens to order them.
+  const bothMine = FCM.parseKickEmotePayload([
+    { id: 'Collectibles', name: 'Collectibles', emotes: [{ id: 1, name: 'Tie' }] },
+    { id: 172839, slug: 'bwana', user: { username: 'Bwana' }, emotes: [{ id: 2, name: 'Tie' }] },
+  ], 'xqc');
+  eq([bothMine.Tie.source, bothMine.Tie.owner], ['Kick Channel', 'Bwana'],
+    'kick: between two sets that are only this viewer’s, the last listed wins');
 
   // A username Kick sends as something other than a string still has to come
   // out of here as one: the picker lowercases it to group by, and a number
@@ -4103,8 +4139,20 @@ suites.popup = function () {
       {
         const p = openPopup();
         await settle();
+        eq(p.$('update-whats-new').href, status().url,
+          'popup: the card names the notes in its href, so a middle-click goes there too');
         await p.$('update-whats-new').click();
         eq(p.created, [status().url], 'popup: the card links the notes for the release being offered');
+      }
+      {
+        // A release with no file for this browser is already offered as its
+        // page by the button, and two controls opening the same page is one of
+        // them saying nothing.
+        const p = openPopup({ update: status({ downloadUrl: '' }) });
+        await settle();
+        eq(p.$('update-get').textContent, 'Open the release', 'popup: (that button is the page itself)');
+        ok(p.$('update-whats-new').hidden,
+          'popup: so the notes link stands down rather than repeating it');
       }
       {
         // A check that has never reached GitHub stores no release address, only
@@ -4151,6 +4199,27 @@ suites.popup = function () {
         await p.$('version').click();
         eq(p.created, [`${release}/latest`],
           'popup: a version with no release of its own goes to the releases page, not a 404');
+      }
+      {
+        // A background that answers nothing at all leaves the version pointing
+        // where the popup worked out for itself, rather than nowhere.
+        const p = openPopup({ update: null });
+        await settle();
+        eq(p.$('version').href, `${release}/tag/v1.2.3`,
+          'popup: with no answer from the background the version still links its own notes');
+        await p.$('version').click();
+        eq(p.created, [`${release}/tag/v1.2.3`], 'popup: and opens them');
+      }
+      {
+        // Pressing "Check for updates" is the likeliest way to discover the
+        // running version was never published, so the answer has to reach the
+        // version as well as the card.
+        const p = openPopup({ update: { available: false, installed: '9.9.9', installedUrl: `${release}/latest` } });
+        await settle();
+        await p.$('check-updates').click();
+        await settle();
+        eq(p.$('version').href, `${release}/latest`,
+          'popup: a check re-points the version as well as redrawing the card');
       }
 
       // ── Closing only once the tab is there ──
@@ -5672,6 +5741,34 @@ suites.compose = function () {
     eq(known.collectible, true, 'compose: and moves it to the collectibles section');
   }
 
+  // The other order, which is what happens for the rest of the visit once the
+  // list has loaded: a message's guess arrives after the real record and must
+  // not undo it.
+  {
+    FCM.setEmotes('kick', 'native', {
+      settledFirst: { url: 'https://k/real.png', source: 'Kick Collectibles', collectible: true },
+    });
+    FCM.setEmotes('kick', 'native', {
+      settledFirst: { url: 'https://k/guess.png', source: 'Kick Channel', learned: true },
+    });
+    const still = FCM.allEmoteEntries().find((e) => e.name === 'settledFirst');
+    eq([still.source, still.url, still.collectible],
+      ['Kick Collectibles', 'https://k/real.png', true],
+      'compose: a guess arriving after the real list changes nothing');
+  }
+
+  // Two guesses running: the second is no better informed than the first.
+  {
+    FCM.setEmotes('kick', 'native', {
+      twiceGuessed: { url: 'https://k/one.png', source: 'Kick Channel', learned: true },
+    });
+    FCM.setEmotes('kick', 'native', {
+      twiceGuessed: { url: 'https://k/two.png', source: 'Kick Channel', learned: true },
+    });
+    const guessed = FCM.allEmoteEntries().find((e) => e.name === 'twiceGuessed');
+    eq(guessed.url, 'https://k/one.png', 'compose: one guess does not replace another');
+  }
+
   // The guessed picture goes with the guessed label. A message names its own
   // emote id, so anybody in the room can bind any picture on Kick's CDN to any
   // name by typing it — and keeping that one under a corrected label would hang
@@ -5687,6 +5784,74 @@ suites.compose = function () {
     eq(fixed.url, 'https://files.kick.com/emotes/5747848/fullsize',
       'compose: a guessed picture is replaced along with the guessed label');
     eq(fixed.collectible, true, 'compose: by the list that knows');
+  }
+
+  // One name, two platforms, one of them a collectible.
+  //
+  // The list is keyed by bare name across both platforms and Twitch is walked
+  // first, so a Twitch emote wins a shared name and is what gets drawn. It must
+  // not come away marked a collectible: the picker files a section by that mark
+  // and sorts it above everything, so one shared name would put the whole of
+  // Twitch's global set under a Kick heading at the top of the picker.
+  {
+    FCM.setEmotes('twitch', 'native', {
+      Slime: { url: 'https://t/slime.png', source: 'Twitch Global' },
+    });
+    FCM.setEmotes('kick', 'native', {
+      Slime: { url: 'https://k/slime.png', source: 'Kick Collectibles', collectible: true },
+    });
+    const shared = FCM.allEmoteEntries().filter((e) => e.name === 'Slime');
+    eq(shared.length, 1, 'compose: a name on both platforms is one emote in the list');
+    eq(shared[0].source, 'Twitch Global', 'compose: drawn and labelled by the store that had it first');
+    eq(shared[0].collectible, false, 'compose: and not marked a collectible by the one that did not');
+  }
+
+  // ── What the picker actually draws ────────────────────────────────────────
+  //
+  // The headline of the collectibles work is a section of its own, above the
+  // channel being watched, and until this was lifted out of the panel there was
+  // no way to ask for it: the grouping and the order live between a DOM element
+  // and an innerHTML write.
+  {
+    const entry = (name, extra) => ({ name, url: `https://k/${name}.png`, ...extra });
+    const sections = (items, favs) => FCM.pickerSections(items, favs || [])
+      .map((sec) => `${sec.title} (${sec.entries.length})`);
+
+    eq(sections([
+      entry('globalOne', { source: 'Kick Global' }),
+      entry('bwanaSub', { source: 'Kick Channel', owner: 'Bwana' }),
+      entry('theirs', { source: 'Kick Channel', channel: true, owner: 'somechannel' }),
+      entry('mine', { source: 'Kick Collectibles', collectible: true }),
+    ]), [
+      'Kick Collectibles (1)',
+      'somechannel <em>· this channel</em> (1)',
+      'Bwana (1)',
+      'Kick Global (1)',
+    ], 'compose: collectibles lead, then this channel, then other channels, then what nobody owns');
+
+    // Starred emotes still come first, above even the collectibles, and in the
+    // order they were starred.
+    eq(sections([
+      entry('mine', { source: 'Kick Collectibles', collectible: true }),
+      entry('starB', { source: 'Kick Global' }),
+      entry('starA', { source: 'Kick Global' }),
+    ], ['starA', 'starB']), ['★ Favourites (2)', 'Kick Collectibles (1)'],
+    'compose: favourites still lead, and a starred emote is not listed twice');
+
+    // A collectible that also carries a channel does not take that channel's
+    // heading with it, and does not leave the channel marked as the room.
+    const withOwner = FCM.pickerSections([
+      entry('mine', { source: 'Kick Collectibles', collectible: true, channel: true, owner: 'somechannel' }),
+      entry('theirs', { source: 'Kick Channel', channel: true, owner: 'somechannel' }),
+    ], []);
+    eq(withOwner.map((sec) => sec.title),
+      ['Kick Collectibles', 'somechannel <em>· this channel</em>'],
+      'compose: a collectible keeps its own heading and leaves the channel marker alone');
+
+    // The heading is escaped: a channel names itself, and the section title is
+    // written into the picker as markup.
+    eq(FCM.pickerSections([entry('x', { source: 'Kick Channel', owner: '<img src=x onerror=alert(1)>' })], [])[0].title,
+      '&lt;img src=x onerror=alert(1)&gt;', 'compose: a channel cannot name itself into the picker’s markup');
   }
 
   // A label that was never a guess is not overwritten by a later arrival — the
@@ -14180,7 +14345,14 @@ suites.fallbacks = function () {
         ok(sent.some((m) => m.store && m.store.myCollectible),
           'fallbacks: and the collectibles reach the Twitch tab');
         eq(w.of('needKickEmotes').length, 0,
-          'fallbacks: nothing is asked of a page that is not on Kick');
+          'fallbacks: a Twitch tab is not asked to fetch what it cannot fetch');
+        // The worker's own write, which is the only one a signed store ever
+        // reaches — the message handler covered above is the page's route, and
+        // on a Twitch tab there is no page.
+        const cached = JSON.stringify(w.storage.local[w.sandbox.FCM.STORAGE_KEYS.emoteCache] || {});
+        contains(cached, 'theirEmote', 'fallbacks: what it caches is the channel’s own half');
+        missing(cached, 'myCollectible',
+          'fallbacks: and not the collectibles it just fetched for this account');
       } finally { w.teardown(); }
     }
 

@@ -2339,11 +2339,10 @@
         : `v${status.version} is out`;
       updateEl.appendChild(text);
 
-      const addLink = (href, label) => {
-        const url = String(href || '');
-        // Everything here came back from GitHub about one repo, but it ends up
-        // in an href, so what it is is checked rather than assumed.
-        if (!url.startsWith(`https://github.com/${FCM.GITHUB_REPO}/`)) return;
+      // Everything put in an href here has been through FCM.releasePageUrl,
+      // which answers with this repo's own releases or with nothing else at
+      // all — so there is no second, weaker check of the same thing here.
+      const addLink = (url, label) => {
         const link = document.createElement('a');
         link.className = 'fcm-update-link';
         link.href = url;
@@ -2358,7 +2357,7 @@
       const page = FCM.releasePageUrl(status.url, status.version);
       if (byBrowser) addLink(page, "What's new");
       else if (status.downloadUrl) {
-        addLink(status.downloadUrl, 'Get it');
+        addLink(FCM.releasePageUrl(status.downloadUrl, status.version), 'Get it');
         addLink(page, "What's new");
       } else addLink(page, 'See release');
       const close = document.createElement('button');

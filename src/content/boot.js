@@ -432,12 +432,13 @@
    * request, and a content script does not carry the extension's permission to
    * make one.
    *
-   * The worker also asks when it did get a list but could not sign the request.
-   * Reading the session cookie needs a permission Firefox does not always give
-   * and Chrome can be denied; a content script on kick.com reads it as the
-   * page's own, needing nothing. The difference is not small — an unsigned list
-   * has no collectibles in it and none of the channels this viewer subscribes
-   * to — so it is worth a second request rather than a quietly poorer picker.
+   * The worker also asks on every kick.com tab, list or no list, because this
+   * is the only place the signed request can be made correctly. Signed, Kick
+   * answers with this account's collectibles and the sets of the other channels
+   * it subscribes to — and the cookie that identifies the account is the tab's
+   * own, which in a Firefox container or a private window is not the one the
+   * worker's jar would hand over. So the worker asks as a stranger and the
+   * personal half is fetched from here. See loadKickEmotes in the worker.
    */
   async function fetchKickEmotesFromPage(channel, loaded) {
     if (site.id !== 'kick' || !overlay) return;
@@ -458,15 +459,22 @@
     // Nothing means nothing, refused or merely empty, which is how the worker
     // decides it too: a 200 carrying no sets this can read leaves the picker
     // just as bare as a 401 does.
+    // A request that never lands at all counts as nothing too. Left to throw,
+    // it took the unsigned retry down with it — which is the one thing that
+    // still had a chance of answering.
     const ask = async (token) => {
-      const headers = { Accept: 'application/json' };
-      if (token) headers.Authorization = `Bearer ${token}`;
-      const res = await fetch(`https://kick.com/emotes/${encodeURIComponent(slug)}`, {
-        headers, credentials: 'include',
-      });
-      if (!res.ok) return null;
-      const store = FCM.parseKickEmotePayload(await res.json(), slug);
-      return Object.keys(store).length ? store : null;
+      try {
+        const headers = { Accept: 'application/json' };
+        if (token) headers.Authorization = `Bearer ${token}`;
+        const res = await fetch(`https://kick.com/emotes/${encodeURIComponent(slug)}`, {
+          headers, credentials: 'include',
+        });
+        if (!res.ok) return null;
+        const store = FCM.parseKickEmotePayload(await res.json(), slug);
+        return Object.keys(store).length ? store : null;
+      } catch (e) {
+        return null;
+      }
     };
 
     try {

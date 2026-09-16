@@ -320,15 +320,18 @@ could only announce an update already on its way.
 
 What is not switched off is the version number in the popup's footer, which is a link to what
 changed in that version. An update that installs itself is the case where you are least likely to
-know what changed — nobody is asked and nothing is announced — and this build was installed from
-a release, so the page for its version is there to open. It is worked out from the version rather
+know what changed — nobody is asked and nothing is announced — and a signed install came from a
+release, so the page for its version is there to open. It is worked out from the version rather
 than fetched, which is why it needs no check and no access to GitHub: the Firefox package does
 not even ask for access to `api.github.com`, which only that check used, so it is not among the
 sites Firefox lists at install.
 
-On the builds that do check, the same link takes one more thing into account. A version newer
-than anything published was built here rather than installed from a release, so nothing exists
-under that tag — those go to the releases page instead of to a 404.
+Two builds get a different answer, because for them that page does not exist. An add-on loaded
+temporarily from `about:debugging` names the same update address but was never installed from a
+release — it is whatever was built locally — and the popup already knows which it is, so its
+version links the releases page instead. On the builds that do check, a version newer than
+anything published is the same story told a different way, and the check is what notices: those
+go to the releases page too, rather than to a tag that is not there.
 
 One thing an update does not bring with it is a site the new version has started asking for.
 Firefox installs the update without it and asks nobody, so the add-on asks instead: the popup

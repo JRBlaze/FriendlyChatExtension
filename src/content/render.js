@@ -183,10 +183,11 @@
         existing.owner = incoming.owner;
         changed = true;
       }
-      if (incoming.collectible && !existing.collectible) {
-        existing.collectible = true;
-        changed = true;
-      }
+      // Not `collectible`, for the same reason. It says which set the record
+      // being drawn came from, and that is the record already here — a name the
+      // cache had as this channel's is drawn as this channel's, and filing it
+      // under collectibles because a later list has the name too would move a
+      // whole section on the strength of one emote.
     });
     if (changed) view.emoteVersion++;
   };
