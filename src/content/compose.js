@@ -35,6 +35,7 @@
             // do not both know, so whichever does gets to say.
             if (emote.channel) already.channel = true;
             if (emote.owner && !already.owner) already.owner = emote.owner;
+            if (emote.collectible) already.collectible = true;
             return;
           }
           const entry = {
@@ -51,6 +52,10 @@
             // by this, so a subscriber sees their channels by name instead of
             // one undifferentiated pile of "Twitch Sub".
             owner: emote.owner || '',
+            // An emote this viewer collected rather than one a channel gave
+            // them. It gets a section of its own at the top of the picker, and
+            // no channel's name on it.
+            collectible: !!emote.collectible,
           };
           seen.set(name, entry);
           items.push(entry);
@@ -300,7 +305,15 @@
       const order = favourites();
 
       const groupFor = (item) => {
-        const owner = item.owner || '';
+        // Collectibles belong to the viewer rather than to any channel, so they
+        // are grouped by what they are, and nothing a channel says about them
+        // is read here. Kick's own picker does the same, and somebody who went
+        // and collected an emote wants to find it as a set rather than
+        // scattered through whichever channel it came from. It also keeps one
+        // section at a time as the room you are in: an emote that shares a name
+        // with something in the channel's own set arrives marked both ways.
+        const mine = !!item.collectible;
+        const owner = mine ? '' : (item.owner || '');
         const title = owner || item.source || 'Emotes';
         // Keyed case-insensitively: the same channel arrives as a login from
         // the third-party providers and as a display name from Twitch, and
@@ -308,9 +321,12 @@
         const key = title.toLowerCase();
         let group = groups.get(key);
         if (!group) {
-          group = { title, owner: !!owner, channel: false, entries: [] };
+          group = {
+            title, owner: !!owner, channel: false, collectible: false, entries: [],
+          };
           groups.set(key, group);
         }
+        if (mine) { group.collectible = true; return group; }
         // Prefer the spelling that carries capitals, which is the one the
         // platform shows people.
         if (owner && title !== title.toLowerCase() && group.title === group.title.toLowerCase()) {
@@ -331,9 +347,16 @@
       // In the order they were starred, not the order the providers list them.
       favs.sort((a, b) => order.indexOf(a.item.name) - order.indexOf(b.item.name));
 
-      // The channel being watched first, then the other channels by name, then
-      // everything that belongs to nobody — globals, Prime, hype train.
+      // Collectibles first, then the channel being watched, then the other
+      // channels by name, then everything that belongs to nobody — globals,
+      // Prime, hype train.
+      //
+      // Collectibles lead for the same reason favourites do: it is a short set
+      // this viewer went and earned, it is usable in every channel, and it is
+      // the one section that is about them rather than about where they are.
+      // Kick's own picker puts it first too, straight after recently used.
       const ordered = [...groups.values()].sort((a, b) => {
+        if (a.collectible !== b.collectible) return a.collectible ? -1 : 1;
         if (a.channel !== b.channel) return a.channel ? -1 : 1;
         if (a.owner !== b.owner) return a.owner ? -1 : 1;
         return a.title.localeCompare(b.title);

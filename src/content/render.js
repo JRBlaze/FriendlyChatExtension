@@ -144,6 +144,25 @@
         return;
       }
 
+      // A name first seen in a live message is a guess, and the whole record is
+      // replaced rather than topped up when the real list arrives. A message
+      // says nothing about which set an emote came from, so "this channel's" is
+      // only the likeliest label — and a collectible posted before the list
+      // loaded would otherwise stay filed under the channel for the rest of the
+      // visit, which in a chat where people are posting them is most of them.
+      //
+      // The picture goes with it, which is the one place a later arrival is
+      // allowed to change one. A message names its own emote id, so anybody in
+      // the room can bind any picture on Kick's CDN to any name by typing it —
+      // and keeping that picture under a corrected label would hang a stranger's
+      // choice of image under this viewer's own collectibles. Nothing drawn
+      // from a guess is worth keeping once the list that knows has spoken.
+      if (existing.learned && !incoming.learned) {
+        target[name] = { ...incoming };
+        changed = true;
+        return;
+      }
+
       // The same emote arrives more than once, and the first arrival is not the
       // best informed. Emotes come from the cache before the network answers,
       // and on Twitch the account's own emote list arrives before the channel's
@@ -162,6 +181,10 @@
       }
       if (incoming.owner && !existing.owner) {
         existing.owner = incoming.owner;
+        changed = true;
+      }
+      if (incoming.collectible && !existing.collectible) {
+        existing.collectible = true;
         changed = true;
       }
     });

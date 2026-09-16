@@ -287,19 +287,7 @@ async function onJoined(session, platform, generation) {
     send(session, {
       type: 'badges', platform: 'kick', badges: { subscriber: conn.subscriberBadges || [] },
     });
-    FCM.emoteLoader.kickNative(channel).then(async (store) => {
-      if (!sink.current()) return;
-      if (Object.keys(store).length) {
-        sink.emotes('native', store);
-        sink.sys(`Loaded ${Object.keys(store).length} Kick emotes for this channel`);
-        await FCM.emoteCache.write(platform, channel, await accountIdFor(platform), 'native', store);
-        return;
-      }
-      // Kick sits behind Cloudflare, which can refuse a request that did not
-      // come from a browser tab. The page itself is a browser tab, so it is
-      // asked to fetch the same list from its own origin.
-      send(session, { type: 'needKickEmotes', channel });
-    });
+    loadKickEmotes(session, sink, channel).catch(() => {});
     loadKickStanding(session, sink.generation).catch(() => {});
   }
 
@@ -309,6 +297,53 @@ async function onJoined(session, platform, generation) {
   sendCachedEmotes(session, platform, sink.generation).catch(() => {});
 
   loadThirdPartyEmotes(session, platform, sink.generation).catch(() => {});
+}
+
+/**
+ * Kick's own emotes for this channel, asked for as the viewer where possible.
+ *
+ * Signed, Kick answers with more than it answers a stranger: the emotes this
+ * account has collected, and the sets of the other channels it subscribes to.
+ *
+ * Who does the signing is the whole question. A kick.com tab reads the session
+ * cookie as the page's own, so it reads the right one — the one belonging to
+ * whoever that tab is signed in as, in that tab's own cookie store. The worker
+ * reads the browser's default store, which needs a permission Firefox lets a
+ * user take back, and which in a Firefox container tab or a private window is
+ * somebody else's session entirely. Signing with the wrong account's cookie is
+ * worse than not signing at all: the answer looks right and offers emotes this
+ * viewer does not have and cannot send, and the store is only ever added to, so
+ * nothing later takes them back out.
+ *
+ * So on a kick.com tab the worker asks as a stranger and leaves the personal
+ * half to the page, which is asked every time. Only where there is no kick.com
+ * page to ask — Kick merged into a Twitch tab — does the worker sign it itself.
+ *
+ * Only the channel's half of the answer is written to the cache; see
+ * kickEmotesWorthCaching.
+ */
+async function loadKickEmotes(session, sink, channel) {
+  const onKick = session.site === 'kick';
+  const headers = onKick ? { Accept: 'application/json' } : await kickSessionHeaders();
+  if (!sink.current()) return;
+
+  const store = await FCM.emoteLoader.kickNative(channel, { headers });
+  if (!sink.current()) return;
+
+  const count = Object.keys(store).length;
+  if (count) {
+    sink.emotes('native', store);
+    sink.sys(FCM.kickEmoteCountLine(store));
+    await FCM.emoteCache.write('kick', channel, await accountIdFor('kick'),
+      'native', FCM.kickEmotesWorthCaching(store));
+    if (!onKick || !sink.current()) return;
+  }
+
+  // Kick also sits behind Cloudflare, which can refuse a request that did not
+  // come from a browser tab — so the page is the fallback for an empty answer
+  // as well as the place the signed one comes from. It says nothing unless it
+  // finds more than this did, and nothing at all when it has no session either.
+  send(session, { type: 'needKickEmotes', channel, loaded: count });
 }
 
 /**
@@ -1246,7 +1281,8 @@ chrome.runtime.onConnect.addListener((port) => {
         if (!conn || !conn.channel || !want) break;
         if (FCM.normalizeChannel(conn.channel) !== want) break;
         await FCM.emoteCache.write(
-          'kick', conn.channel, await accountIdFor('kick'), 'native', msg.store
+          'kick', conn.channel, await accountIdFor('kick'), 'native',
+          FCM.kickEmotesWorthCaching(msg.store)
         );
         break;
       }

@@ -3478,6 +3478,122 @@ suites.kick = function () {
   eq(store.xqcL.source, 'Kick Channel', 'kick: channel emote source');
   eq(store.emojiOne.source, 'Kick Global', 'kick: global emote source');
   eq(store.smile.source, 'Kick Emoji', 'kick: emoji set source');
+  eq(store.xqcL.channel, true, 'kick: the only channel set asked for is this one');
+
+  // The shape a signed-in request gets back, which is the same three sets plus
+  // two that are about the viewer rather than the channel: the emotes this
+  // account has collected, and the sets of the other channels it subscribes to.
+  const mine = FCM.parseKickEmotePayload([
+    { id: 668, slug: 'xqc', user: { username: 'xQc' }, emotes: [{ id: 4001, name: 'xqcL' }] },
+    {
+      id: 172839,
+      slug: 'bwana',
+      user: { username: 'Bwana' },
+      emotes: [{ id: 5612606, name: 'bwanaChaos', subscribers_only: true }],
+    },
+    { id: 'Global', name: 'Global', emotes: [{ id: 1, name: 'emojiOne' }] },
+    {
+      id: 'Collectibles',
+      name: 'Collectibles',
+      emotes: [{ id: 5747848, channel_id: null, name: 'collectibles4HEad', subscribers_only: false }],
+    },
+  ], 'xqc');
+
+  eq(mine.collectibles4HEad.source, 'Kick Collectibles', 'kick: collected emotes are their own set');
+  eq(mine.collectibles4HEad.collectible, true, 'kick: and say so');
+  eq(mine.collectibles4HEad.owner, undefined, 'kick: a collectible belongs to no channel');
+  eq(mine.collectibles4HEad.channel, undefined, 'kick: so it is not this channel’s');
+  eq(mine.collectibles4HEad.url, 'https://files.kick.com/emotes/5747848/fullsize',
+    'kick: drawn from the same place as every other Kick emote');
+
+  eq(mine.xqcL.channel, true, 'kick: the watched channel’s set is this channel’s');
+  // Under its slug, which is what 7TV and the rest call the same channel — two
+  // spellings of one channel would draw it twice in the picker.
+  eq(mine.xqcL.owner, 'xqc', 'kick: named the way every other source names it');
+  eq(mine.bwanaChaos.channel, undefined,
+    'kick: a channel this viewer subscribes to elsewhere is not this channel');
+  eq(mine.bwanaChaos.owner, 'Bwana', 'kick: it gets a section of its own instead');
+
+  // Two channels can name an emote the same thing. The one on screen is the one
+  // whose picture it should be, whichever order Kick listed the sets in.
+  const clash = FCM.parseKickEmotePayload([
+    {
+      id: 172839,
+      slug: 'bwana',
+      user: { username: 'Bwana' },
+      emotes: [{ id: 999, name: 'Pog' }],
+    },
+    { id: 668, slug: 'xqc', user: { username: 'xQc' }, emotes: [{ id: 4001, name: 'Pog' }] },
+  ], 'xqc');
+  eq(clash.Pog.owner, 'xqc', 'kick: a name in two sets is the watched channel’s');
+  const clashFirst = FCM.parseKickEmotePayload([
+    { id: 668, slug: 'xqc', user: { username: 'xQc' }, emotes: [{ id: 4001, name: 'Pog' }] },
+    {
+      id: 172839,
+      slug: 'bwana',
+      user: { username: 'Bwana' },
+      emotes: [{ id: 999, name: 'Pog' }],
+    },
+  ], 'xqc');
+  eq(clashFirst.Pog.owner, 'xqc', 'kick: whichever order they were listed in');
+
+  // Which channel a set is, is its slug and only its slug. A set carrying a
+  // channel's own id and no slug is the older shape, where the only channel it
+  // can be about is the one that was asked for — and deciding that on the
+  // username instead would strip "this channel" off the watched channel's own
+  // set whenever Kick's slug is not simply a lowercase of the username, which
+  // is what happens to every name with an underscore in it.
+  const nameless = FCM.parseKickEmotePayload([
+    { id: 668, user: { username: 'Foo_Bar' }, emotes: [{ id: 4001, name: 'oldShape' }] },
+  ], 'foo-bar');
+  eq(nameless.oldShape.channel, true, 'kick: a set with no slug is the channel that was asked for');
+  eq(nameless.oldShape.owner, 'foo-bar', 'kick: under the name it was asked for');
+
+  // Kick added Collectibles to this answer without warning and can add another
+  // set the same way. One nobody here has heard of is offered, because it is in
+  // this viewer's own answer — but it is not claimed for the channel on screen,
+  // which would both mislabel it and let it be kept for the next viewer.
+  const unknown = FCM.parseKickEmotePayload([
+    { id: 'Rewards', name: 'Rewards', emotes: [{ id: 6000, name: 'someRewardEmote' }] },
+  ], 'xqc');
+  eq(unknown.someRewardEmote.channel, undefined, 'kick: an unknown set is not this channel’s');
+  eq(unknown.someRewardEmote.owner, undefined, 'kick: and belongs to no channel');
+  eq(unknown.someRewardEmote.source, 'Kick', 'kick: it is offered under a plain label');
+
+  // A name two sets both use. Everything a stranger is also shown ranks alike,
+  // so the last of those listed still wins as it always did — but a set that is
+  // only here because of who is signed in never takes one of their names.
+  const globalLast = FCM.parseKickEmotePayload([
+    { id: 668, slug: 'xqc', emotes: [{ id: 4001, name: 'KEKW' }] },
+    { id: 'Global', name: 'Global', emotes: [{ id: 9, name: 'KEKW' }] },
+  ], 'xqc');
+  eq(globalLast.KEKW.source, 'Kick Global',
+    'kick: a signed-out answer resolves a shared name the way it always did');
+  const subLast = FCM.parseKickEmotePayload([
+    { id: 'Global', name: 'Global', emotes: [{ id: 9, name: 'KEKW' }] },
+    { id: 172839, slug: 'bwana', user: { username: 'Bwana' }, emotes: [{ id: 999, name: 'KEKW' }] },
+    { id: 'Collectibles', name: 'Collectibles', emotes: [{ id: 5747848, name: 'KEKW' }] },
+  ], 'xqc');
+  eq(subLast.KEKW.source, 'Kick Global',
+    'kick: and a global keeps its name against a set that is only this viewer’s');
+  eq(subLast.KEKW.url, 'https://files.kick.com/emotes/9/fullsize',
+    'kick: so the room and this viewer see the same picture');
+
+  // A username Kick sends as something other than a string still has to come
+  // out of here as one: the picker lowercases it to group by, and a number
+  // there stops the picker opening at all.
+  const odd = FCM.parseKickEmotePayload([
+    { id: 172839, slug: 'bwana', user: { username: 12345 }, emotes: [{ id: 999, name: 'oddOwner' }] },
+  ], 'xqc');
+  eq(typeof odd.oddOwner.owner, 'string', 'kick: an owner is always a string');
+
+  // And the count line only claims the channel when the channel is all there is.
+  eq(FCM.kickEmoteCountLine({ a: { source: 'Kick Global' }, b: { source: 'Kick Emoji' } }),
+    'Loaded 2 Kick emotes for this channel',
+    'kick: a stranger’s list is all this channel’s');
+  contains(FCM.kickEmoteCountLine(mine), 'and 2 of your own',
+    'kick: a signed-in list says how much of it is not');
+
 
   // Non-numeric ids do not resolve on the CDN and must be skipped.
   const skipped = FCM.parseKickEmotePayload([{ id: 1, emotes: [{ id: 'abc', name: 'bogus' }] }]);
@@ -5359,6 +5475,78 @@ suites.compose = function () {
     eq(by('ChannelPog').source, '7TV', 'compose: and the provider name is still the label');
   }
 
+  // ── Collectibles are their own section, and they are the viewer's ──────────
+  //
+  // Kick's own picker gives the emotes an account has collected a heading of
+  // their own, above the channel's. They belong to the viewer rather than to
+  // anywhere they are used, so they carry no owner and must not be swept into
+  // the channel's section by one.
+  {
+    FCM.setEmotes('kick', 'native', {
+      collectiblesCAUGHT: {
+        url: 'https://files.kick.com/emotes/5747856/fullsize',
+        source: 'Kick Collectibles',
+        collectible: true,
+      },
+    });
+    const mine = FCM.allEmoteEntries().find((e) => e.name === 'collectiblesCAUGHT');
+    eq(mine.collectible, true, 'compose: a collectible says so in the list');
+    eq(mine.owner, '', 'compose: and belongs to no channel');
+    eq(mine.channel, false, 'compose: so it is not this channel’s either');
+    eq(mine.source, 'Kick Collectibles', 'compose: its source is its section heading');
+  }
+
+  // A collectible somebody posted before the list loaded arrives from the
+  // message instead, labelled by guesswork. The real list corrects it — without
+  // that it would sit under the channel for the rest of the visit, and in a
+  // chat where people are posting them that is most of them.
+  {
+    FCM.setEmotes('kick', 'native', {
+      collectiblesLate: { url: 'https://files.kick.com/emotes/5747999/fullsize', source: 'Kick Channel', learned: true },
+    });
+    const guessed = FCM.allEmoteEntries().find((e) => e.name === 'collectiblesLate');
+    eq(guessed.source, 'Kick Channel', 'compose: a message’s emote is filed by guesswork');
+    eq(guessed.collectible, false, 'compose: and is not known to be collected');
+
+    FCM.setEmotes('kick', 'native', {
+      collectiblesLate: { url: 'https://files.kick.com/emotes/5747999/fullsize', source: 'Kick Collectibles', collectible: true },
+    });
+    const known = FCM.allEmoteEntries().find((e) => e.name === 'collectiblesLate');
+    eq(known.source, 'Kick Collectibles', 'compose: the real list corrects the guess');
+    eq(known.collectible, true, 'compose: and moves it to the collectibles section');
+  }
+
+  // The guessed picture goes with the guessed label. A message names its own
+  // emote id, so anybody in the room can bind any picture on Kick's CDN to any
+  // name by typing it — and keeping that one under a corrected label would hang
+  // a stranger's choice of image under this viewer's own collectibles.
+  {
+    FCM.setEmotes('kick', 'native', {
+      collectiblesSpoofed: { url: 'https://files.kick.com/emotes/999/fullsize', source: 'Kick Channel', learned: true },
+    });
+    FCM.setEmotes('kick', 'native', {
+      collectiblesSpoofed: { url: 'https://files.kick.com/emotes/5747848/fullsize', source: 'Kick Collectibles', collectible: true },
+    });
+    const fixed = FCM.allEmoteEntries().find((e) => e.name === 'collectiblesSpoofed');
+    eq(fixed.url, 'https://files.kick.com/emotes/5747848/fullsize',
+      'compose: a guessed picture is replaced along with the guessed label');
+    eq(fixed.collectible, true, 'compose: by the list that knows');
+  }
+
+  // A label that was never a guess is not overwritten by a later arrival — the
+  // first store to know still decides, which is what everything else here
+  // relies on.
+  {
+    FCM.setEmotes('kick', 'native', {
+      settledName: { url: 'https://k/one.png', source: 'Kick Global' },
+    });
+    FCM.setEmotes('kick', 'thirdparty', {
+      settledName: { url: 'https://k/two.png', source: '7TV' },
+    });
+    const settled = FCM.allEmoteEntries().find((e) => e.name === 'settledName');
+    eq(settled.source, 'Kick Global', 'compose: a source that was not a guess stands');
+  }
+
   // ── Dates on the user menu ──────────────────────────────────────────────────
   //
   // The menu shows the day an account was made and the day someone started
@@ -6853,6 +7041,82 @@ suites.discovery = function () {
       eq(second.global.moderator['1'].image_url_1x, 'https://cdn/mod.png', 'badges: global set reused');
       eq(second.channel.subscriber['12'].image_url_1x, 'https://cdn/sub12.png', 'badges: second channel set');
       eq(calls.length, 2, 'badges: one request per channel, not one per badge set');
+    }
+
+    // 9. The emote list, and what the session buys.
+    //
+    // Signed out, Kick answers with the channel's set, the globals and the
+    // emoji. Signed in it also answers with this account's collectibles and the
+    // sets of the other channels it subscribes to — and the only difference
+    // between the two requests is whether the session goes with it.
+    {
+      const anon = [
+        { id: 668, slug: 'somechannel', emotes: [{ id: 4001, name: 'xqcL' }] },
+        { id: 'Global', name: 'Global', emotes: [{ id: 1, name: 'emojiOne' }] },
+      ];
+      const signedIn = anon.concat([{
+        id: 'Collectibles',
+        name: 'Collectibles',
+        emotes: [{ id: 5747848, name: 'collectibles4HEad' }],
+      }]);
+
+      const emoteSandbox = (answer) => {
+        const seen = [];
+        const box = makeSandbox({
+          fetch: async (url, init) => {
+            seen.push({ url: String(url), init });
+            const body = answer(String(url), init);
+            if (!body) return { ok: false, status: 401, json: async () => ({}) };
+            return { ok: true, status: 200, json: async () => body };
+          },
+        });
+        return { seen, FCM: load(box, ...SHARED, 'src/background/discovery.js') };
+      };
+
+      // Nothing to sign with: the request is the one it has always made.
+      {
+        const { seen, FCM } = emoteSandbox((url) => (url.includes('/emotes/') ? anon : null));
+        const store = await FCM.kickApi.emotes('somechannel');
+        ok(store.xqcL, 'emotes: a stranger still gets the channel’s own');
+        ok(!store.collectibles4HEad, 'emotes: and none of anybody’s collectibles');
+        eq(seen[0].init.credentials, 'omit', 'emotes: asked as nobody');
+        eq(seen[0].init.headers.Authorization, undefined, 'emotes: with nothing to sign it');
+      }
+
+      // Signed, and Kick answers with the personal half as well.
+      {
+        const { seen, FCM } = emoteSandbox((url, init) => {
+          if (!url.includes('/emotes/')) return null;
+          const auth = init && init.headers && init.headers.Authorization;
+          return auth === 'Bearer sess ion' ? signedIn : anon;
+        });
+        const store = await FCM.kickApi.emotes('somechannel', {
+          headers: { Authorization: 'Bearer sess ion' },
+        });
+        eq(seen[0].init.headers.Authorization, 'Bearer sess ion',
+          'emotes: the session travels with the request');
+        eq(seen[0].init.credentials, 'include', 'emotes: as the rest of Kick’s API is asked');
+        eq(store.collectibles4HEad.source, 'Kick Collectibles',
+          'emotes: and the collectibles come back');
+        eq(seen.length, 1, 'emotes: one request answered it');
+      }
+
+      // A session Kick no longer accepts is answered 401 where a stranger is
+      // answered with a list. Asked again as a stranger rather than leaving the
+      // picker emptier than it was before anyone signed in.
+      {
+        const { seen, FCM } = emoteSandbox((url, init) => {
+          if (!url.includes('/emotes/')) return null;
+          const auth = init && init.headers && init.headers.Authorization;
+          return auth ? null : anon;
+        });
+        const store = await FCM.kickApi.emotes('somechannel', {
+          headers: { Authorization: 'Bearer stale' },
+        });
+        ok(store.xqcL, 'emotes: a stale session falls back to the list anyone gets');
+        ok(seen.some((c) => !(c.init.headers || {}).Authorization),
+          'emotes: by asking again unsigned');
+      }
     }
   })();
 };
@@ -12253,6 +12517,27 @@ suites.background = function () {
       const learned = w.last('emotes');
       eq(learned.store.kekw.url, 'https://files.kick.com/emotes/42/fullsize',
         'bg: emotes seen in a live message are learned');
+      // And marked as a guess. A message says nothing about which set an emote
+      // came from, so the label on one is only the likeliest answer — and for a
+      // collectible posted before the list loaded it is the wrong one, which is
+      // what lets the real list correct it.
+      eq(learned.store.kekw.learned, true, 'bg: and marked as the guess they are');
+
+      // The same, for the emotes that arrive only as tokens in the text. That is
+      // how most of them arrive, so an unmarked one here would leave most
+      // collectibles filed under the channel for the rest of the visit.
+      w.clear();
+      pusher.push(JSON.stringify({
+        event: 'App\\Events\\ChatMessageEvent',
+        data: JSON.stringify({
+          id: 'k-2', content: 'nice [emote:5747848:collectibles4HEad]',
+          created_at: '2026-01-01T00:00:01Z',
+          sender: { id: 8, username: 'Someone', identity: { color: '#00FF00', badges: [] } },
+        }),
+      }));
+      const fromText = w.last('emotes');
+      eq(fromText.store.collectibles4HEad.learned, true,
+        'bg: an emote read out of the message text is a guess too');
 
       // Housekeeping events are dropped rather than spamming the feed.
       w.clear();
@@ -13566,7 +13851,10 @@ suites.fallbacks = function () {
         w.send({
           cmd: 'cacheKickEmotes',
           channel: 'someone',
-          store: { theirEmote: { url: 'https://kick/e.png', source: 'Kick' } },
+          // The shape the parser actually hands back for this channel's own set.
+          store: {
+            theirEmote: { url: 'https://kick/e.png', source: 'Kick Channel', channel: true, owner: 'someone' },
+          },
         });
         await wait(80);
 
@@ -13574,6 +13862,169 @@ suites.fallbacks = function () {
         const entry = Object.values(cached)[0];
         ok(entry && entry.kinds && entry.kinds.native && entry.kinds.native.theirEmote,
           'fallbacks: what the page fetched is written to the cache');
+      } finally { w.teardown(); }
+    }
+
+    // But not the half of it that is about whoever is signed in rather than
+    // about the channel. The cache is keyed by the account connected in
+    // settings — not the account kick.com is signed in as, and empty for
+    // anyone who connected none — so a collectible written there would be
+    // offered to the next viewer of this channel, who does not have it.
+    {
+      const w = bootWorker();
+      try {
+        w.connect();
+        w.send({ cmd: 'hello', site: 'kick', channel: 'someone', hints: [] });
+        await wait(30);
+        w.send({ cmd: 'join', platform: 'kick', channel: 'someone' });
+        await wait(60);
+        w.send({
+          cmd: 'cacheKickEmotes',
+          channel: 'someone',
+          store: {
+            theirEmote: { url: 'https://kick/e.png', source: 'Kick Channel', channel: true },
+            myCollectible: { url: 'https://kick/c.png', source: 'Kick Collectibles', collectible: true },
+            someoneElsesSub: { url: 'https://kick/s.png', source: 'Kick Channel', owner: 'Bwana' },
+          },
+        });
+        await wait(80);
+
+        // What may be remembered for next time: the channel's half, not the
+        // viewer's — the filter on its own, then the same thing through the
+        // worker's own write.
+        const keep = w.sandbox.FCM.kickEmotesWorthCaching({
+          channelOwn: { url: 'u', source: 'Kick Channel', channel: true, owner: 'someone' },
+          globalOne: { url: 'u', source: 'Kick Global' },
+          collected: { url: 'u', source: 'Kick Collectibles', collectible: true },
+          elsewhere: { url: 'u', source: 'Kick Channel', owner: 'Bwana' },
+        });
+        ok(keep.channelOwn && keep.globalOne, 'fallbacks: the channel’s own emotes and the globals are kept');
+        ok(!keep.collected, 'fallbacks: a collectible is not');
+        ok(!keep.elsewhere, 'fallbacks: nor another channel’s subscriber emote');
+
+        const cached = JSON.stringify(w.storage.local[w.sandbox.FCM.STORAGE_KEYS.emoteCache] || {});
+        contains(cached, 'theirEmote', 'fallbacks: the channel’s own emotes are remembered');
+        missing(cached, 'myCollectible',
+          'fallbacks: a collectible is not kept for whoever opens this channel next');
+        missing(cached, 'someoneElsesSub',
+          'fallbacks: nor another channel’s subscriber emotes');
+      } finally { w.teardown(); }
+    }
+
+    // ── who signs the emote request, and who is asked to ──
+    //
+    // Signed, Kick's answer holds this account's collectibles and the sets of
+    // the other channels it subscribes to. On a kick.com tab the page is the
+    // one that signs it: it reads the session cookie of the tab it is in, which
+    // in a Firefox container is a different account from the one the worker's
+    // cookie jar would hand over. So the worker asks as a stranger and asks the
+    // page every time, telling it how much it already found.
+    {
+      const asked = [];
+      const emotePayload = [
+        { id: 7, slug: 'someone', emotes: [{ id: 4001, name: 'theirEmote' }] },
+        { id: 'Collectibles', name: 'Collectibles', emotes: [{ id: 5747848, name: 'myCollectible' }] },
+      ];
+      const w = bootWorker({
+        cookies: { session_token: 'sess%20ion' },
+        fetchImpl: async (url, init) => {
+          const u = String(url);
+          if (u.includes('/channels/someone') && !u.includes('/emotes')) {
+            return {
+              ok: true,
+              json: async () => ({
+                id: 9, user_id: 77, slug: 'someone', chatroom: { id: 55 },
+                livestream: null, user: { username: 'someone', profile_pic: '' },
+              }),
+            };
+          }
+          if (u.includes('kick.com/emotes/')) {
+            asked.push((init && init.headers && init.headers.Authorization) || '');
+            const auth = init && init.headers && init.headers.Authorization;
+            // Only a signed request is shown the collectibles, which is exactly
+            // what the worker must not be the one to make here.
+            return {
+              ok: true,
+              status: 200,
+              json: async () => (auth === 'Bearer sess ion' ? emotePayload : emotePayload.slice(0, 1)),
+            };
+          }
+          return { ok: false, status: 404, json: async () => ({}) };
+        },
+      });
+      try {
+        w.connect();
+        w.send({ cmd: 'hello', site: 'kick', channel: 'someone', hints: [] });
+        await wait(30);
+        w.send({ cmd: 'join', platform: 'kick', channel: 'someone' });
+        await wait(60);
+        const sock = w.socketFor('pusher');
+        if (sock) sock.push(JSON.stringify({ event: 'pusher:connection_established', data: '{}' }));
+        await wait(200);
+
+        eq(asked[0], '',
+          'fallbacks: on a Kick tab the worker asks as a stranger, cookie or not');
+        const errand = w.last('needKickEmotes');
+        ok(errand, 'fallbacks: and leaves the signed answer to the page, which is always asked');
+        eq(errand.loaded, 1, 'fallbacks: told what the worker already found');
+        const sent = w.of('emotes').filter((m) => m.platform === 'kick' && m.kind === 'native');
+        ok(sent.some((m) => m.store && m.store.theirEmote),
+          'fallbacks: the stranger’s list still reaches the tab straight away');
+        ok(!sent.some((m) => m.store && m.store.myCollectible),
+          'fallbacks: and carries nobody else’s collectibles');
+      } finally { w.teardown(); }
+    }
+
+    // Kick merged into a Twitch tab has no kick.com page to ask, so there the
+    // worker signs the request itself — it is the only thing that can — and
+    // there is no errand, because there is nobody to run it.
+    {
+      const asked = [];
+      const w = bootWorker({
+        cookies: { session_token: 'sess%20ion' },
+        fetchImpl: async (url, init) => {
+          const u = String(url);
+          if (u.includes('/channels/someone') && !u.includes('/emotes')) {
+            return {
+              ok: true,
+              json: async () => ({
+                id: 9, user_id: 77, slug: 'someone', chatroom: { id: 55 },
+                livestream: null, user: { username: 'someone', profile_pic: '' },
+              }),
+            };
+          }
+          if (u.includes('kick.com/emotes/')) {
+            const auth = (init && init.headers && init.headers.Authorization) || '';
+            asked.push(auth);
+            const sets = [{ id: 7, slug: 'someone', emotes: [{ id: 4001, name: 'theirEmote' }] }];
+            if (auth === 'Bearer sess ion') {
+              sets.push({
+                id: 'Collectibles', name: 'Collectibles',
+                emotes: [{ id: 5747848, name: 'myCollectible' }],
+              });
+            }
+            return { ok: true, status: 200, json: async () => sets };
+          }
+          return { ok: false, status: 404, json: async () => ({}) };
+        },
+      });
+      try {
+        w.connect();
+        w.send({ cmd: 'hello', site: 'twitch', channel: 'somechannel', hints: [] });
+        await wait(30);
+        w.send({ cmd: 'join', platform: 'kick', channel: 'someone' });
+        await wait(60);
+        const sock = w.socketFor('pusher');
+        if (sock) sock.push(JSON.stringify({ event: 'pusher:connection_established', data: '{}' }));
+        await wait(200);
+
+        eq(asked[0], 'Bearer sess ion',
+          'fallbacks: with no Kick page to ask, the worker signs the request itself');
+        const sent = w.of('emotes').filter((m) => m.platform === 'kick' && m.kind === 'native');
+        ok(sent.some((m) => m.store && m.store.myCollectible),
+          'fallbacks: and the collectibles reach the Twitch tab');
+        eq(w.of('needKickEmotes').length, 0,
+          'fallbacks: nothing is asked of a page that is not on Kick');
       } finally { w.teardown(); }
     }
 
