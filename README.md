@@ -23,7 +23,7 @@ has signed. Chrome is first below; Firefox is [further down](#install-in-firefox
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.22.0.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.22.1.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and an extra folder named `FriendlyChatExtension-main`
@@ -55,7 +55,7 @@ Firefox ESR 140. Firefox for Android is not supported: the sign-in API the exten
 accounts with does not exist there.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.22.0-firefox.xpi` from the Assets list. That file is the add-on, signed
+`FriendlyChatExtension-v1.22.1-firefox.xpi` from the Assets list. That file is the add-on, signed
 by Mozilla, and there is nothing to unzip.
 
 1. **Open the file with Firefox.** Click it in Firefox's downloads list, or drag the file from
@@ -82,7 +82,7 @@ The add-on is not on addons.mozilla.org, and will not be: Mozilla signs it witho
 and this repository's releases are the only place it is published.
 
 **Trying an unsigned build.** Each release also carries
-`FriendlyChatExtension-v1.22.0-firefox-unsigned.xpi`, the same package before Mozilla signed it.
+`FriendlyChatExtension-v1.22.1-firefox-unsigned.xpi`, the same package before Mozilla signed it.
 Opened the ordinary way, release Firefox refuses it as unverified; it loads only as a temporary
 add-on: open `about:debugging`, choose *This Firefox*, press *Load Temporary Add-on…* and pick the
 file itself, without unpacking it. A temporary add-on is removed when Firefox restarts, and its
