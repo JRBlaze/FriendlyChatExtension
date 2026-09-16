@@ -236,6 +236,7 @@
     // line waits until it is known which this is, and says so.
     loadedTemporarily().then((temporary) => {
       const line = $('updated-by-browser');
+      line.textContent = `Kept up to date by ${FCM.updatingBrowserName()}`;
       if (temporary) line.textContent = 'Loaded temporarily, so Firefox does not update it';
       line.classList.remove('hidden');
       // A signed install came from a release, so the page for its version is
