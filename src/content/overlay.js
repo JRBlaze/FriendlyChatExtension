@@ -2727,6 +2727,13 @@
       const apiTargets = chosen.filter((p) => routes.get(p) === 'api');
       const nativeTargets = chosen.filter((p) => routes.get(p) === 'native');
 
+      // What each platform is actually sent. Kick needs its emotes written as
+      // the tokens it draws — see FCM.toKickMessage — and the box keeps what
+      // was typed, so this is the only place the two differ.
+      const bodyFor = (p) => (p === 'kick'
+        ? FCM.toKickMessage(text, FCM.view.emotes.kick.native)
+        : text);
+
       if (!apiTargets.length && !nativeTargets.length) {
         const blocked = chosen.filter((p) => routes.get(p) === 'blocked');
         const who = blocked[0] || chosen[0];
@@ -2775,11 +2782,16 @@
           const twitchText = replies.twitch
             ? FCM.dropLeadingMention(text, (replyTo.get('twitch') || {}).name)
             : text;
-          // Split only when the two actually differ, so the ordinary send
-          // stays the single call it has always been.
-          const batches = twitchText === text
-            ? [[apiTargets, text]]
-            : [[apiTargets.filter((p) => p !== 'twitch'), text], [['twitch'], twitchText]];
+          // Grouped by the message each platform is actually sent, so the two
+          // that differ cost two calls and the ordinary send stays the one it
+          // has always been.
+          const byBody = new Map();
+          apiTargets.forEach((p) => {
+            const body = p === 'twitch' ? twitchText : bodyFor(p);
+            if (!byBody.has(body)) byBody.set(body, []);
+            byBody.get(body).push(p);
+          });
+          const batches = [...byBody.entries()].map(([body, targets]) => [targets, body]);
           batches.forEach(([targets, body]) => {
             if (!targets.length) return;
             work.push(sendViaApi(targets, body, replies).then((results) => {
@@ -2794,7 +2806,7 @@
         nativeTargets.forEach((p) => {
           // Only Twitch's box is ever handed a Cheer, and it is the one message
           // that must not be submitted a second time to hurry it along.
-          work.push(FCM.sendViaNativeComposer(site, text, { cheer: !!cheer && p === 'twitch' })
+          work.push(FCM.sendViaNativeComposer(site, bodyFor(p), { cheer: !!cheer && p === 'twitch' })
             .then((r) => {
               if (r.ok) delivered++;
               else failures.push({ platform: p, reason: r.reason });
