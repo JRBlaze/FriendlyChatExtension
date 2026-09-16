@@ -807,6 +807,8 @@ suites.firefox = function () {
   {
     const store = pack.storeManifest(manifest);
     ok(!('key' in store), 'store: the manifest carries no key, which the store refuses');
+    ok(store.description.length <= 132,
+      `store: the description is at most the 132 characters the store allows (${store.description.length})`);
     ok('key' in manifest, "store: and the repository's manifest still has its key");
     ok(!store.host_permissions.includes(pack.GITHUB_API_ORIGIN), 'store: no GitHub API host, since the store updates it');
     ok(!store.host_permissions.includes('https://*.workers.dev/*'), 'store: no host for every workers.dev address');
