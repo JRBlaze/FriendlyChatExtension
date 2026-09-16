@@ -794,6 +794,40 @@ suites.firefox = function () {
     eq(byBrowser({ runtime: { getManifest: () => { throw new Error('Extension context invalidated.'); } } }), false,
       'firefox: updatedByBrowser: a manifest that cannot be read answers false, as every build did before');
     eq(byBrowser(null), false, 'firefox: updatedByBrowser: and so does a page with no extension API at all');
+    eq(byBrowser(running({ ...manifest, update_url: 'https://clients2.google.com/service/update2/crx' })), true,
+      'store: updatedByBrowser: a Chrome Web Store install, which Chrome gives an update_url, is updated by Chrome');
+    eq(byBrowser(running({ ...manifest, update_url: '' })), false,
+      'store: updatedByBrowser: but not one whose update_url is empty');
+  }
+
+  // ── The Chrome Web Store package ──
+  //
+  // Uploaded to the store by hand, so everything the store would refuse, or a
+  // reviewer would ask about, is checked here instead.
+  {
+    const store = pack.storeManifest(manifest);
+    ok(!('key' in store), 'store: the manifest carries no key, which the store refuses');
+    ok('key' in manifest, "store: and the repository's manifest still has its key");
+    ok(!store.host_permissions.includes(pack.GITHUB_API_ORIGIN), 'store: no GitHub API host, since the store updates it');
+    ok(!store.host_permissions.includes('https://*.workers.dev/*'), 'store: no host for every workers.dev address');
+    ok(store.host_permissions.includes(pack.DEFAULT_PROXY_ORIGIN), 'store: only the default Kick proxy');
+    eq(pack.DEFAULT_PROXY_ORIGIN, `${load(makeSandbox({}), 'src/shared/namespace.js', 'src/shared/constants.js').DEFAULT_KICK_PROXY_URL}/*`,
+      'store: and that is the proxy the extension uses by default');
+    eq(store.host_permissions.filter((p) => !manifest.host_permissions.includes(p)), [pack.DEFAULT_PROXY_ORIGIN],
+      'store: no other host is added');
+    eq({ ...store, key: undefined, host_permissions: undefined },
+      { ...JSON.parse(JSON.stringify(manifest)), key: undefined, host_permissions: undefined },
+      "store: and nothing else differs from Chrome's manifest");
+    ok(/\.zip$/.test(pack.assetName(ROOT, pack.STORE_TARGET)) && !Object.keys(pack.ASSET_SUFFIXES).includes(pack.STORE_TARGET),
+      'store: its zip is not one of the files a release carries');
+    eq(pack.parseArgs(['out', '--target', 'chrome-store']).target, 'chrome-store', 'store: the target can be asked for');
+    ok(!pack.TARGETS.includes(pack.STORE_TARGET), "store: and is not built by --target all");
+    const name = (m) => load(makeSandbox({ chrome: { runtime: { getManifest: () => m } } }),
+      'src/shared/namespace.js', 'src/shared/constants.js', 'src/shared/util.js').updatingBrowserName();
+    eq([name({ ...store, update_url: 'https://clients2.google.com/service/update2/crx' }), name(fm)], ['Chrome', 'Firefox'],
+      'store: a store install says Chrome keeps it up to date, and a signed Firefox one says Firefox');
+    const built = JSON.parse(pack.manifestBytes(ROOT, pack.STORE_TARGET).toString('utf8'));
+    eq(built, store, 'store: the package ships that manifest');
   }
 
   // ── The overlay's update strip ──

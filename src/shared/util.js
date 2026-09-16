@@ -268,14 +268,17 @@
    * extension's own update check, the badge's dot, the popup's card and the
    * overlay's strip have nothing to add.
    *
-   * True for a Firefox build whose manifest names an update_url, which is
+   * True for a Chrome Web Store install, whose running manifest Chrome gives
+   * a top-level update_url of the store's own. A zip loaded unpacked has none,
+   * and nothing in this repository ever writes one, so it cannot be mistaken.
+   *
+   * True too for a Firefox build whose manifest names an update_url, which is
    * every signed release (tools/pack.js, UPDATE_URL): Firefox asks that
    * address for newer versions on its own schedule and installs them without
    * anyone opening a file. Read from the running manifest rather than from
    * FCM.BROWSER, because the manifest is what decides it — a Firefox package
    * built without an update_url gets no updates from Firefox at all, and still
-   * needs to be told about releases the way Chrome does. Chrome's manifest has
-   * no browser_specific_settings, so this is never true there.
+   * needs to be told about releases the way Chrome does.
    *
    * Asked of the manifest every time rather than kept, since that costs a copy
    * of a small object and cannot be out of date. Anything that stops it being
@@ -284,12 +287,27 @@
    */
   FCM.updatedByBrowser = function () {
     try {
-      const settings = chrome.runtime.getManifest().browser_specific_settings;
+      const manifest = chrome.runtime.getManifest();
+      if (typeof manifest.update_url === 'string' && manifest.update_url !== '') return true;
+      const settings = manifest.browser_specific_settings;
       const url = settings && settings.gecko && settings.gecko.update_url;
       return typeof url === 'string' && url !== '';
     } catch (e) {
       return false;
     }
+  };
+
+  /**
+   * The browser that keeps this build up to date, as a person would name it.
+   * Read from the manifest, the same as FCM.updatedByBrowser: only Firefox's
+   * names its update_url under browser_specific_settings.
+   */
+  FCM.updatingBrowserName = function () {
+    try {
+      const settings = chrome.runtime.getManifest().browser_specific_settings;
+      if (settings && settings.gecko) return 'Firefox';
+    } catch (e) { /* no manifest to read */ }
+    return 'Chrome';
   };
 
   // ── Site access ─────────────────────────────────────────────────────────────

@@ -128,6 +128,23 @@ jobs:
       - name: Check the packages
         run: node tools/release.js verify-packages dist "${GITHUB_REF_NAME#v}"
 
+      # The Chrome Web Store package, uploaded to the store by hand. Kept as this
+      # run's artifact and never attached to the release: it ends in .zip, and
+      # a second .zip on a release is what older Chrome builds would take as
+      # their update (tools/pack.js, ASSET_SUFFIXES). Built into its own folder
+      # so nothing that reads dist/ ever sees it. Before signing, so a failed
+      # signing still leaves it to download.
+      - name: Build the Chrome Web Store package
+        run: node tools/pack.js store --target chrome-store
+
+      - name: Keep the Chrome Web Store package
+        uses: actions/upload-artifact@v7
+        with:
+          name: chrome-web-store-zip
+          path: store/FriendlyChatExtension-v*-chrome-web-store.zip
+          if-no-files-found: error
+          retention-days: 90
+
       # Fetched before anything is created, so npm being unreachable fails the
       # run while there is still nothing to clean up. The exact version
       # tools/release.js runs; the release suite holds the two to each other.

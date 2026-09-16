@@ -5,6 +5,8 @@
 //   node tools/pack.js <outdir>
 //   node tools/pack.js <outdir> --target chrome|firefox|all
 //   node tools/pack.js --unpacked <dir> [--target firefox|chrome]
+//   node tools/pack.js <outdir> --target chrome-store
+//                                 -> <outdir>/FriendlyChatExtension-v<version>-chrome-web-store.zip
 //
 // Neither zip has a wrapper directory. Each opens straight onto `manifest.json`,
 // next to `src` and `icons`, so extracting it gives one folder holding the
@@ -79,6 +81,22 @@ const LOOSE = ['LICENSE', 'README.md', 'manifest.json'];
 // meant, because it is the one that existed first and the one every caller
 // written before Firefox was asking for.
 const TARGETS = ['chrome', 'firefox'];
+
+// The package uploaded to the Chrome Web Store by hand, which is not one of a
+// release's files and so is not in TARGETS or built by `--target all`. It ends
+// in .zip, because that is what the store takes, and so must never be attached
+// to a release (see ASSET_SUFFIXES): the release workflow keeps it as a run
+// artifact instead, and STORE_ZIP_SUFFIX is deliberately not in ASSET_SUFFIXES.
+const STORE_TARGET = 'chrome-store';
+const STORE_ZIP_SUFFIX = '-chrome-web-store.zip';
+
+// The Kick sign-in helper every install uses unless its settings name another
+// (FCM.DEFAULT_KICK_PROXY_URL). The store build asks for this one host in place
+// of every *.workers.dev address. A proxy of someone's own on another address
+// still works there, since the worker answers with CORS headers for any
+// extension, and a fetch that is allowed by CORS needs no host permission.
+const DEFAULT_PROXY_ORIGIN = 'https://friendly-chat-kick-proxy.jrblaze.workers.dev/*';
+const WORKERS_DEV_ORIGIN = 'https://*.workers.dev/*';
 
 // ── What the Firefox manifest says about the add-on ─────────────────────────
 
@@ -400,8 +418,39 @@ function firefoxManifest(manifest, swSource, opts) {
   return m;
 }
 
+/**
+ * The Chrome Web Store's manifest, made from Chrome's.
+ *
+ * Pure, like firefoxManifest. Three things differ from the zip loaded unpacked:
+ *
+ *   - No `key`. The store refuses a manifest carrying one and gives the item an
+ *     ID of its own, so this package's redirect URL is that ID's, not the
+ *     unpacked build's.
+ *   - No GitHub API host. The store updates the extension itself, and Chrome
+ *     gives a store install an update_url, which is how FCM.updatedByBrowser
+ *     knows to make no check of its own — so the host would be asked for and
+ *     never used.
+ *   - Only the default Kick proxy's host, not every *.workers.dev address
+ *     (see DEFAULT_PROXY_ORIGIN), because a narrower request is a shorter review.
+ *
+ * @param {object} manifest the Chrome manifest, as parsed from manifest.json
+ * @returns {object}
+ */
+function storeManifest(manifest) {
+  const m = JSON.parse(JSON.stringify(manifest));
+  delete m.key;
+  if (Array.isArray(m.host_permissions)) {
+    const hosts = m.host_permissions
+      .filter((p) => p !== GITHUB_API_ORIGIN)
+      .map((p) => (p === WORKERS_DEV_ORIGIN ? DEFAULT_PROXY_ORIGIN : p));
+    m.host_permissions = [...new Set(hosts)];
+  }
+  return m;
+}
+
 function targetOf(target) {
   const t = target || 'chrome';
+  if (t === STORE_TARGET) return t;
   if (!TARGETS.includes(t)) throw new Error(`unknown target "${t}" (expected ${TARGETS.join(' or ')})`);
   return t;
 }
@@ -415,8 +464,11 @@ function targetOf(target) {
  */
 function manifestBytes(root, target) {
   const base = root || ROOT;
-  if (targetOf(target) === 'chrome') return fs.readFileSync(path.join(base, 'manifest.json'));
+  const t = targetOf(target);
+  if (t === 'chrome') return fs.readFileSync(path.join(base, 'manifest.json'));
   const manifest = JSON.parse(fs.readFileSync(path.join(base, 'manifest.json'), 'utf8'));
+  if (t === STORE_TARGET) return Buffer.from(`${JSON.stringify(storeManifest(manifest), null, 2)}
+`, 'utf8');
   const worker = (manifest.background || {}).service_worker;
   const swSource = worker ? fs.readFileSync(path.join(base, worker), 'utf8') : '';
   return Buffer.from(`${JSON.stringify(firefoxManifest(manifest, swSource), null, 2)}\n`, 'utf8');
@@ -466,6 +518,7 @@ function releaseAssetName(ver, kind) {
 
 /** The name of a release file of one kind, for the version in the working tree's manifest. */
 function assetName(root, kind) {
+  if (kind === STORE_TARGET) return `FriendlyChatExtension-v${version(root)}${STORE_ZIP_SUFFIX}`;
   return releaseAssetName(version(root), kind);
 }
 
@@ -602,7 +655,7 @@ function parseArgs(argv) {
     }
   } else {
     args.target = args.target || 'all';
-    if (args.target !== 'all' && !TARGETS.includes(args.target)) {
+    if (args.target !== 'all' && args.target !== STORE_TARGET && !TARGETS.includes(args.target)) {
       throw new Error(`unknown target "${args.target}"`);
     }
   }
@@ -611,9 +664,9 @@ function parseArgs(argv) {
 
 module.exports = {
   collect, build, zip, crc32, version, assetName, releaseAssetName, manifestBytes,
-  firefoxManifest, backgroundScripts, firefoxRedirectUrl, updatesManifest, writeUnpacked, parseArgs,
+  firefoxManifest, storeManifest, backgroundScripts, firefoxRedirectUrl, updatesManifest, writeUnpacked, parseArgs,
   GECKO_ID, FIREFOX_MIN, DATA_COLLECTION, UPDATE_URL, RELEASE_DOWNLOADS, GITHUB_API_ORIGIN, ASSET_SUFFIXES,
-  TARGETS, ROOTS, LOOSE,
+  TARGETS, STORE_TARGET, STORE_ZIP_SUFFIX, DEFAULT_PROXY_ORIGIN, ROOTS, LOOSE,
 };
 
 if (require.main === module) {

@@ -2335,7 +2335,7 @@
       const text = document.createElement('span');
       text.className = 'fcm-update-text';
       text.textContent = byBrowser
-        ? `v${status.version} is out · Firefox updates it by itself`
+        ? `v${status.version} is out · ${FCM.updatingBrowserName()} updates it by itself`
         : `v${status.version} is out`;
       updateEl.appendChild(text);
 
