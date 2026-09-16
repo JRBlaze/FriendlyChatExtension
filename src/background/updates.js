@@ -26,8 +26,8 @@
 (function (FCM) {
   'use strict';
 
-  FCM.GITHUB_REPO = 'JRBlaze/FriendlyChatExtension';
-  FCM.GITHUB_RELEASES_URL = `https://github.com/${FCM.GITHUB_REPO}/releases/latest`;
+  // The repo itself is named in constants.js, which every context loads; only
+  // the API address is needed here, and only the background ever asks it.
   const LATEST_API = `https://api.github.com/repos/${FCM.GITHUB_REPO}/releases/latest`;
 
   // Once every six hours. A release is not an event anybody needs told about

@@ -84,6 +84,12 @@ footer small { color: var(--muted); font-size: 11px; }
   font-size: 15px; line-height: 1; cursor: pointer; padding: 0 2px;
 }
 .update-head button:hover { color: var(--text); }
+/* The link to what changed, which sits in the note rather than among the
+   buttons: it is something to read, not one of the two things to press, and a
+   third item in that row leaves none of them room in a 320px popup. */
+.update a { color: var(--accent); text-decoration: none; white-space: nowrap; }
+.update a:hover { text-decoration: underline; }
+
 .update-actions, .access-actions { display: flex; gap: 7px; }
 .update-actions button, .access-actions button {
   flex: 1;

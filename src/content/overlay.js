@@ -2321,7 +2321,6 @@
         updateEl.replaceChildren();
         return;
       }
-      const url = String(status.downloadUrl || status.url || FCM.GITHUB_RELEASES_URL || '');
       const byBrowser = FCM.updatedByBrowser();
       updateEl.replaceChildren();
       const text = document.createElement('span');
@@ -2330,15 +2329,28 @@
         ? `v${status.version} is out · Firefox updates it by itself`
         : `v${status.version} is out`;
       updateEl.appendChild(text);
-      if (!byBrowser && /^https:\/\//i.test(url)) {
+
+      const addLink = (href, label) => {
+        const url = String(href || '');
+        // Built from GitHub's own answer about one repo, but it ends up in an
+        // href, so nothing but https gets there.
+        if (!/^https:\/\//i.test(url)) return;
         const link = document.createElement('a');
         link.className = 'fcm-update-link';
         link.href = url;
         link.target = '_blank';
         link.rel = 'noopener noreferrer';
-        link.textContent = status.downloadUrl ? 'Get it' : 'See release';
+        link.textContent = label;
         updateEl.appendChild(link);
-      }
+      };
+
+      // The file, when the release has one for this browser, and what changed
+      // in it either way. "v1.22.0 is out" is not a reason to update — it is a
+      // number — and the one link there used to be went straight to a download
+      // whenever there was one to go to, so the only way to find out what was
+      // in it was to install it and see.
+      if (!byBrowser && status.downloadUrl) addLink(status.downloadUrl, 'Get it');
+      addLink(status.url || FCM.releaseNotesUrl(status.version), "What's new");
       const close = document.createElement('button');
       close.type = 'button';
       close.className = 'fcm-update-close';

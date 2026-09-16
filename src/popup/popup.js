@@ -130,6 +130,10 @@
   // do by hand what Firefox is already doing. The footer says so instead, where
   // "Check for updates" would be.
   const updatedByBrowser = FCM.updatedByBrowser();
+  // The version this install actually is, which the footer shows and the
+  // release-notes link points at.
+  let installed = '';
+  try { installed = String(chrome.runtime.getManifest().version || ''); } catch (err) { /* not an extension page */ }
 
   function ask(cmd, extra) {
     return new Promise((resolve) => {
@@ -156,6 +160,16 @@
     } catch (e) { /* refused on the spot */ }
   }
 
+  /**
+   * A release address, or the releases page when it is not one.
+   *
+   * What the check stored came from GitHub and goes back out into
+   * `tabs.create`, and the overlay's strip has always refused anything but
+   * https before putting it in an href. This is the same guard on this side of
+   * it, so one surface cannot be stricter than the other about the same value.
+   */
+  const release = (url) => (/^https:\/\//i.test(String(url || '')) ? String(url) : FCM.GITHUB_RELEASES_URL);
+
   function renderUpdate(status) {
     const card = $('update');
     if (!status || !status.available) { card.classList.add('hidden'); return; }
@@ -171,7 +185,15 @@
     $('update-get').textContent = status.downloadUrl
       ? (FCM.BROWSER === 'firefox' ? 'Download the add-on' : 'Download the zip')
       : 'Open the release';
-    $('update-get').onclick = () => openTab(status.downloadUrl || status.url);
+    $('update-get').onclick = () => openTab(release(status.downloadUrl || status.url));
+    // What changed, which the card could not say before: the note above it is
+    // the release's title, and the button beside it downloads a file. Pointed
+    // at the release GitHub actually published when the check found one, and at
+    // the tag for that version otherwise — a page that exists either way.
+    $('update-notes').onclick = (e) => {
+      e.preventDefault();
+      openTab(status.url ? release(status.url) : FCM.releaseNotesUrl(status.version));
+    };
     $('update-dismiss').onclick = async () => {
       await ask('updateDismiss', { version: status.version });
       card.classList.add('hidden');
@@ -231,12 +253,22 @@
     });
   }
 
+  // What changed in the version that is actually running, whether or not there
+  // is a newer one. This is the only route to the notes on a build the browser
+  // updates by itself: there the card above never appears, because there is
+  // never anything to go and fetch — the update simply arrives, and until now
+  // the first anyone knew of it was that something had moved.
+  $('whats-new').addEventListener('click', (e) => {
+    e.preventDefault();
+    openTab(FCM.releaseNotesUrl(installed));
+  });
+
   $('open-options').addEventListener('click', (e) => {
     e.preventDefault();
     chrome.runtime.openOptionsPage();
   });
 
-  $('version').textContent = `v${chrome.runtime.getManifest().version}`;
+  $('version').textContent = `v${installed}`;
 
   if (FCM.BROWSER === 'firefox') {
     // Firefox asks the person before it grants anything, and only for a request

@@ -234,12 +234,14 @@ inside, because Chrome builds up to v1.20.1 take the first `.zip` on a release a
   — share your watch streak, share your resub and how long you have subscribed — were drawn under
   the panel where you could not see them. They now appear as a row in the feed with Twitch's own
   Share button behind it. See [Share reminders](#share-reminders-read-off-the-page).
-- **Tells you when there is a new release.** The releases page is checked in the background and
-  the toolbar icon gets a dot when there is something newer; the popup turns that into the file
-  and the page to drop it on. Nothing installs itself — no extension outside the Web Store can —
-  but the steps that are left are two clicks rather than a trip to GitHub you had to think of.
-  That is Chrome. In Firefox the signed add-on is updated by Firefox itself, so none of it appears
-  there, and the popup says *Kept up to date by Firefox* instead.
+- **Tells you when there is a new release, and what is in it.** The releases page is checked in
+  the background and the toolbar icon gets a dot when there is something newer; the popup turns
+  that into the file and the page to drop it on, and both it and the strip in the overlay carry a
+  *What's new* link to that release's notes. Nothing installs itself — no extension outside the
+  Web Store can — but the steps that are left are two clicks rather than a trip to GitHub you had
+  to think of. That is Chrome. In Firefox the signed add-on is updated by Firefox itself, so none
+  of the rest appears there: the popup says *Kept up to date by Firefox*, with *What's new* beside
+  it for the version you are now running.
 - **Follows the site's own theme.** Twitch or Kick in dark mode gets a dark overlay, light mode
   gets a light one, and it switches the moment you change it on the site.
 - **Several streams at once.** Each tab keeps its own sockets, channels and feed.
@@ -270,10 +272,18 @@ Chrome only updates extensions it installed itself, and it did not install this 
 extension watches for you: it asks GitHub for the latest release every six hours, and when there
 is one newer than the version running, the toolbar icon gets a dot and a one-line strip appears
 at the top of the overlay — the icon is only there for people who pinned it, and the overlay is
-where everyone else is looking. The strip names the version and links the zip; the popup names
-it too, offers the zip and offers `chrome://extensions` to drop it on. Dismissing it in either
-place hides that one version, not every future one. *Check for updates* in the popup's footer
-asks now.
+where everyone else is looking. The strip names the version, links the zip and links *What's
+new*; the popup names it too, offers the zip, offers `chrome://extensions` to drop it on, and
+carries the same *What's new* link. Dismissing it in either place hides that one version, not
+every future one. *Check for updates* in the popup's footer asks now.
+
+*What's new* opens that release on GitHub, where the notes are. It is there because a version
+number is not a reason to update: before it, the only link on the strip went straight to a
+download whenever there was one to go to, so the only way to find out what was in a release was
+to install it and look. Where the check has an address for the release, that is where it goes;
+where it has none — a build that has never reached GitHub, or one that never asks — the tag a
+version is published under is worked out from the version itself, so the link is there either
+way.
 
 Nothing here can install the update. An extension cannot replace itself, and no permission
 changes that — what this removes is having to remember to go and look.
@@ -301,7 +311,12 @@ now rather than wait, open `about:addons` and choose *Check for Updates* from th
 So everything the Chrome half describes is switched off in a signed Firefox build: no request to
 GitHub of the extension's own, no dot on the icon, no strip in the overlay and no update card in
 the popup, whose footer says *Kept up to date by Firefox* where *Check for updates* would be. They
-could only announce an update already on its way. The Firefox package does not even ask for access
+could only announce an update already on its way.
+
+What is not switched off is *What's new*, in the popup's footer beside that line. An update that
+installs itself is the case where you are least likely to know what changed — nobody is asked and
+nothing is announced — so the link points at the release for the version now running, worked out
+from the version rather than fetched, which is why it needs no check and no access to GitHub. The Firefox package does not even ask for access
 to `api.github.com`, which only that check used, so it is not among the sites Firefox lists at
 install.
 

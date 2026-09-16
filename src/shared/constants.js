@@ -73,6 +73,31 @@
     'moderation:ban', 'moderation:chat_message:manage',
   ].join(' ');
 
+  // Where the releases live, and where the notes for one are read.
+  //
+  // Here rather than beside the update check, because the check only runs in
+  // the background and these are wanted where it never loads: the panel's
+  // update strip, and the popup's card and footer. The strip already reached
+  // for the releases address and got `undefined`, which its `|| ''` quietly
+  // turned into no link at all.
+  FCM.GITHUB_REPO = 'JRBlaze/FriendlyChatExtension';
+  FCM.GITHUB_RELEASES_URL = `https://github.com/${FCM.GITHUB_REPO}/releases/latest`;
+
+  /**
+   * Where to read what changed in one version.
+   *
+   * A release is published under the tag its version is named for, and that
+   * page is the notes. Anything that is not a plain version goes to the
+   * releases page instead: this ends up in an address the browser is asked to
+   * open, and the version reaching it comes from a manifest or from GitHub's
+   * answer rather than from anything here.
+   */
+  FCM.releaseNotesUrl = function (version) {
+    const tag = String(version || '').trim().replace(/^v/i, '');
+    if (!/^\d+(\.\d+){0,3}(-[0-9A-Za-z.]+)?$/.test(tag)) return FCM.GITHUB_RELEASES_URL;
+    return `https://github.com/${FCM.GITHUB_REPO}/releases/tag/v${tag}`;
+  };
+
   FCM.KICK_PUSHER_KEY = '32cbd69e4b950bf97679';
   FCM.KICK_PUSHER_URL =
     `wss://ws-us2.pusher.com/app/${FCM.KICK_PUSHER_KEY}?protocol=7&client=js&version=7.4.0&flash=false`;
