@@ -126,6 +126,38 @@
     return store;
   };
 
+  /** The number Kick knows an emote by, read back off the address of its picture. */
+  FCM.kickEmoteId = function (emote) {
+    const m = /^https:\/\/files\.kick\.com\/emotes\/(\d+)\//.exec(String((emote && emote.url) || ''));
+    return m ? m[1] : '';
+  };
+
+  /**
+   * A typed message as Kick has to receive it.
+   *
+   * Kick does not turn a name into a picture. Its own composer writes
+   * `[emote:<id>:<name>]` into the message when somebody picks an emote, and
+   * that token is what every Kick client draws — a bare name is a word, and
+   * arrives in the room as one. So every emote this panel has ever sent to Kick
+   * went out as its own name in plain text: right in the box, right in the
+   * picker, and text by the time anybody else read it.
+   *
+   * Only Kick's own emotes are rewritten. A 7TV or BetterTTV emote is not
+   * something Kick can resolve at all — it is a name other people's extensions
+   * draw for them — so wrapping it in a token Kick has never heard of would
+   * take it away from those who could see it and give nothing to anyone else.
+   *
+   * Whole words only, which is how the feed reads them back.
+   */
+  FCM.toKickMessage = function (text, store) {
+    const native = store || {};
+    return String(text == null ? '' : text).split(/(\s+)/).map((word) => {
+      if (!Object.prototype.hasOwnProperty.call(native, word)) return word;
+      const id = FCM.kickEmoteId(native[word]);
+      return id ? `[emote:${id}:${word}]` : word;
+    }).join('');
+  };
+
   /**
    * Whether a parsed Kick emote is one anybody in this channel is also shown.
    *

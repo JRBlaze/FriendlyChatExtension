@@ -4863,6 +4863,47 @@ suites.render = function () {
   contains(kick.html, 'alt="emojiKEK"', 'render: kick emote name');
   missing(kick.html, '[emote:', 'render: the raw token is replaced');
 
+  // ── And the way back out ──
+  //
+  // Kick does not turn a name into a picture: the token above is what every
+  // Kick client draws, and a bare name is a word. So what the composer sends
+  // has to be what the feed reads back, or an emote picked from the picker
+  // lands in the room as its own name in plain text — which is exactly what
+  // every emote this panel sent to Kick used to do.
+  {
+    const store = {
+      emojiKEK: { url: 'https://files.kick.com/emotes/37226/fullsize', source: 'Kick Global' },
+      collectiblesCAUGHT: { url: 'https://files.kick.com/emotes/5747856/fullsize', source: 'Kick Collectibles', collectible: true },
+      sevenTvOne: { url: 'https://cdn.7tv.app/emote/x/2x.webp', source: '7TV' },
+    };
+    const out = FCM.toKickMessage('hey emojiKEK and collectiblesCAUGHT and sevenTvOne', store);
+    eq(out, 'hey [emote:37226:emojiKEK] and [emote:5747856:collectiblesCAUGHT] and sevenTvOne',
+      'render: a Kick emote is sent as the token Kick draws, and a 7TV one is left as the name it is');
+
+    // The round trip: what the composer sends, the feed draws as pictures.
+    const back = FCM.renderMessageBody('kick', out, { emotes: [] });
+    contains(back.html, 'files.kick.com/emotes/37226/fullsize', 'render: and comes back as the global');
+    contains(back.html, 'files.kick.com/emotes/5747856/fullsize', 'render: and as the collectible');
+    contains(back.html, 'sevenTvOne', 'render: with the 7TV name still a word, for whoever can draw it');
+    missing(back.html, '[emote:', 'render: and nothing left of the tokens');
+
+    eq(FCM.toKickMessage('nothing to do here', store), 'nothing to do here',
+      'render: a message with no emotes in it is untouched');
+    eq(FCM.toKickMessage('  spaced   out  ', store), '  spaced   out  ',
+      'render: and the spacing of one that is is kept exactly');
+    // Whole words, the way the feed reads them back.
+    eq(FCM.toKickMessage('emojiKEK! xemojiKEK', store), 'emojiKEK! xemojiKEK',
+      'render: a name with something stuck to it is not an emote, here or there');
+    // A token somebody typed or pasted is already what it needs to be.
+    eq(FCM.toKickMessage('[emote:37226:emojiKEK]', store), '[emote:37226:emojiKEK]',
+      'render: and one already written that way is left alone');
+    // A word that names something every object has is not an emote.
+    eq(FCM.toKickMessage('constructor __proto__ toString', store), 'constructor __proto__ toString',
+      'render: nor is a word every object answers to');
+    eq(FCM.toKickMessage('emojiKEK', {}), 'emojiKEK',
+      'render: with no Kick emotes loaded, nothing is rewritten');
+  }
+
   // Third-party emotes match on the whole word only.
   FCM.setEmotes('twitch', 'thirdparty', { PogU: { url: 'https://cdn.7tv/pogu.webp', source: '7TV' } });
   const seventv = FCM.renderMessageBody('twitch', 'that was PogU honestly', {});

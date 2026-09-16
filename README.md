@@ -626,6 +626,17 @@ with a shorter one is never interrupted — `KappaPride` does not turn into `Kap
 through. Drawing only happens when a name is actually finished; typing itself never rewrites the
 box, because replacing its contents on every keystroke would take the caret with it.
 
+**Kick is the exception, on the way out.** Twitch turns a name into a picture for everyone reading
+it; Kick does not. Its own composer writes `[emote:<id>:<name>]` into the message when you pick an
+emote, and that token is what every Kick client draws — a bare name is a word, and lands in the
+room as one. So the message sent to Kick has its Kick emotes written that way, which is the only
+reason an emote picked here arrives as an emote there rather than as its own name in plain text.
+The box still holds what you typed, and Twitch is still sent the names.
+
+Only Kick's own emotes are rewritten. A 7TV or BetterTTV emote is not something Kick can resolve —
+it is a name other people's extensions draw for them — so wrapping it in a token Kick has never
+heard of would take it away from the people who could see it and give nothing to anybody else.
+
 **Favourites** are stored by name rather than by url, because the same emote can arrive from a
 different provider tomorrow. Starring one puts it in a row of its own at the top of the picker,
 newest first, and sorts it ahead of the alphabet in `:` autocomplete — which is the point of
