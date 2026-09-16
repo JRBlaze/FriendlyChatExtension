@@ -30,9 +30,11 @@ workers_dev        = true
 # governs the per-version preview addresses, not the one the extension calls.
 preview_urls = false
 
+# Off: sign-in addresses carry one-time Kick codes, and the privacy policy
+# promises they are not kept anywhere.
 [observability]
-enabled = true
+enabled = false
 
 [observability.logs]
-enabled = true
-invocation_logs = true
+enabled = false
+invocation_logs = false
