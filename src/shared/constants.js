@@ -113,9 +113,21 @@
    * should not quietly land on whatever is newest.
    */
   FCM.releasePageUrl = function (stored, version) {
-    const url = String(stored || '');
-    if (url.startsWith(`${RELEASES}/`) && url !== FCM.GITHUB_RELEASES_URL) return url;
-    return FCM.releaseNotesUrl(version);
+    const fallback = FCM.releaseNotesUrl(version);
+    let url;
+    // Parsed rather than matched as text. `…/releases/../../somewhere-else`
+    // starts with all the right characters and is not the right page: the
+    // browser resolves those segments away before it goes anywhere, so a check
+    // that does not resolve them first is checking an address that will never
+    // be visited. What comes back is the resolved form, for the same reason.
+    try { url = new URL(String(stored || '')); } catch (e) { return fallback; }
+    if (url.origin !== 'https://github.com') return fallback;
+    if (!url.pathname.startsWith(`/${FCM.GITHUB_REPO}/releases/`)) return fallback;
+    // The generic "latest" address is what the check stores before it has ever
+    // reached GitHub, and a link offering one version's notes should not
+    // quietly land on whatever is newest.
+    if (url.href === FCM.GITHUB_RELEASES_URL) return fallback;
+    return url.href;
   };
 
   FCM.KICK_PUSHER_KEY = '32cbd69e4b950bf97679';

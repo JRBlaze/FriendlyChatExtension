@@ -3835,6 +3835,13 @@ suites.updates = function () {
   eq(page('javascript:alert(1)', '1.22.0'), real, 'updates: nor anything that is not a web address');
   eq(page('https://github.com/JRBlaze/FriendlyChatExtension-evil/releases/tag/v1', '1.22.0'), real,
     'updates: nor a repo whose name merely starts the same way');
+  // Matched as an address rather than as text. These start with every character
+  // the check is looking for and are resolved away to somewhere else before the
+  // browser goes anywhere, so a check done on the string would pass them.
+  eq(page('https://github.com/JRBlaze/FriendlyChatExtension/releases/../../elsewhere', '1.22.0'), real,
+    'updates: nor a path that climbs back out of the releases it names');
+  eq(page('https://github.com/JRBlaze/FriendlyChatExtension/releases/%2e%2e/%2e%2e/elsewhere', '1.22.0'), real,
+    'updates: nor one that spells the climb in escapes');
   eq(page('', ''), FCM.GITHUB_RELEASES_URL, 'updates: with neither, the releases page');
 };
 
