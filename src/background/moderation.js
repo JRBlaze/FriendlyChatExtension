@@ -56,7 +56,10 @@
       }
 
       // Ban and timeout are the same endpoint; a duration is what makes it a
-      // timeout rather than permanent.
+      // timeout rather than permanent. So this is the one place a missing or
+      // misspelt action would quietly become a ban, and it is named here
+      // rather than left to be whatever was not caught above.
+      if (action !== 'ban' && action !== 'timeout') return { ok: false, reason: 'unsupported-action' };
       const data = { user_id: userId };
       if (action === 'timeout') data.duration = Math.max(1, Number(opts.seconds) || 60);
       if (opts.reason) data.reason = String(opts.reason).slice(0, 500);
@@ -103,6 +106,12 @@
         return { ok: false, reason: 'refused', detail: body.message || `HTTP ${res.status}` };
       }
 
+      // As on Twitch: the ban endpoint takes no action name, so anything that is
+      // not one of these three would otherwise post a permanent ban.
+      if (action !== 'ban' && action !== 'timeout' && action !== 'unban') {
+        return { ok: false, reason: 'unsupported-action' };
+      }
+
       const userId = opts.userId || await kickUserId(opts.username);
       if (!userId) return { ok: false, reason: 'no-user' };
 
@@ -129,7 +138,17 @@
     }
   }
 
+  // Every action there is. Both platforms send a ban and a timeout to the same
+  // endpoint, told apart only by a duration, so an action nobody recognised —
+  // a typo in a new caller, a field an older page never sent — used to fall
+  // through to the branch that needs no name at all and ban somebody
+  // permanently. It is refused here, before a token is read or a request made.
+  FCM.MODERATION_ACTIONS = Object.freeze(['delete', 'timeout', 'ban', 'unban']);
+
   FCM.moderate = function (platform, action, opts, conn, settings) {
+    if (!FCM.MODERATION_ACTIONS.includes(action)) {
+      return Promise.resolve({ ok: false, reason: 'unsupported-action' });
+    }
     if (platform === 'twitch') return moderateTwitch(action, opts || {}, conn, settings);
     if (platform === 'kick') return moderateKick(action, opts || {}, conn, settings);
     return Promise.resolve({ ok: false, reason: 'unsupported' });
@@ -157,6 +176,7 @@
       'no-message': 'no message to delete — click the name on the message you mean',
       refused: result.detail || `${name} refused the action`,
       network: `could not reach ${name}`,
+      'unsupported-action': 'that is not a moderation action, so nothing was done',
     }[result.reason] || result.detail || 'the action failed';
     return `${name}: ${detail}`;
   };

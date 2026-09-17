@@ -896,6 +896,12 @@ Tokens live in `chrome.storage.local`, never in `storage.sync`, so they are not 
 your browsers — in Chrome and Firefox alike. Kick tokens refresh silently; a Twitch implicit token
 cannot be refreshed, so when it expires the overlay says so and asks you to reconnect.
 
+A connected Twitch account is also checked with Twitch when the background starts and every hour
+after that, which Twitch requires of every app holding a viewer's token. It is how the extension
+learns that the account was disconnected from Twitch's own settings, rather than finding out when a
+message is refused. Only Twitch saying the token is no good forgets the account; Twitch being
+unreachable does not.
+
 ### Where each browser's sign-in comes back to
 
 A sign-in window ends by sending the browser to a redirect URL, and each browser only picks up

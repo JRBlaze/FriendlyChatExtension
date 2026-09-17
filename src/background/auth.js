@@ -193,15 +193,19 @@
     },
 
     async set(platform, record) {
-      return writeAuth({ [platform]: record });
+      const written = await writeAuth({ [platform]: record });
+      if (platform === 'twitch') await FCM.auth.syncTwitchValidation();
+      return written;
     },
 
     async clear(platform) {
-      return updateAuth((current) => {
+      const written = await updateAuth((current) => {
         const next = { ...current };
         delete next[platform];
         return next;
       });
+      if (platform === 'twitch') await FCM.auth.syncTwitchValidation();
+      return written;
     },
 
     // What the UI needs to know, without ever handing it a token.
@@ -426,6 +430,8 @@
       login: who.login || '',
       scopes: who.scopes || [],
       expiresAt: who.expires_in ? Date.now() + who.expires_in * 1000 : 0,
+      // The validation just made counts as the first of the hourly ones.
+      validatedAt: Date.now(),
     });
     return { platform: 'twitch', login: who.login || '' };
   }
@@ -712,6 +718,122 @@
       try { FCM.auth.onCleared(platform); } catch (e) { /* nothing listening */ }
     }
     return null;
+  };
+
+  // ── Keeping a Twitch token honest ───────────────────────────────────────────
+  //
+  // Twitch requires every app that holds a viewer's token, extensions named
+  // among them, to ask /oauth2/validate when it starts and at least once an hour
+  // after that, and says it audits for it and may revoke the application's
+  // client id or throttle it (dev.twitch.tv/docs/authentication/validate-tokens).
+  // A revoked client id would end Twitch sign-in for everybody at once. It is
+  // also the only way to learn that a viewer disconnected the extension from
+  // Twitch's own settings: an implicit token has no refresh to be refused, so
+  // until a send failed nothing here would ever find out.
+  //
+  // "Starts" is the background starting. That happens far more often than a
+  // browser does, since Chrome puts its service worker away when it is idle and
+  // Firefox its event page, so a start only asks when the last answer is more
+  // than a few minutes old. The hourly check is an alarm, which outlives the
+  // worker it was made in and wakes it when it fires; it is created only while
+  // there is a Twitch account to validate, and never pushed back once it exists.
+  //
+  // Only Twitch saying the token is no good (401) forgets the account. Twitch
+  // being unreachable, Firefox not allowing id.twitch.tv, a 5xx: none of those
+  // say anything about the token, and a sign-in outlives them.
+
+  FCM.TWITCH_VALIDATE_ALARM = 'fcm-twitch-validate';
+  const TWITCH_VALIDATE_MINUTES = 60;
+  const TWITCH_VALIDATE_ON_START_MS = 10 * 60 * 1000;
+
+  /** Whether an alarm is this one, for the background's single alarm listener. */
+  FCM.isTwitchValidateAlarm = (name) => name === FCM.TWITCH_VALIDATE_ALARM;
+
+  /**
+   * Schedules the hourly check while a Twitch account is connected, and takes
+   * it away once none is. An alarm that already exists is left as it is:
+   * creating it again would move the next check an hour further off every time
+   * the background restarts.
+   */
+  FCM.auth.syncTwitchValidation = async function () {
+    try {
+      if (typeof chrome === 'undefined' || !chrome.alarms) return;
+      const record = await FCM.auth.get('twitch');
+      if (!record || !record.accessToken) {
+        await chrome.alarms.clear(FCM.TWITCH_VALIDATE_ALARM);
+        return;
+      }
+      const existing = await chrome.alarms.get(FCM.TWITCH_VALIDATE_ALARM);
+      if (!existing) {
+        chrome.alarms.create(FCM.TWITCH_VALIDATE_ALARM, {
+          delayInMinutes: TWITCH_VALIDATE_MINUTES,
+          periodInMinutes: TWITCH_VALIDATE_MINUTES,
+        });
+      }
+    } catch (e) { /* no alarms available here */ }
+  };
+
+  /**
+   * Asks Twitch whether the stored token is still good.
+   *
+   * @param {{force?: boolean}} [opts] force is the hourly alarm; without it, a
+   *   token validated in the last few minutes is not asked about again
+   * @returns {Promise<'none'|'fresh'|'valid'|'invalid'|'unreachable'>}
+   */
+  FCM.auth.validateTwitch = async function (opts) {
+    const force = Boolean(opts && opts.force);
+    const record = await FCM.auth.get('twitch');
+    if (!record || !record.accessToken) return 'none';
+    if (!force && record.validatedAt && Date.now() - record.validatedAt < TWITCH_VALIDATE_ON_START_MS) {
+      return 'fresh';
+    }
+
+    let res;
+    try {
+      res = await fetch(FCM.TWITCH_VALIDATE_URL, {
+        headers: { Authorization: `OAuth ${record.accessToken}` },
+      });
+    } catch (e) {
+      return 'unreachable';
+    }
+    const who = res && res.ok ? await res.json().catch(() => null) : null;
+    // Twitch saying no, or saying yes about somebody else, is a token that
+    // can no longer stand for this account.
+    const refused = res && (res.status === 401 || (res.ok && who && who.user_id
+      && record.userId && String(who.user_id) !== String(record.userId)));
+    if (!refused && !(res && res.ok && who && who.user_id)) return 'unreachable';
+
+    // Written only over the token that was asked about. A sign-in that finished
+    // while Twitch was answering is a newer token, and neither this answer nor
+    // this clock is about it.
+    const now = Date.now();
+    let changed = false;
+    await updateAuth((current) => {
+      const stored = current.twitch;
+      if (!stored || stored.accessToken !== record.accessToken) return current;
+      changed = true;
+      const next = { ...current };
+      if (refused) {
+        delete next.twitch;
+      } else {
+        next.twitch = {
+          ...stored,
+          login: who.login || stored.login || '',
+          scopes: Array.isArray(who.scopes) ? who.scopes : (stored.scopes || []),
+          expiresAt: who.expires_in ? now + who.expires_in * 1000 : 0,
+          validatedAt: now,
+        };
+      }
+      return next;
+    });
+    if (!changed) return 'fresh';
+    if (!refused) return 'valid';
+
+    await FCM.auth.syncTwitchValidation();
+    if (FCM.auth.onCleared) {
+      try { FCM.auth.onCleared('twitch'); } catch (e) { /* nothing listening */ }
+    }
+    return 'invalid';
   };
 
   FCM.auth.connect = async function (platform, settings) {
