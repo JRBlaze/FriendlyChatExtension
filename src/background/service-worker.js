@@ -1419,6 +1419,10 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     }).catch(() => {});
     return;
   }
+  if (FCM.isTwitchValidateAlarm(alarm.name)) {
+    FCM.auth.validateTwitch({ force: true }).catch(() => {});
+    return;
+  }
   if (alarm.name !== 'fcm-heartbeat') return;
   sessions.forEach((session) => {
     FCM.PLATFORMS.forEach((p) => {
@@ -1440,3 +1444,11 @@ FCM.watchForUpdates();
 // And, on Firefox, whether the add-on is still allowed on Twitch and Kick at
 // all — which, when it is not, the same badge says before anything else.
 FCM.watchSiteAccess();
+
+// A connected Twitch account is validated as the background starts and every
+// hour after, which Twitch requires of anything holding a viewer's token (see
+// auth.js). Scheduling first, so the hourly alarm exists even if Twitch cannot
+// be reached this minute.
+FCM.auth.syncTwitchValidation()
+  .then(() => FCM.auth.validateTwitch())
+  .catch(() => {});

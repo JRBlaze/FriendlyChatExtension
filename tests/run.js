@@ -8648,6 +8648,8 @@ suites.auth = function () {
       const saved = store[FCM.STORAGE_KEYS.auth].twitch;
       eq(saved.accessToken, 'TW', 'auth: the token is stored');
       eq(saved.userId, '55', 'auth: the account id is stored for sending');
+      ok(saved.validatedAt > 0,
+        'auth: the validation at sign-in is recorded, so it counts as the first of the hourly ones Twitch requires');
       ok(saved.expiresAt > Date.now(), 'auth: an expiry is recorded');
 
       const summary = await FCM.auth.summary();
@@ -11747,6 +11749,28 @@ suites.moderation = function () {
         'unsupported', 'mod: an unknown platform is refused');
     }
 
+    // An action nobody recognises is refused before anything is sent. Ban and
+    // timeout share one endpoint on both platforms, told apart only by a
+    // duration, so an unknown action used to fall through to a permanent ban.
+    {
+      const { FCM, calls } = build();
+      eq(FCM.MODERATION_ACTIONS, ['delete', 'timeout', 'ban', 'unban'],
+        'mod: the four actions there are');
+      for (const platform of ['twitch', 'kick']) {
+        for (const action of [undefined, null, '', 'tmeout', 'BAN', 'purge', 'ban ', {}]) {
+          calls.length = 0;
+          const result = await FCM.moderate(platform, action,
+            { username: 'baduser', userId: '999', seconds: 600, messageId: 'm-1' }, { roomId: '4242' }, {});
+          eq(result.reason, 'unsupported-action',
+            `mod: ${platform}: ${JSON.stringify(action)} is not an action, and is refused`);
+          eq(calls.length, 0, `mod: ${platform}: ${JSON.stringify(action)} sends nothing at all — no ban`);
+        }
+      }
+      eq(FCM.describeModeration('twitch', { ok: false, reason: 'unsupported-action' }),
+        'Twitch: that is not a moderation action, so nothing was done',
+        'mod: and the feed says nothing was done');
+    }
+
     // ── Wording ──
     {
       const { FCM } = build();
@@ -14218,6 +14242,195 @@ suites.alarms = function () {
         eq(w.alarms.get('fcm-update-check'), first,
           'alarms: a later start leaves the one already scheduled alone');
       } finally { w.teardown(); }
+    }
+  })();
+};
+
+// Twitch requires anything holding a viewer's token to validate it when it
+// starts and every hour after, and audits for it. The worker is booted the way
+// each browser loads it, over a network that answers /oauth2/validate however
+// the test says.
+suites.twitchvalidate = function () {
+  const { bootWorker, wait } = require('./background.js');
+  const AUTH = 'fcm_auth_v1';
+  const ALARM = 'fcm-twitch-validate';
+  const twitch = (extra) => ({
+    accessToken: 'TOKEN-A', clientId: 'cid', userId: '55', login: 'me', scopes: ['chat:read'], expiresAt: 0, ...extra,
+  });
+  const kick = { accessToken: 'KICK', refreshToken: 'KR', expiresAt: 0, login: 'k', userId: '7' };
+
+  // `answer(token)` decides each validate response: a status, a body, 'throw'
+  // for a request that never left the machine, or a promise to hold it open.
+  function boot({ seed, answer, browser }) {
+    const validateCalls = [];
+    const fetchImpl = async (url, init) => {
+      const u = String(url);
+      if (u.includes('/oauth2/validate')) {
+        const header = String((init && init.headers && init.headers.Authorization) || '');
+        validateCalls.push(header);
+        let a = answer ? answer(header.replace(/^OAuth /, '')) : { status: 200 };
+        if (a && typeof a.then === 'function') a = await a;
+        if (a === 'throw') throw new TypeError('Failed to fetch');
+        const status = a.status || 200;
+        const body = a.body || { client_id: 'cid', login: 'me', user_id: '55', scopes: ['chat:read', 'user:read:emotes'], expires_in: 5000 };
+        return { ok: status >= 200 && status < 300, status, json: async () => body };
+      }
+      return { ok: false, status: 404, json: async () => ({}) };
+    };
+    const opts = { fetchImpl, seed: { local: seed || {} } };
+    if (browser === 'firefox') Object.assign(opts, { loadPath: 'scripts', browser: 'firefox' });
+    const w = bootWorker(opts);
+    return { w, validateCalls };
+  }
+
+  return (async () => {
+    for (const browser of ['chrome', 'firefox']) {
+      const label = `twitchvalidate: ${browser}`;
+
+      // No Twitch account: nothing is asked and nothing is scheduled.
+      {
+        const { w, validateCalls } = boot({ browser, seed: { [AUTH]: { kick } } });
+        try {
+          await wait(40);
+          eq(validateCalls.length, 0, `${label}: with no Twitch account, Twitch is not asked`);
+          ok(!w.alarms.has(ALARM), `${label}: and no hourly check is scheduled`);
+          eq(w.storage.local[AUTH].kick.accessToken, 'KICK', `${label}: the Kick account is untouched`);
+        } finally { w.teardown(); }
+      }
+
+      // A connected account is validated as the background starts, and the
+      // hourly check is scheduled.
+      {
+        const { w, validateCalls } = boot({ browser, seed: { [AUTH]: { twitch: twitch(), kick } } });
+        try {
+          await wait(40);
+          eq(validateCalls, ['OAuth TOKEN-A'], `${label}: the stored token is validated on start, as an OAuth header`);
+          const alarm = w.alarms.get(ALARM);
+          ok(alarm && alarm.periodInMinutes === 60 && alarm.delayInMinutes === 60,
+            `${label}: an hourly check is scheduled (${JSON.stringify(alarm)})`);
+          const stored = w.storage.local[AUTH].twitch;
+          ok(stored.validatedAt > 0, `${label}: the time of the answer is kept`);
+          eq(stored.scopes, ['chat:read', 'user:read:emotes'], `${label}: the scopes Twitch reports are kept`);
+          ok(stored.expiresAt > Date.now(), `${label}: and the expiry it reports`);
+          eq(w.storage.local[AUTH].kick.accessToken, 'KICK', `${label}: the Kick account is untouched`);
+
+          // The alarm firing asks again, however recently the start did.
+          await w.listeners.alarm({ name: ALARM });
+          await wait(30);
+          eq(validateCalls.length, 2, `${label}: the hourly alarm validates again`);
+
+          // A restart re-runs the start-up: the recent answer stands, and the
+          // alarm is not pushed back an hour.
+          const before = w.alarms.get(ALARM);
+          w.alarms.set(ALARM, { ...before, marker: 'kept' });
+          await w.sandbox.FCM.auth.syncTwitchValidation();
+          await w.sandbox.FCM.auth.validateTwitch();
+          eq(validateCalls.length, 2, `${label}: a restart minutes later does not ask again`);
+          eq(w.alarms.get(ALARM).marker, 'kept', `${label}: and leaves the scheduled alarm as it was`);
+        } finally { w.teardown(); }
+      }
+
+      // A token validated a moment ago is not asked about on start.
+      {
+        const { w, validateCalls } = boot({
+          browser, seed: { [AUTH]: { twitch: twitch({ validatedAt: Date.now() - 60 * 1000 }) } },
+        });
+        try {
+          await wait(40);
+          eq(validateCalls.length, 0, `${label}: a start right after a validation does not repeat it`);
+          ok(w.alarms.has(ALARM), `${label}: but the hourly check is still scheduled`);
+        } finally { w.teardown(); }
+      }
+
+      // Twitch saying no forgets the account, stops the checks and tells the tabs.
+      {
+        const { w, validateCalls } = boot({
+          browser,
+          seed: { [AUTH]: { twitch: twitch({ validatedAt: Date.now() }), kick } },
+          answer: () => ({ status: 401, body: { status: 401, message: 'invalid access token' } }),
+        });
+        try {
+          const tab = w.makeTab(1).connect();
+          tab.send({ cmd: 'hello', site: 'twitch', channel: 'alpha', hints: [] });
+          await wait(40);
+          ok(w.alarms.has(ALARM), `${label}: (scheduled while the account is there)`);
+          tab.clear();
+          await w.listeners.alarm({ name: ALARM });
+          await wait(40);
+          eq(validateCalls.length, 1, `${label}: (the alarm asked)`);
+          ok(!w.storage.local[AUTH].twitch, `${label}: a 401 forgets the Twitch account`);
+          eq(w.storage.local[AUTH].kick.accessToken, 'KICK', `${label}: and only that one`);
+          ok(!w.alarms.has(ALARM), `${label}: the hourly check stops with it`);
+          const told = tab.last('auth');
+          ok(told && told.accounts && told.accounts.twitch && told.accounts.twitch.connected === false,
+            `${label}: and the open tab is told the account is gone`);
+        } finally { w.teardown(); }
+      }
+
+      // Twitch out of reach, or failing, is not the token being refused.
+      for (const [what, answer] of [
+        ['a request that never leaves', () => 'throw'],
+        ['a 500', () => ({ status: 500, body: { message: 'oops' } })],
+        ['a 404 from something in the way', () => ({ status: 404, body: {} })],
+      ]) {
+        const { w, validateCalls } = boot({ browser, seed: { [AUTH]: { twitch: twitch() } }, answer });
+        try {
+          await wait(40);
+          eq(validateCalls.length, 1, `${label}: (${what}: asked)`);
+          const stored = w.storage.local[AUTH].twitch;
+          ok(stored && stored.accessToken === 'TOKEN-A', `${label}: ${what} keeps the account`);
+          ok(!stored.validatedAt, `${label}: ${what} is not recorded as a validation`);
+          ok(w.alarms.has(ALARM), `${label}: ${what} keeps the hourly check`);
+        } finally { w.teardown(); }
+      }
+
+      // Twitch vouching for a different user is not this account's token.
+      {
+        const { w } = boot({
+          browser, seed: { [AUTH]: { twitch: twitch() } },
+          answer: () => ({ status: 200, body: { login: 'someone', user_id: '999', scopes: [], expires_in: 100 } }),
+        });
+        try {
+          await wait(40);
+          ok(!w.storage.local[AUTH].twitch, `${label}: a token Twitch says belongs to another user is forgotten`);
+        } finally { w.teardown(); }
+      }
+
+      // A sign-in that finishes while Twitch is still answering about the old
+      // token is not undone by that answer.
+      {
+        let release;
+        const gate = new Promise((r) => { release = r; });
+        const { w } = boot({
+          browser, seed: { [AUTH]: { twitch: twitch() } },
+          answer: (token) => (token === 'TOKEN-A' ? gate.then(() => ({ status: 401, body: {} })) : { status: 200 }),
+        });
+        try {
+          await wait(20);
+          await w.sandbox.FCM.auth.set('twitch', twitch({ accessToken: 'TOKEN-B', validatedAt: Date.now() }));
+          release();
+          await wait(40);
+          const stored = w.storage.local[AUTH].twitch;
+          ok(stored && stored.accessToken === 'TOKEN-B',
+            `${label}: a refusal of the old token does not remove the account signed in meanwhile`);
+          ok(w.alarms.has(ALARM), `${label}: which keeps its hourly check`);
+        } finally { w.teardown(); }
+      }
+
+      // Disconnecting takes the schedule away; connecting brings it back.
+      {
+        const { w } = boot({ browser, seed: { [AUTH]: { twitch: twitch({ validatedAt: Date.now() }) } } });
+        try {
+          const tab = w.makeTab(1).connect();
+          await wait(30);
+          ok(w.alarms.has(ALARM), `${label}: (scheduled)`);
+          await tab.send({ cmd: 'disconnectAccount', platform: 'twitch' });
+          await wait(30);
+          ok(!w.alarms.has(ALARM), `${label}: disconnecting Twitch stops the hourly check`);
+          await w.sandbox.FCM.auth.set('twitch', twitch({ validatedAt: Date.now() }));
+          ok(w.alarms.has(ALARM), `${label}: and a new sign-in schedules it again`);
+        } finally { w.teardown(); }
+      }
     }
   })();
 };

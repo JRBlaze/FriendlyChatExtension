@@ -8,6 +8,14 @@ workers_dev        = true
 # under the same name, so the URL does not change and the extension needs no
 # reconfiguring.
 #
+# This folder is the only place that worker is deployed from. It is shared: the
+# Friendly Chat desktop app (JRBlaze/FriendlyChat) uses the same worker, and so
+# the same Kick application, through /kick-config, /kick-token and /kick-refresh,
+# which must keep answering as they do. That repository once carried an older
+# copy of this worker under this same name, which would have replaced this one —
+# /twitch-config, /kick-authorize and /kick-callback gone, and the logging
+# settings below with them — had anybody run `wrangler deploy` there.
+#
 # Secrets live outside the code and survive a redeploy. They only need setting
 # if they have never been set, or if the application behind one changes:
 #   wrangler secret put KICK_CLIENT_ID
