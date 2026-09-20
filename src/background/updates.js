@@ -25,6 +25,15 @@
 // told about releases the way Chrome is, and pointed at the signed .xpi.
 (function (FCM) {
   'use strict';
+  // Register synchronously so an update event can wake either background type.
+  // The browser has already downloaded the package; this only activates it.
+  // GitHub notices for unpacked installs never call reload or install anything.
+  if (typeof chrome !== 'undefined' && chrome.runtime?.onUpdateAvailable
+      && typeof chrome.runtime.reload === 'function') {
+    chrome.runtime.onUpdateAvailable.addListener(function activateUpdate() {
+      chrome.runtime.reload();
+    });
+  }
 
   // The repo itself is named in constants.js, which every context loads; only
   // the API address is needed here, and only the background ever asks it.

@@ -1,6 +1,6 @@
 # Privacy Policy — Friendly Chat Extension
 
-_Last updated: September 16, 2026_
+_Last updated: September 20, 2026_
 
 Friendly Chat Extension shows a merged Twitch and Kick chat on the stream you
 are watching. This page explains what information it uses, where that
@@ -29,6 +29,10 @@ nothing is sold.**
   stored in your browser's extension storage. If you choose to export your
   settings to a file, that file is saved only where you put it. Sign-in tokens
   are never included in an export.
+- **Display text sizes.** If you choose a text size for a display, the extension
+  stores that size alongside the screen width and height reported by your browser.
+  This stays in local extension storage on that device. It is not sent to a service,
+  synced to other devices, or included in portable settings exports.
 
 ## Who the extension talks to
 
