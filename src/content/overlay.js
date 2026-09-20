@@ -749,6 +749,7 @@
     }
 
     function tick() {
+      displayFont.refresh();
       // Popped out, most of this is about a panel that is over the page, and
       // it is not. What still matters is the page itself: its balances are
       // still this channel's, its chat is still the one being hidden, and its
@@ -1823,6 +1824,15 @@
     // ── Settings sheet ────────────────────────────────────────────────────────
 
     let sheet = null;
+    const displayFont = FCM.createDisplayFont(() => pipWindow || window, applyDisplayFont);
+
+    function applyDisplayFont() {
+      const size = displayFont.size(FCM.clampNumber(settings.fontSize, 10, 22, FCM.DEFAULT_SETTINGS.fontSize));
+      root.style.setProperty('--fcm-size', `${size}px`);
+      const input = sheet && sheet.querySelector('[data-display-font]');
+      if (input && shadow.activeElement !== input) input.value = size;
+      feed.resettle();
+    }
 
     /**
      * Writes a settings change down.
@@ -2040,9 +2050,9 @@
             <label>Opacity</label>
             <input type="range" min="50" max="100" step="1" data-set="opacity">
           </div>
-          <div class="fcm-field">
-            <label>Text size</label>
-            <input type="number" min="10" max="22" step="1" data-set="fontSize">
+          <div class="fcm-field fcm-field-col">
+            <label for="fcm-display-font">Text size on this display<small>Adjust once on each screen. Matching display configurations share a size on this device.</small></label>
+            <input id="fcm-display-font" aria-label="Text size on this display" type="number" min="10" max="22" step="1" data-display-font> <button class="fcm-btn" data-display-font-reset>Use default</button>
           </div>
           <div class="fcm-field">
             <label>Size and position
@@ -2110,6 +2120,17 @@
         </div>
       `;
       panel.appendChild(sheet);
+      applyDisplayFont();
+      const fontInput = sheet.querySelector('[data-display-font]');
+      fontInput.addEventListener('blur', applyDisplayFont);
+      fontInput.addEventListener('change', async () => {
+        const value = fontInput.value.trim() === '' ? null : Number(fontInput.value);
+        if (!await displayFont.set(value)) toast('Could not save this display text size. Use a number from 10 to 22.');
+        fontInput.value = root.style.getPropertyValue('--fcm-size').replace('px', '');
+      });
+      sheet.querySelector('[data-display-font-reset]').addEventListener('click', async () => {
+        if (!await displayFont.set(null)) toast('Could not reset this display text size.');
+      });
 
       /**
        * The number a numeric field is actually asking for.
@@ -2215,7 +2236,7 @@
       root.dataset.gifs = String(settings.showGifs !== false);
       root.dataset.clips = String(settings.showClipPreviews !== false);
       root.dataset.modtools = String(settings.modHoverTools !== false);
-      root.style.setProperty('--fcm-size', `${FCM.clampNumber(settings.fontSize, 10, 22, FCM.DEFAULT_SETTINGS.fontSize)}px`);
+      applyDisplayFont();
       panel.style.opacity = String(FCM.clampNumber(settings.opacity, 50, 100, 96) / 100);
       applyNativeChatVisibility();
       feed.trim();
@@ -2903,7 +2924,7 @@
         if (destroyed) return api;
         FCM.setViewSettings(settings);
         document.documentElement.appendChild(host);
-        await Promise.all([loadGeometry(), loadSendTargets()]);
+        await Promise.all([loadGeometry(), loadSendTargets(), displayFont.refresh()]);
         if (destroyed) { host.remove(); return api; }
         applySettings(settings);
         renderChips();
@@ -2999,6 +3020,7 @@
         // not a reason to throw it away.
         flushSettings();
         destroyed = true;
+        displayFont.destroy();
         // Only the handle. The window is Twitch's own chat, it may have a GIF
         // half-picked in it, and the channel it was opened for is still the
         // channel it will post to — closing it would throw away work the viewer

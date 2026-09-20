@@ -23,7 +23,7 @@ has signed. Chrome is first below; Firefox is [further down](#install-in-firefox
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.22.3.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.22.4.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and an extra folder named `FriendlyChatExtension-main`
@@ -55,7 +55,7 @@ Firefox ESR 140. Firefox for Android is not supported: the sign-in API the exten
 accounts with does not exist there.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.22.3-firefox.xpi` from the Assets list. That file is the add-on, signed
+`FriendlyChatExtension-v1.22.4-firefox.xpi` from the Assets list. That file is the add-on, signed
 by Mozilla, and there is nothing to unzip.
 
 1. **Open the file with Firefox.** Click it in Firefox's downloads list, or drag the file from
@@ -82,7 +82,7 @@ The add-on is not on addons.mozilla.org, and will not be: Mozilla signs it witho
 and this repository's releases are the only place it is published.
 
 **Trying an unsigned build.** Each release also carries
-`FriendlyChatExtension-v1.22.3-firefox-unsigned.xpi`, the same package before Mozilla signed it.
+`FriendlyChatExtension-v1.22.4-firefox-unsigned.xpi`, the same package before Mozilla signed it.
 Opened the ordinary way, release Firefox refuses it as unverified; it loads only as a temporary
 add-on: open `about:debugging`, choose *This Firefox*, press *Load Temporary Add-on…* and pick the
 file itself, without unpacking it. A temporary add-on is removed when Firefox restarts, and its
@@ -104,9 +104,9 @@ inside, because Chrome builds up to v1.20.1 take the first `.zip` on a release a
 - **Your bits, Kicks and channel points**, read off the page and shown above the composer.
   Clicking a balance opens the site's own rewards or cheer menu, and the panel steps out of the
   way for as long as it is open.
-- **Settings can be backed up to a file, and put back.** Everything the extension remembers —
+- **Settings can be backed up to a file, and put back.** Your portable preferences —
   settings, favourite emotes, channel links, where each channel's messages go, where you dragged
-  the panel — exports to one file from the options page. Chrome deletes an extension's storage
+  the panel — export to one file from the options page. Chrome deletes an extension's storage
   when the extension is removed, which is one ordinary way to update one loaded unpacked, and
   nothing an extension does can prevent that. Account tokens are deliberately not in the file. See
   [Backing your settings up](#backing-your-settings-up).
@@ -263,8 +263,16 @@ inside, because Chrome builds up to v1.20.1 take the first `.zip` on a release a
 
 ### Updating or removing it
 
-The two browsers could hardly be further apart here. Chrome never updates this extension and
-Firefox always does, so each has a half of its own.
+Chrome installs loaded from an unpacked GitHub download need manual file updates. Signed
+Firefox installs and Chrome Web Store installs are kept up to date by their browser.
+
+**Activating browser-managed updates.** Chrome Web Store installs and signed Firefox installs
+listen for the browser's `runtime.onUpdateAvailable` event and call `runtime.reload()` to
+activate the downloaded version. No browser restart is needed for that activation. The browser
+still decides when to check and download; this listener does not poll or fetch an update itself.
+Existing Twitch or Kick tabs may need a refresh to load the new content scripts. Reloading the
+extension interrupts its current connections; it does not reload stream pages or resend messages.
+Unpacked Chrome installs still require replacing their files and manually reloading the extension.
 
 #### In Chrome
 
@@ -557,6 +565,21 @@ distinction turned out to matter three times over — the third time to the audi
 them used to be pinned at 10px, 9.5px and 8.5px however large the messages were set. They are now
 derived from that setting with a floor, so raising it raises all of them. The default is 14px,
 which puts timestamps at 12, event rows at 13 and their tags at 10.5.
+
+**A text size for each display.** In the overlay settings, adjust **Text size on this display**
+once on each monitor (10-22px). Moving the window back restores that choice automatically,
+including when the chat is popped out. Click **Use default**, or clear the number, to return to
+**Default text size** in All settings. Existing users keep their current global size until they
+choose a display-specific size. Finish an adjustment by leaving the number field.
+
+Display configurations are matched by the screen width and height reported by the browser,
+which can depend on OS scaling. Screens reporting identical dimensions share a preference;
+this does not identify physical monitors or request extra display permissions. Detection uses
+the existing half-second overlay poll and can take longer in background tabs. Browser zoom is
+not changed. These small preferences stay in local extension storage on this device, are not
+synced, and are excluded from portable backups; importing a backup leaves them in place.
+Resolution alone cannot tell us how large text looks on a physical monitor, so this preserves
+the user's chosen sizes rather than guessing a scale factor.
 
 **Opacity is no longer used to dim text.** Several states were faded rather than recoloured — a
 send target that is off, a filtered platform, a message a moderator deleted — and opacity
@@ -1454,6 +1477,13 @@ restyle the overlay and the overlay cannot leak styles onto the page. The panel 
 DOM, so nothing in the page's layout or stacking contexts has to be fought with.
 
 ## Development
+
+Update/display regression tests: `node tests/run.js updatedisplay`. Dependency-free coverage
+for the new update and preference logic: `node tests/update-display-coverage.js <node-output.json>`.
+Pass raw Chromium Playwright JS coverage as a third argument to also measure the changed overlay
+bindings: `node tests/update-display-coverage.js <node-output.json> <browser-coverage.json>`.
+The report measures executable lines, functions, and V8 execution ranges in the changed behavior;
+it is not whole-repository coverage. The normal full suite includes the update/display tests.
 
 ```bash
 node tests/run.js

@@ -197,6 +197,10 @@ const SHARED = [
 const FCM_LINKS_KEY = 'fcm_channel_links_v1';
 
 const suites = {};
+suites.updatedisplay = async function () {
+  await require('./update-display')();
+  ok(true, 'update activation and display font unit/integration checks');
+};
 
 // The version, in every place it is written down.
 //

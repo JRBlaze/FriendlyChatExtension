@@ -1,6 +1,87 @@
 (function (FCM) {
   'use strict';
 
+  // Display text preferences are device-local, independent of synced settings.
+  // Screen dimensions are CSS pixels: OS scaling can define a different profile.
+  // Do not use devicePixelRatio, which also changes when the user zooms a page.
+  FCM.displayFontKey = function displayFontKey(win) {
+    const screen = win && win.screen;
+    if (!screen || !Number.isFinite(screen.width) || !Number.isFinite(screen.height)
+        || screen.width <= 0 || screen.height <= 0) return '';
+    return `fcm_display_font_v1_${screen.width}x${screen.height}`;
+  };
+
+  FCM.createDisplayFont = function createDisplayFont(getWindow, onChange) {
+    let key = '';
+    let value = null;
+    let generation = 0;
+    let destroyed = false;
+    let writing = Promise.resolve();
+    const valid = size => typeof size === 'number' && Number.isFinite(size) && size >= 10 && size <= 22;
+    function changed(changes, area) {
+      if (area !== 'local' || !Object.prototype.hasOwnProperty.call(changes, key)) return;
+      generation++;
+      value = valid(changes[key].newValue) ? changes[key].newValue : null;
+      onChange();
+    }
+    chrome.storage.onChanged.addListener(changed);
+    return {
+      size(fallback) { return value === null ? fallback : value; },
+      async refresh() {
+        if (destroyed) return;
+        const next = FCM.displayFontKey(getWindow());
+        if (next === key) return;
+        key = next;
+        value = null;
+        const reading = ++generation;
+        onChange();
+        if (!key) return;
+        try {
+          const stored = await chrome.storage.local.get(next);
+          if (destroyed || reading !== generation) return;
+          value = valid(stored[next]) ? stored[next] : null;
+          onChange();
+        } catch (e) {
+          // Keep the global size usable, and let the next tick retry the read.
+          if (reading === generation) key = '';
+        }
+      },
+      async set(size) {
+        if (destroyed || (size !== null && !valid(size))) return false;
+        // Capture the window at the time of the edit, even between poll ticks.
+        const target = FCM.displayFontKey(getWindow());
+        if (!target) return false;
+        key = target;
+        generation++;
+        value = size;
+        onChange();
+        // A record per configuration keeps simultaneous edits on two displays
+        // from overwriting each other; serialize this view's own edits as well.
+        const save = writing.then(async () => {
+          if (size === null) await chrome.storage.local.remove(target);
+          else await chrome.storage.local.set({ [target]: size });
+        });
+        writing = save.catch(() => {});
+        try {
+          await save;
+          return true;
+        } catch (e) {
+          if (!destroyed && key === target) {
+            key = '';
+            value = null;
+            onChange();
+          }
+          return false;
+        }
+      },
+      destroy() {
+        destroyed = true;
+        generation++;
+        chrome.storage.onChanged.removeListener(changed);
+      },
+    };
+  };
+
   FCM.escapeHtml = function (str) {
     return String(str === null || str === undefined ? '' : str)
       .replace(/&/g, '&amp;')

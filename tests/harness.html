@@ -475,6 +475,7 @@ mockComposer(document.querySelector('.kickcol .editor-input'), document.getEleme
 <script>
 // ── chrome.* stubs ────────────────────────────────────────────────────────────
 const mem = { sync: {}, local: {} };
+const storageListeners = new Set();
 // ?browser=firefox answers the way Firefox does wherever the page can tell: the
 // extension's own address is moz-extension://, which is all FCM.BROWSER is
 // worked out from, and the sign-in redirect is this add-on's allizom.org one.
@@ -485,7 +486,15 @@ const HARNESS_BROWSER = new URLSearchParams(location.search).get('browser') === 
 function area(name) {
   return {
     get: async (key) => (typeof key === 'string' ? { [key]: mem[name][key] } : { ...mem[name] }),
-    set: async (obj) => { Object.assign(mem[name], obj); },
+    set: async (obj) => {
+      Object.assign(mem[name], obj);
+      const changes = Object.fromEntries(Object.entries(obj).map(([key, newValue]) => [key, { newValue }]));
+      storageListeners.forEach(fn => fn(changes, name));
+    },
+    remove: async (key) => {
+      delete mem[name][key];
+      storageListeners.forEach(fn => fn({ [key]: {} }, name));
+    },
   };
 }
 window.chrome = {
@@ -502,7 +511,7 @@ window.chrome = {
       else if (reply) reply(null);
     },
   },
-  storage: { sync: area('sync'), local: area('local'), onChanged: { addListener() {} } },
+  storage: { sync: area('sync'), local: area('local'), onChanged: { addListener(fn) { storageListeners.add(fn); }, removeListener(fn) { storageListeners.delete(fn); } } },
   identity: {
     getRedirectURL: () => (HARNESS_BROWSER === 'firefox'
       ? 'https://91e887612fc28278646a28c0b1f4cceded6586a2.extensions.allizom.org/'

@@ -118,6 +118,9 @@ function bootWorker(opts = {}) {
   const alarms = new Map(Object.entries(JSON.parse(JSON.stringify(opts.alarms || {}))));
   const chrome = {
     runtime: {
+      onUpdateAvailable: { addListener: (fn) => { listeners.updateAvailable = fn; } },
+      reloadCount: 0,
+      reload() { this.reloadCount++; },
       onConnect: { addListener: (fn) => { listeners.connect = fn; } },
       onMessage: { addListener: (fn) => { listeners.message = fn; } },
       lastError: null,
