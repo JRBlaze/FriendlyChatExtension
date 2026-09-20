@@ -602,6 +602,13 @@
         if (!messages || !document.elementFromPoint) return false;
         const r = messages.getBoundingClientRect();
         if (r.width < 40 || r.height < 40) return false;
+        // Kick replaces the tall rewards grid with a short confirmation form
+        // near the composer. On a tall window that form misses every sampled
+        // point below, so use the rewards wrapper's actual visible overlap.
+        // Check the wrapper itself: when closed it clips to zero height while
+        // its children stay mounted and still have full-sized rectangles.
+        const rewards = site.id === 'kick' && document.getElementById('rewards-panel');
+        if (rewards && isOpen(rewards) && coversBox(rewards.getBoundingClientRect(), r)) return true;
         // Off-centre on purpose: both sites float a jump-to-bottom pill down
         // the middle, and it is not a menu.
         const xs = [r.left + r.width * 0.25, r.left + r.width * 0.75];

@@ -23,7 +23,7 @@ has signed. Chrome is first below; Firefox is [further down](#install-in-firefox
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.22.2.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.22.3.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and an extra folder named `FriendlyChatExtension-main`
@@ -55,7 +55,7 @@ Firefox ESR 140. Firefox for Android is not supported: the sign-in API the exten
 accounts with does not exist there.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.22.2-firefox.xpi` from the Assets list. That file is the add-on, signed
+`FriendlyChatExtension-v1.22.3-firefox.xpi` from the Assets list. That file is the add-on, signed
 by Mozilla, and there is nothing to unzip.
 
 1. **Open the file with Firefox.** Click it in Firefox's downloads list, or drag the file from
@@ -82,7 +82,7 @@ The add-on is not on addons.mozilla.org, and will not be: Mozilla signs it witho
 and this repository's releases are the only place it is published.
 
 **Trying an unsigned build.** Each release also carries
-`FriendlyChatExtension-v1.22.2-firefox-unsigned.xpi`, the same package before Mozilla signed it.
+`FriendlyChatExtension-v1.22.3-firefox-unsigned.xpi`, the same package before Mozilla signed it.
 Opened the ordinary way, release Firefox refuses it as unverified; it loads only as a temporary
 add-on: open `about:debugging`, choose *This Firefox*, press *Load Temporary Add-on…* and pick the
 file itself, without unpacking it. A temporary add-on is removed when Firefox restarts, and its
@@ -423,8 +423,10 @@ are on.
   FFZ. There is a search box, and clicking one inserts it at the cursor.
 - **`:emote` autocomplete** — type a colon and at least two characters. Exact prefix matches sort
   first. **Tab** completes the highlighted row, arrows move, Escape closes.
-- **`@name` autocomplete** — type an at-sign and a letter to complete from everyone who has
-  spoken recently, newest first, on either platform, each row tagged with which one.
+- **`@name` autocomplete** — type an at-sign and a letter to complete the current page's
+  streamer, even before they have typed in chat, or anyone who has spoken recently on either
+  platform. Matching streamer names come first, followed by recent chatters, newest first; each
+  row is tagged with its platform. Tab or clicking a suggestion inserts the full name.
 - **Click a username** for reply, copy, or opening that person's channel. Reply drops
   `@name ` into the box, and doing it again appends rather than replacing, so you can address
   two people at once.
@@ -1361,6 +1363,10 @@ then both visible and usable, and clicking outside it closes it through the pane
 would without one. The check runs on the same 500 ms tick as placement, and a click anywhere on
 the page brings the next few checks forward so a menu you just opened is noticed in under a tenth
 of a second rather than half of one.
+
+On Kick, the overlay also watches the visible Channel Points panel while it is standing
+aside. Selecting a reward such as Hydrate replaces the tall list with a shorter confirmation
+form; the overlay stays hidden for that form too, and returns when the rewards panel closes.
 
 Two things stop that from ever stranding the panel invisible. Anything matching those selectors
 that was already on screen when the overlay mounted is treated as the page's own furniture and

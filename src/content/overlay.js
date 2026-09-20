@@ -2931,6 +2931,7 @@
           },
           canModerate: (platform) => !!canModerate[platform],
           hostPlatform,
+          hostChannel: channel,
           // What is publicly known about a chatter, for the head of their menu.
           // The menu opens before this resolves and fills in when it lands, so
           // a slow or failed lookup never delays the actions.
