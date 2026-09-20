@@ -6406,6 +6406,91 @@ suites.reply = function () {
     ok(compose.isPopupOpen(), 'reply: while a query that stops short of the whitespace still finds them');
   }
 
+  // The page's streamer is addressable before any chat/history arrives.
+  for (const platform of FCM.PLATFORMS) {
+    FCM.resetChannelView();
+    const panel = fakeEl();
+    const input = fakeEl('input');
+    const addressed = [];
+    const c = FCM.createCompose({
+      panel, inputEl: input, feedEl: fakeEl(), emoteBtn: fakeEl(), toast() {},
+      hostPlatform: platform, hostChannel: 'quiet_streamer',
+      onReplyTo: (p, name) => addressed.push({ platform: p, name }),
+    });
+    const popup = panel.children[0];
+    function suggest(text) {
+      input.value = text;
+      input.selectionStart = text.length;
+      c.updateAutocomplete();
+    }
+    suggest('hello @QUI');
+    ok(c.isPopupOpen(), 'streamer mention: empty ' + platform + ' chat offers the host');
+    c.handleKey(tab);
+    eq(input.value, 'hello @quiet_streamer ', 'streamer mention: Tab preserves preceding text');
+    eq(addressed.pop(), { platform, name: 'quiet_streamer' },
+      'streamer mention: completion scopes the reply to the host platform');
+    eq(FCM.recentChatters(), [], 'streamer mention: suggestions do not invent chat activity');
+    suggest('@unrelated');
+    ok(!c.isPopupOpen(), 'streamer mention: an unrelated prefix does not offer the host');
+    suggest('@');
+    ok(!c.isPopupOpen(), 'streamer mention: a bare trigger still waits for a letter');
+
+    // A host who later speaks appears once, with their learned display casing.
+    FCM.rememberChatter(platform, 'Quiet_Streamer', '#123456');
+    const other = FCM.otherPlatform(platform);
+    FCM.rememberChatter(other, 'quiet_streamer');
+    suggest('@quiet_');
+    eq((popup.innerHTML.match(/class="fcm-ac-name"/g) || []).length, 2,
+      'streamer mention: de-duplicates on this platform but keeps the other platform');
+    c.handleKey(tab);
+    eq(input.value, '@Quiet_Streamer ', 'streamer mention: retains the known display name');
+    eq(FCM.chatterColor(platform, 'quiet_streamer'), '#123456',
+      'streamer mention: preserves the learned name colour');
+    suggest('@quiet_');
+    c.handleKey({ key: 'ArrowDown', preventDefault() {} });
+    c.handleKey(tab);
+    eq(addressed.pop(), { platform: other, name: 'quiet_streamer' },
+      'streamer mention: the same name on the other platform still routes there');
+
+    // More matching chatters than fit in the list cannot crowd the host out,
+    // even after their real chat entry has been evicted from the bounded cache.
+    for (let i = 0; i < 220; i++) FCM.rememberChatter(platform, 'quiet_viewer' + i);
+    suggest('@quiet_');
+    eq((popup.innerHTML.match(/class="fcm-ac-name"/g) || []).length, 15,
+      'streamer mention: keeps the existing suggestion limit');
+    c.handleKey(tab);
+    eq(input.value, '@quiet_streamer ', 'streamer mention: host remains the first match after eviction');
+
+    // A new composer belongs to a new page, never the previous host.
+    FCM.resetChannelView();
+    const next = FCM.createCompose({
+      panel: fakeEl(), inputEl: input, feedEl: fakeEl(), emoteBtn: fakeEl(), toast() {},
+      hostPlatform: platform, hostChannel: 'next_streamer',
+    });
+    input.value = '@quiet_'; input.selectionStart = input.value.length;
+    next.updateAutocomplete();
+    ok(!next.isPopupOpen(), 'streamer mention: navigation drops the previous host');
+    input.value = '@next'; input.selectionStart = input.value.length;
+    next.updateAutocomplete(); next.handleKey(tab);
+    eq(input.value, '@next_streamer ', 'streamer mention: navigation offers the new host');
+  }
+  // A missing/unsupported page context still allows ordinary chatter mentions.
+  for (const context of [{}, { hostPlatform: 'twitch' },
+    { hostPlatform: 'unsupported', hostChannel: 'quiet_streamer' }]) {
+    FCM.resetChannelView();
+    FCM.rememberChatter('kick', 'QuietViewer');
+    const input = fakeEl('input');
+    const c = FCM.createCompose({
+      panel: fakeEl(), inputEl: input, feedEl: fakeEl(), emoteBtn: fakeEl(), toast() {}, ...context,
+    });
+    input.value = '@quiet'; input.selectionStart = input.value.length;
+    c.updateAutocomplete(); c.handleKey(tab);
+    eq(input.value, '@QuietViewer ', 'streamer mention: optional host context preserves existing callers');
+  }
+  const overlaySource = fs.readFileSync(path.join(ROOT, 'src/content/overlay.js'), 'utf8');
+  ok(/FCM\.createCompose\(\{[\s\S]*?hostChannel: channel,/.test(overlaySource),
+    'streamer mention: the overlay passes the current page channel to the composer');
+
   // Picking from the picker inserts at the caret rather than over a query, and
   // needs a separator in front of it or the name is not an emote at all: after
   // typing "gg", picking one produced "ggPogU", which went out as that literal
@@ -8435,6 +8520,64 @@ suites.native = function () {
     row.parentElement = list; list.children.push(row);
     topmost = row;
     eq(rig.bridge.coveringChat(), false, 'native: a message row is not a cover');
+  }
+
+  // Kick's reward details shrink below all four sampled chat points on a
+  // tall window. Keep watching the actual rewards wrapper, including when it
+  // closes by clipping its still-mounted children to zero height.
+  {
+    const list = el({ rect: [143, 926] });
+    const wrap = el({ rect: [110, 1105], kids: [list] });
+    const attrs = {};
+    const panel = el({ rect: [555, 608], attrs, kids: [el({ rect: [859, 304] })] });
+    let reward = panel;
+    let cover = null;
+    const doc = page(wrap, []);
+    doc.document.getElementById = (id) => id === 'rewards-panel' ? reward : null;
+    doc.getComputedStyle = (node) => ({ position: 'static', ...node.style });
+    doc.document.elementFromPoint = (x, y) => {
+      if (cover) return cover;
+      if (reward && !reward.style.visibility && !reward.style.display
+        && attrs['data-state'] !== 'closed') {
+        const r = reward.getBoundingClientRect();
+        if (x >= r.left && x < r.right && y >= r.top && y < r.bottom) return reward;
+      }
+      return list;
+    };
+    const kick = bridgeFor(doc, { id: 'kick', messageList: () => list }).bridge;
+    eq(kick.coveringChat(), true, 'kick rewards: the initial tall list keeps the overlay hidden');
+    panel.rect = [859, 304];
+    eq(kick.coveringChat(), true, 'kick rewards: the short Hydrate confirmation stays uncovered');
+    panel.rect = [555, 608];
+    eq(kick.coveringChat(), true, 'kick rewards: going back to the reward list stays uncovered');
+    panel.rect = [1163, 0];
+    eq(kick.coveringChat(), false, 'kick rewards: closing the wrapper restores the overlay despite sized children');
+    panel.rect = [859, 304];
+    eq(kick.coveringChat(), true, 'kick rewards: reopening the same wrapper is detected');
+    panel.style.visibility = 'hidden';
+    eq(kick.coveringChat(), false, 'kick rewards: a hidden wrapper is not an open reward');
+    panel.style.visibility = '';
+    panel.style.display = 'none';
+    eq(kick.coveringChat(), false, 'kick rewards: display none is not an open reward');
+    panel.style.display = '';
+    attrs['data-state'] = 'closed';
+    eq(kick.coveringChat(), false, 'kick rewards: an explicit closed state wins over its size');
+    delete attrs['data-state'];
+    panel.rect = [1100, 304];
+    eq(kick.coveringChat(), false, 'kick rewards: a panel outside the messages does not hold the overlay');
+    panel.rect = [1049, 20];
+    eq(kick.coveringChat(), false, 'kick rewards: a tiny remnant of a closing panel is ignored');
+    reward = null;
+    eq(kick.coveringChat(), false, 'kick rewards: a removed panel lets the overlay return');
+    cover = el({ rect: [300, 300] });
+    eq(kick.coveringChat(), true, 'kick rewards: other native menus still use the generic cover fallback');
+    cover = null;
+    reward = el({ rect: [859, 304] });
+    eq(kick.coveringChat(), true, 'kick rewards: a replaced wrapper is read fresh');
+    const twitch = bridgeFor(doc, { id: 'twitch', messageList: () => list }).bridge;
+    eq(twitch.coveringChat(), false, 'kick rewards: the named-panel check is scoped to Kick');
+    list.rect = [143, 2000]; reward.rect = [1933, 304];
+    eq(kick.coveringChat(), true, 'kick rewards: detection does not depend on window height');
   }
 
   // With no message list to sample over there is nothing to say.

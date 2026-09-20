@@ -507,7 +507,19 @@
 
       if (triggerChar === '@') {
         const q = query.toLowerCase();
-        items = FCM.recentChatters()
+        // The page already identifies its streamer, even in an empty chat.
+        // Keep this candidate separate from remembered activity so it survives
+        // chatter eviction without inventing a message or a name colour.
+        let candidates = FCM.recentChatters();
+        if (ctx.hostChannel && FCM.PLATFORMS.includes(hostPlatform)) {
+          const hostName = ctx.hostChannel.toLowerCase();
+          const known = candidates.find((c) => c.platform === hostPlatform
+            && c.name.toLowerCase() === hostName);
+          candidates = candidates.filter((c) => c !== known);
+          candidates.unshift({ name: known ? known.name : ctx.hostChannel,
+            platform: hostPlatform, time: Infinity });
+        }
+        items = candidates
           .filter((c) => c.name.toLowerCase().startsWith(q))
           .sort((a, b) => b.time - a.time)
           .slice(0, AC_MAX_MENTIONS)
