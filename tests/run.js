@@ -15427,6 +15427,20 @@ suites.prompts = function () {
     'prompts: the words are kept and the buttons\' labels are not');
   ok(streak.share === share, 'prompts: the site\'s own Share button comes back to be pressed');
 
+  // Twitch can put the dismissal first. Matching any occurrence of "share"
+  // presses Don't Share and consumes the milestone without sending it (#54).
+  for (const label of ["Don't Share", 'Don’t Share', 'Do not share', 'Dismiss share reminder', 'Not now']) {
+    const dismiss = button(label);
+    const found = FCM.readNativePrompt(block('Your watch streak is ready', [dismiss, share]));
+    ok(found && found.share === share, `prompts: ${label} before Share is never selected`);
+    eq(FCM.readNativePrompt(block('Your watch streak is ready', [dismiss])), null,
+      `prompts: ${label} alone cannot offer a share`);
+  }
+  const labelledShare = button('', 'Share your watch streak');
+  ok(FCM.readNativePrompt(block('Your watch streak is ready',
+    [button('', 'Do not share your watch streak'), labelledShare])).share === labelledShare,
+  'prompts: accessible labels distinguish Share from Do not share');
+
   const resub = FCM.readNativePrompt(block(
     'Your 12-month resub is ready to share\nShare\nDismiss', [button('Share'), button('Dismiss')]
   ));
@@ -15523,6 +15537,22 @@ suites.prompts = function () {
   eq(prompts[1].text, 'Your 24-month resub is ready to share', 'prompts: read from the block around its button');
   polls.filter(Boolean).forEach((fn) => fn());
   eq(prompts.length, 2, 'prompts: and once only');
+
+  const dismissOnly = button("Don't Share");
+  dismissOnly.parentElement = block('Your watch streak is ready', [dismissOnly]);
+  dismissOnly.parentElement.parentElement = column;
+  column.querySelectorAll = () => [dismissOnly];
+  polls.filter(Boolean).forEach((fn) => fn());
+  eq(prompts.length, 2, 'prompts: polling does not turn a dismissal into a share reminder');
+
+  const positive = button('Share your streak');
+  positive.parentElement = block('You watched 5 streams in a row', [dismissOnly, positive]);
+  positive.parentElement.parentElement = column;
+  dismissOnly.parentElement = positive.parentElement;
+  column.querySelectorAll = () => [dismissOnly, positive];
+  polls.filter(Boolean).forEach((fn) => fn());
+  ok(prompts.length === 3 && prompts[2].share === positive,
+    'prompts: polling hands the affirmative streak button to the overlay');
 
   watcher.stop();
   ok(!polls.some(Boolean), 'prompts: stopping the watcher stops the poll');
@@ -16599,8 +16629,16 @@ suites.giferrand = function () {
 
     contains(FCM.gifWindowFeatures(view(100, 1000), screen), 'popup=1',
       'giferrand: it is asked for as a window, not as a tab');
-    contains(FCM.gifWindowFeatures(view(100, 1000), screen), 'width=420,height=640',
-      'giferrand: tall and narrow, because it is a chat column and nothing else');
+    contains(FCM.gifWindowFeatures(view(100, 1000), screen), 'width=420,height=900',
+      'giferrand: enough height for the GIF search field above the picker (#53)');
+    for (const available of [720, 900, 1080, 1440]) {
+      const box = FCM.gifWindowPlacement(view(100, 1000), { ...screen, availHeight: available });
+      eq(box.height, Math.min(900, available), `giferrand: uses available height on a ${available}px screen`);
+      ok(box.top >= 0 && box.top + box.height <= available,
+        `giferrand: the taller popup fits vertically on a ${available}px screen`);
+    }
+    eq(FCM.gifWindowPlacement(null, null).height, 900,
+      'giferrand: missing screen metrics still request the taller popup');
   }
 
   // ── The button, on both kinds of page ──
