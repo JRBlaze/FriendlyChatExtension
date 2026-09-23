@@ -106,7 +106,9 @@
   // The button that answers the prompt, by what it says. Bounded: a control
   // says what it does in a word or two, and a longer label is a sentence that
   // happens to contain the word.
-  const SHARE_RE = /\bshare\b/i;
+  // An affirmative label must start with Share. "Don't Share" is a separate
+  // dismissal control and must never be handed to the overlay as the action.
+  const SHARE_RE = /^share\b/i;
   const MAX_BUTTON_LABEL = 60;
   // How far up from a Share button to look for the words that go with it, on
   // the pages where the prompt is not a row in the list.

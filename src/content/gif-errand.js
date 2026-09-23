@@ -41,7 +41,9 @@
 
   // The window: tall and narrow, because it is a chat column and nothing else.
   const WINDOW_W = 420;
-  const WINDOW_H = 640;
+  // Leave room above Twitch's picker for its search field and our banner.
+  // Placement below still clamps this request to the screen's available area.
+  const WINDOW_H = 900;
   // Overlapping the asking window by a few pixels is what makes a second window
   // read as attached to the first rather than dropped somewhere near it.
   const WINDOW_OVERLAP = 6;
