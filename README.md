@@ -23,7 +23,7 @@ has signed. Chrome is first below; Firefox is [further down](#install-in-firefox
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.22.5.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.22.6.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and an extra folder named `FriendlyChatExtension-main`
@@ -55,7 +55,7 @@ Firefox ESR 140. Firefox for Android is not supported: the sign-in API the exten
 accounts with does not exist there.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.22.5-firefox.xpi` from the Assets list. That file is the add-on, signed
+`FriendlyChatExtension-v1.22.6-firefox.xpi` from the Assets list. That file is the add-on, signed
 by Mozilla, and there is nothing to unzip.
 
 1. **Open the file with Firefox.** Click it in Firefox's downloads list, or drag the file from
@@ -82,7 +82,7 @@ The add-on is not on addons.mozilla.org, and will not be: Mozilla signs it witho
 and this repository's releases are the only place it is published.
 
 **Trying an unsigned build.** Each release also carries
-`FriendlyChatExtension-v1.22.5-firefox-unsigned.xpi`, the same package before Mozilla signed it.
+`FriendlyChatExtension-v1.22.6-firefox-unsigned.xpi`, the same package before Mozilla signed it.
 Opened the ordinary way, release Firefox refuses it as unverified; it loads only as a temporary
 add-on: open `about:debugging`, choose *This Firefox*, press *Load Temporary Add-on…* and pick the
 file itself, without unpacking it. A temporary add-on is removed when Firefox restarts, and its
@@ -124,13 +124,11 @@ inside, because Chrome builds up to v1.20.1 take the first `.zip` on a release a
 - **Drag and resize it, and put it back.** Move or resize the panel and it stays where you put
   it, on that platform, across reloads. A reset button appears in the title bar the moment you
   do, and snaps it back over the site's own chat at the size it first opened at.
-- **Pop it out into a window of its own.** The panel moves into a picture-in-picture window that
-  floats above everything, including full-screen video and other applications, and comes back to
-  the page when you close it. It is *moved*, not copied: the same panel, the same connections,
-  the same composer still typing into the page's own chat box when that is how a message has to
-  go. Which means Cheers and anything else that needs the site's own controls keep working while
-  it is out there. Chrome, and Firefox 151 or newer on the desktop; where the browser cannot do
-  it, the button is not shown. See [Popping the panel out](#popping-the-panel-out).
+- **Pop out several chats at once.** Each stream tab can open its own chat window on Chrome
+  and Firefox. The same panel, draft, connections and native-send controls move with it.
+  Keep the source tabs open; closing a chat window returns its panel to its tab. Shift-click
+  opens an always-on-top Picture-in-Picture window where supported, subject to the browser's
+  one-PiP-window limit. See [Popping the panel out](#popping-the-panel-out).
 - **Where a message goes is remembered per channel.** Pick *Kick only* on one stream and it stays
   Kick only on that stream, next time too — without changing anything on the other streams you
   have open in other tabs. See [Which chats a message goes to](#which-chats-a-message-goes-to).
@@ -254,11 +252,11 @@ inside, because Chrome builds up to v1.20.1 take the first `.zip` on a release a
 | The card loaded but no overlay on a channel | Reload the Twitch or Kick tab. The extension only attaches to pages opened after it was installed. |
 | No overlay, and you are on a directory or settings page | The overlay only appears on an actual channel page, not on browse, search or settings pages. |
 | Your own Kick channel opens on Home/About/Videos instead of your stream | That is Kick's own layout for a channel's owner. The overlay presses its *Watch now* for you on arrival; if you would rather it did not, turn off *Open the stream when Kick shows the channel's profile* in settings. |
-| The pop-out button does nothing | A pop-out is probably already open, perhaps behind another window — Chrome and Firefox each allow only one at a time. Close it and try again. Where the browser cannot pop the panel out at all, the button is not shown in the first place (see the Firefox row below). |
+| The pop-out button does nothing | Allow pop-ups for Twitch or Kick in your browser, then click again. Each source tab opens its own chat window. Shift-click requests always-on-top PiP, which still has a browser-wide limit. |
 | Nothing at all after a Chrome restart | Developer-mode extensions stay installed, but Chrome may prompt you to keep them. Re-enable it on `chrome://extensions`. |
 | Firefox: the add-on is gone after a restart, settings and all | It was loaded as a temporary add-on from `about:debugging`, and Firefox removes those every time it closes. Install the signed `.xpi` instead — see [Install in Firefox](#install-in-firefox). |
 | Firefox: no panel on Twitch or Kick, and an amber **!** on the toolbar icon | Firefox has been told not to let the add-on use that site — any site can be taken back from `about:addons` or the Extensions menu, at any time. Open the add-on's popup and press **Allow access**, then reload the Twitch or Kick tab: Firefox does not add the panel to a page that was loaded before the site was allowed. |
-| Firefox: no pop-out button in the title bar | The pop-out needs Document Picture-in-Picture, which Firefox has from version 151, on the desktop. On anything older — ESR 140 included — the button is left out rather than offered and refused. |
+| Firefox: chat windows | Ordinary pop-outs work on supported desktop Firefox versions without Document PiP. Shift-click uses PiP when available and an ordinary window otherwise. |
 | Firefox: the Twitch sign-in window sits on a page that will not load | The Twitch application does not list Firefox's redirect URL, so Twitch sent the sign-in somewhere Firefox never picks up. Close the window; the overlay's *Settings → Accounts* then shows the exact URL, and the Twitch app it signs in against has to list it. For the shared app that is the maintainer's to add; if you put your own client ID in the options page, add it to your own app. See [Connecting accounts](#connecting-accounts). |
 
 ### Updating or removing it
@@ -548,7 +546,10 @@ the one thing that is true whenever the crate is there — drops are running her
 figures stay Twitch’s to draw and Twitch’s to keep current.
 
 The chip appears and disappears with the crate, so it is also how you find out a campaign has
-started on a channel you are already watching. Kick has no drops, and no chip appears there.
+started on a channel you are already watching. Kick's emote-drop notices use their original
+page controls: with *Leave room for the site's cards* enabled, the panel also reserves space
+for short notices overlapping the top half of chat, including notifications drawn outside the
+chat column. The extension never clicks or redeems these notices automatically.
 
 This control takes named matches only — `data-a-target="drops-button"`, then the accessible name
 “Drops” — with none of the “whichever button is spare” fallback the points summary gets. Cheer,
@@ -780,22 +781,11 @@ needs most are a single click. Ban takes two presses: the first arms the button 
 turned off in the settings (*Moderation strip on messages*); the username menu carries everything
 either way, including the full timeout ladder and unban.
 
-**The strip stands aside for the message underneath it.** It is drawn over the top-right corner of
-the row, which on a short message is exactly where its emotes are — and an emote under the strip
-could not be pointed at, so holding still over one to see it larger simply did not work for
-moderators. Now, for as long as the pointer is on something the strip is covering — an emote, a
-link, a GIF, a clip card, a username — the strip goes, and it comes back the moment the pointer
-leaves. Nothing moves and nothing is reserved: the buttons stay exactly where they have always
-been, on every part of every row that is not covering something.
-
-It goes rather than merely becoming unclickable. A strip that is still painted but takes no
-clicks still reads as something to press, and the press falls through to whatever is beneath it
-— which over a username is the menu opening, Ban and all, in answer to a press of a moderation
-button.
-
-An armed *Ban?* never stands aside, whatever it is over: the press that confirms it has to stay
-deliverable. When the arm runs out on its own, the question is asked again there and then rather
-than waiting for a pointer that may never move again.
+**The strip sits above the message.** Hovering a moderated row gives its buttons a separate
+band above the username and text. That space belongs to the same row, so the buttons cover
+neither that message nor the previous one, including at the top of the feed. Keyboard focus
+keeps the band open. The existing two-press Ban confirmation and platform permission checks
+still apply. Turning the strip off removes the extra space as well as the controls.
 
 - The tools appear **per platform**, and only where the platform itself says you hold the badge.
   Moderating Twitch does not put Kick buttons in a Kick viewer's menu. How each platform is asked
@@ -1245,6 +1235,10 @@ sounds — Kick keeps that banner slot in the page permanently and empty, where 
 still measures about 12 px, and counting it would have cost a strip of feed on every channel for
 nothing.
 
+Native-chat hiding follows late-mounted and replaced chat elements on the normal half-second
+tick. Replaced elements and cards have their original inline visibility restored. A temporary
+unhide while the native composer sends is preserved until that send finishes.
+
 Hiding the site's own chat and revealing its cards would contradict each other, so the cards are
 exempted rather than un-hidden: `visibility` is inherited, and setting it back to `visible` on a
 card inside a hidden subtree shows that card and nothing else around it.
@@ -1280,36 +1274,25 @@ draw one, nothing is found, nothing is pressed, and nothing appears in the panel
 
 ### Popping the panel out
 
-The pop-out button in the title bar moves the panel into a
-[document picture-in-picture](https://developer.chrome.com/docs/web-platform/document-picture-in-picture)
-window, and moves it back when that window closes.
+Click the title-bar pop-out button to move this tab's panel into a separate chat window. Open
+another stream in another tab and pop that chat out too: ordinary windows do not replace one
+another. This works on supported Chrome and desktop Firefox versions without Document PiP.
+If the browser blocks the window, allow pop-ups for the source site and try again.
 
-Not every browser this runs in can open one. Chrome has had document picture-in-picture since 116,
-which is this extension's floor, so every Chrome that can run the extension can pop it out.
-Firefox has it from 151, and only on the desktop — not on ESR 140, which the add-on still supports.
-Where the browser does not have it, the button is not drawn at all: a button whose only possible
-answer is an apology is not worth the room it takes in the title bar.
+The popup is a blank same-origin document. Only the existing overlay element moves into it;
+the content script, connections, draft and native-composer handlers remain owned by the source
+tab. No second chat session or account connection is created. Keep that tab open. Closing the
+popup, hiding the overlay, navigating the source tab or switching channels returns or tears
+down that panel; other source tabs and their windows are independent.
 
-*Moves*, not copies, and everything else follows from that. The content script never leaves the
-tab, so the port to the background worker, the feed, the emote picker and the bridge that reads
-this page's balances and types into this page's chat box all carry on exactly as they were. What
-crosses into the other window is one element — the overlay's host — with its shadow root and its
-stylesheet hanging off it. There is no second copy to keep in step, no second connection, and no
-message that has to be forwarded anywhere.
+Shift-click the button to request an always-on-top
+[Document Picture-in-Picture window](https://developer.chrome.com/docs/web-platform/document-picture-in-picture).
+That optional mode still follows the browser's single-PiP limit. Browsers without the API open
+an ordinary window instead. Normal windows do not stay above other applications automatically.
 
-That is also why it is a picture-in-picture document rather than a `window.open`. A real second
-window would be a second page with no access to this one's chat box, and sending a Cheer — which
-has to go through the site's own composer, because Twitch's API takes the text and none of the
-Bits — would have had to stop working the moment the panel left the tab.
-
-While it is out there the panel is no longer over a page, so the parts that exist only because it
-was stop: placement no longer tracks the chat column, and it no longer stands aside for the site's
-menus. What does keep running is everything about the page itself, because the page is still where
-the channel is: its balances are still read, its own chat is still hidden if that is the setting,
-and the redemptions it draws still reach the feed.
-
-Closing the window puts the panel back. So does hiding the overlay, and so does moving to another
-channel — otherwise a channel switch would leave an empty window behind with nothing in it.
+While popped out, placement stops following the page's chat column. Balances, native sending,
+redemptions and the *Hide the site's own chat while merged* preference still use the source
+page. Closing the window returns the same panel and draft to that page.
 
 ### The channel chips
 
@@ -1480,6 +1463,16 @@ restyle the overlay and the overlay cannot leak styles onto the page. The panel 
 DOM, so nothing in the page's layout or stacking contexts has to be fought with.
 
 ## Development
+
+Open-issue regressions: `node tests/run.js issuefixes` (also included in the full suite).
+Optional isolated browser checks use an existing Playwright install:
+`node tests/issue-fixes-browser.js <artifact-directory>`; set `FCM_PLAYWRIGHT_PATH` if it is
+outside normal Node resolution. Every nonlocal request is blocked. These run the actual UI in
+Chrome, with Chrome and simulated Firefox harness modes; they are not live-site or native
+Firefox verification. Coverage: `node tests/issue-fixes-coverage.js <node-output.json>
+<artifact-directory>/browser-coverage.json`. The gate derives changed JavaScript lines from the
+working diff and requires current browser sources. It measures changed executable lines,
+functions and V8 ranges, not whole-repository coverage. CSS layout has rendered geometry checks.
 
 Update/display regression tests: `node tests/run.js updatedisplay`. Dependency-free coverage
 for the new update and preference logic: `node tests/update-display-coverage.js <node-output.json>`.
@@ -2129,8 +2122,8 @@ was never going to see in a friendly test:
 - **Firefox for Android is not supported.** Firefox's sign-in API does not exist there, and the
   add-on is neither built for Android nor tested on it: the package names desktop Firefox 140 as
   its floor and says nothing about Android at all.
-- **No pop-out before Firefox 151.** Firefox 140 to 150, which includes ESR 140, have no document
-  picture-in-picture, so the button is not shown there and the panel stays on the page.
+- **Always-on-top pop-outs need Document PiP.** Ordinary chat windows work without it.
+  The optional Shift-click PiP mode remains subject to browser support and its single-window limit.
 - **Kick signed in only inside a Firefox container tab.** The background reads Kick's session
   cookie from Firefox's default cookie store, and a container keeps its cookies apart from that
   store, so the background finds none. On a kick.com page in that container the content script

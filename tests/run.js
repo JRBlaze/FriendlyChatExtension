@@ -197,6 +197,11 @@ const SHARED = [
 const FCM_LINKS_KEY = 'fcm_channel_links_v1';
 
 const suites = {};
+suites.issuefixes = async function () {
+  await require('./issue-fixes')();
+  require('./issue-fixes-coverage').selfTest();
+  ok(true, 'issue #56-60 regression checks');
+};
 suites.updatedisplay = async function () {
   await require('./update-display')();
   ok(true, 'update activation and display font unit/integration checks');
@@ -1064,8 +1069,8 @@ suites.firefox = function () {
   //
   // The overlay cannot be mounted here: it is a shadow root built out of
   // markup, and there is no DOM to parse that into. So what is held to account
-  // is its source — nothing it shows or logs names Chrome, the pop-out is taken
-  // away where there is nothing to pop out into, and a stylesheet that will not
+  // is its source — nothing it shows or logs names Chrome, pop-outs are offered
+  // without depending on Document PiP, and a stylesheet that will not
   // load is said out loud. tests/harness.html is where each is seen working.
   {
     const src = fs.readFileSync(path.join(ROOT, 'src/content/overlay.js'), 'utf8').replace(/\r\n/g, '\n');
@@ -1081,8 +1086,8 @@ suites.firefox = function () {
       .filter((l) => /\bChrome\b/.test(l) && !/\bFirefox's address\b/.test(l)).map((l) => l.trim());
     eq(named, [],
       `firefox: nothing the overlay shows or logs names Chrome, except to tell Firefox's address from it (${named.join(' | ')})`);
-    contains(code, "toast('This browser cannot open a pop-out window')",
-      'firefox: a browser with no pop-out is told so in words that fit any browser');
+    contains(code, "toast('Allow pop-ups for this site to open a chat window')",
+      'firefox: blocked popups explain how to open the chat window');
     contains(code, "toast('The browser would not open a pop-out window')",
       'firefox: and so is one that refuses to open it');
     contains(code, "[Twitch] The browser would not open the window for Twitch's GIF keyboard. ",
@@ -1090,30 +1095,19 @@ suites.firefox = function () {
     contains(code, "toast('The browser would not open the window — the address is in the feed')",
       'firefox: and in the toast');
 
-    // Firefox has Document Picture-in-Picture only from 151, so ESR 140 has
-    // none, and a button that can only apologise is not one to offer. It has
-    // to be gone before the viewer can reach it, which is while the overlay is
-    // being built.
+    // Ordinary popups work without Document PiP; every tab opens a new window.
     const built = code.indexOf('FCM.createOverlay = function');
-    const hidden = new RegExp('if \\(!window\\.documentPictureInPicture\\) \\{\\s*'
-      + '\\$\\(\'\\.fcm-actions \\[data-act="([\\w-]+)"\\]\'\\)\\.classList\\.add\\(\'fcm-hidden\'\\);\\s*\\}').exec(code);
-    const wired = code.indexOf("root.querySelectorAll('.fcm-actions [data-act]')");
-    ok(built >= 0 && hidden && hidden.index > built && hidden.index < wired,
-      'firefox: the pop-out button is hidden as the overlay is built, wherever documentPictureInPicture is missing');
-    // And the selector it hides by has to find that button in the overlay's own
-    // markup. `$` is querySelector, so a button renamed in the markup and not
-    // here makes the hide a TypeError that stops the overlay being built at
-    // all — on Firefox 140 to 150 only, since Chrome always has the API and
-    // never runs that line, and no other check here would notice.
-    const act = hidden ? hidden[1] : '';
+    const act = 'popout';
+    contains(code, "window.open('', '_blank',", 'firefox: channels do not reuse a named popup');
+    missing(code, 'if (!window.documentPictureInPicture)', 'firefox: no PiP does not hide the ordinary popup');
     const markupEnd = code.indexOf('const $ = (sel) => root.querySelector(sel);', built);
     const titleBar = (/<div class="fcm-actions">([\s\S]*?)<\/div>/.exec(code.slice(built, markupEnd)) || [])[1] || '';
     const buttons = titleBar.match(/<button\b[^>]*>/g) || [];
     ok(markupEnd > built && buttons.length > 1, `firefox: (the title bar's buttons are found in the overlay's markup: ${buttons.length})`);
     eq(buttons.filter((b) => b.includes(`data-act="${act}"`)).map((b) => /title="([^"]*)"/.exec(b)[1]),
-      ['Pop out into its own window'],
-      `firefox: the button that hide names (data-act="${act}") is exactly one button in the title bar's markup, the pop-out`);
-    contains(code, `else if (act === '${act}') popOut();`,
+      ['Pop out into its own window (Shift-click for always-on-top)'],
+      `firefox: the pop-out is exactly one title-bar button (data-act="${act}")`);
+    contains(code, `else if (act === '${act}') popOut(e.shiftKey);`,
       'firefox: and the one the title bar opens the pop-out for when it is pressed');
     contains(code, `const btn = $('.fcm-actions [data-act="${act}"]');`,
       'firefox: and the one refreshPopButton looks after once the panel is popped out');
