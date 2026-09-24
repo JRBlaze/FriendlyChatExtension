@@ -44,7 +44,12 @@
   // the same kind of hook `data-state="open"` is for Kick's Radix menus, and
   // it is why both are asked for by name rather than looked for by shape.
   const DIALOG_SELECTOR =
-    '[role="dialog"],[role="menu"],[role="listbox"],.tw-balloon,[data-popper-placement]';
+    '[role="dialog"],[role="menu"],[role="listbox"],.tw-balloon,[data-popper-placement],'
+    + '.viewer-card,[data-a-target="viewer-card"],[data-testid="user-card"],[data-testid="viewer-card"]';
+  // Kick's drop notification may be portalled outside the chat column and too
+  // short to count as a dialog. Reserve its actual space; never redeem it here.
+  const NOTICE_SELECTOR = '[role="alert"],[role="status"],[data-sonner-toast],'
+    + '[data-testid*="drop" i],[aria-label*="drop" i],[title*="drop" i]';
   // How far under a named-but-sizeless panel to look for the box it is drawing.
   // Twitch stacks three wrappers over its menus today; this leaves room for one
   // more without turning into a search of the page.
@@ -257,9 +262,11 @@
    */
   FCM.createNativeBridge = function (site) {
     // Elements forced back into view while the site's own chat is hidden.
-    // Neither site sets visibility inline, so clearing the property is enough
-    // to put one back the way it was found.
-    const forced = new Set();
+    // Keep each original inline value so a replaced node or a closed overlay
+    // returns the page to exactly the state it had before the override.
+    const forced = new Map();
+    let hiddenBody = null;
+    let bodyVisibility = '';
     // A popup already on screen when the overlay mounted is the page's own
     // furniture, not a menu the user just opened. Without this, one mismatched
     // element would leave the panel permanently invisible with no way back.
@@ -403,6 +410,19 @@
         const list = site.messageList && site.messageList();
         if (!list) return null;
         const { above } = splitSiblings(list);
+        if (site.id === 'kick') {
+          const box = list.getBoundingClientRect();
+          document.querySelectorAll(NOTICE_SELECTOR).forEach((el) => {
+            const r = el.getBoundingClientRect();
+            if (r.width < MIN_CARD_WIDTH || r.height < MIN_BANNER_HEIGHT || !hasContent(el)) return;
+            if (r.right <= box.left || r.left >= box.right || r.bottom <= box.top) return;
+            if (r.top > box.top + box.height / 2 || r.height > box.height / 2) return;
+            const cs = getComputedStyle(el);
+            if (cs.display === 'none' || el.getAttribute('data-state') === 'closed'
+              || (cs.visibility === 'hidden' && !(hiddenBody && hiddenBody.contains(el)))) return;
+            if (!above.includes(el)) above.push(el);
+          });
+        }
         if (!above.length) return null;
         let top = Infinity;
         let bottom = -Infinity;
@@ -535,9 +555,8 @@
           furniture.add(peekTarget);
           peekTarget = null;
         }
-        // Nothing inside the message list is ever a menu. Both sites add rows
-        // there constantly, and a tall one arriving would otherwise read as
-        // something that had just opened over the panel.
+        // Ordinary rows inside the message list are not menus. Named dialogs
+        // and user cards can live there too, and must remain reachable.
         const messages = site.messageList && site.messageList();
 
         let found = null;
@@ -545,7 +564,7 @@
           const open = isOpen(el);
           // Open now and not last time: this is the one that just opened.
           if (open && !found && !wasOpen.has(el) && !furniture.has(el)
-            && !(messages && messages.contains(el))
+            && !(messages && messages.contains(el) && !(el.matches && el.matches(DIALOG_SELECTOR)))
             && coversBox(el.getBoundingClientRect(), box)) {
             found = el;
           }
@@ -574,7 +593,7 @@
           || (peekStarted && Date.now() - peekStarted > PEEK_MAX_MS);
         if (!gone) {
           const r = peekTarget.getBoundingClientRect();
-          if (r.width >= MIN_DIALOG && r.height >= MIN_DIALOG) return true;
+          if (r.width >= MIN_DIALOG && r.height >= MIN_DIALOG && isOpen(peekTarget)) return true;
         }
         // A menu nobody closed inside the cap is written off as furniture, so
         // it cannot keep the panel invisible a second time either.
@@ -643,28 +662,39 @@
       setNativeHidden(hidden, cards) {
         const keep = hidden && Array.isArray(cards) ? cards : [];
 
-        forced.forEach((el) => {
+        forced.forEach((visibility, el) => {
           if (keep.indexOf(el) !== -1) return;
-          el.style.visibility = '';
+          el.style.visibility = visibility;
           forced.delete(el);
         });
         keep.forEach((el) => {
           if (forced.has(el)) return;
+          forced.set(el, el.style.visibility || '');
           el.style.visibility = 'visible';
-          forced.add(el);
         });
 
         const body = site.nativeChatBody && site.nativeChatBody();
-        if (!body) return;
-        body.style.visibility = hidden ? 'hidden' : '';
+        if (hiddenBody && (hiddenBody !== body || !hidden)) {
+          hiddenBody.style.visibility = bodyVisibility;
+          hiddenBody = null;
+        }
+        if (!body || !hidden) return;
+        // Native sending temporarily makes this same body visible, then restores
+        // hidden in its finally block. Do not interrupt that asynchronous send.
+        if (hiddenBody === body && body.style.visibility === 'visible') return;
+        if (hiddenBody !== body) {
+          hiddenBody = body;
+          bodyVisibility = body.style.visibility || '';
+        }
+        body.style.visibility = 'hidden';
       },
 
       // Puts every element this bridge touched back the way it was found.
       release() {
-        forced.forEach((el) => { el.style.visibility = ''; });
+        forced.forEach((visibility, el) => { el.style.visibility = visibility; });
         forced.clear();
-        const body = site.nativeChatBody && site.nativeChatBody();
-        if (body) body.style.visibility = '';
+        if (hiddenBody) hiddenBody.style.visibility = bodyVisibility;
+        hiddenBody = null;
       },
     };
 

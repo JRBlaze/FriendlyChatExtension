@@ -1403,10 +1403,14 @@
 
 /* ── The moderation strip on a message ─────────────────────────────────────── */
 
-/* Appears on the row under the pointer, for a viewer who moderates that chat.
-   Absolutely placed at the row's top right so it never reflows the message,
-   and only rows that have grown one are made a positioning context. */
+/* Give the hovered row a separate toolbar band above its content. Keeping the
+   band inside this row also avoids covering the previous message or clipping
+   the controls at the top of the scrollport. Focus keeps the band available. */
 .fcm-msg:has(.fcm-modbar) { position: relative; }
+.fcm-root:not([data-modtools="false"]) .fcm-msg:has(.fcm-modbar):hover,
+.fcm-root:not([data-modtools="false"]) .fcm-msg:has(.fcm-modbar:focus-within) {
+  padding-top: 30px;
+}
 .fcm-modbar {
   position: absolute; top: 2px; right: 6px;
   display: none; gap: 3px; align-items: center;

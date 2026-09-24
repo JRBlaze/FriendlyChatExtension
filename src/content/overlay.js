@@ -235,7 +235,7 @@
           <div class="fcm-actions">
             <button class="fcm-icon-btn fcm-hidden" data-act="reset-placement" title="Reset size and position — back over the site's own chat">${ICONS.fit}</button>
             <button class="fcm-icon-btn" data-act="recheck" title="Re-check the other platform">${ICONS.refresh}</button>
-            <button class="fcm-icon-btn" data-act="popout" title="Pop out into its own window">${ICONS.popout}</button>
+            <button class="fcm-icon-btn" data-act="popout" title="Pop out into its own window (Shift-click for always-on-top)">${ICONS.popout}</button>
             <button class="fcm-icon-btn" data-act="settings" title="Overlay settings">${ICONS.gear}</button>
             <button class="fcm-icon-btn" data-act="collapse" title="Collapse">${ICONS.minus}</button>
             <button class="fcm-icon-btn" data-act="close" title="Hide overlay">${ICONS.close}</button>
@@ -307,13 +307,8 @@
     // a selector would then be picking between two.
     const resetBtn = $('.fcm-actions [data-act="reset-placement"]');
 
-    // The pop-out is Document Picture-in-Picture, which not every browser this
-    // runs in has: Chrome from 116, Firefox from 151 and only on the desktop,
-    // so not on ESR 140. Where it is missing the button could only ever answer
-    // with an apology, so it is not offered.
-    if (!window.documentPictureInPicture) {
-      $('.fcm-actions [data-act="popout"]').classList.add('fcm-hidden');
-    }
+    // Normal popup windows let several channels stay open together, including
+    // on Firefox without Document PiP. Shift-click retains always-on-top PiP.
 
     // The box draws emotes as they are typed, and presents the small part of an
     // input's interface the rest of the composer speaks: value, selectionStart
@@ -750,6 +745,9 @@
 
     function tick() {
       displayFont.refresh();
+      // Both sites mount chat late and replace it during normal rendering.
+      // Reconcile the current node even when the cards/settings did not change.
+      applyNativeChatVisibility();
       // Popped out, most of this is about a panel that is over the page, and
       // it is not. What still matters is the page itself: its balances are
       // still this channel's, its chat is still the one being hidden, and its
@@ -1354,7 +1352,7 @@
     // ── Popped out into a window of its own ───────────────────────────────────
 
     /**
-     * Moves the panel into a picture-in-picture document, and back again.
+     * Moves the panel into a blank same-origin popup, and back again.
      *
      * The panel is *moved*, not copied. Everything driving it — the port to the
      * background worker, the feed, the composer, the bridge that reads this
@@ -1365,10 +1363,9 @@
      * not a second copy that has to be kept in step with the first: it is the
      * same panel, drawn somewhere else.
      *
-     * That is also why this is a picture-in-picture document rather than a
-     * `window.open`. A real second window would be a second page, with no
-     * access to this one's chat box, and sending a Cheer or typing into the
-     * site's own composer would have had to stop working.
+     * The popup loads no other page or script. The original content script
+     * still owns every handler, including native sends in the source tab.
+     * Document PiP remains an explicit alternative for one always-on-top chat.
      */
     let pipWindow = null;
     const poppedOut = () => !!pipWindow;
@@ -1378,7 +1375,8 @@
       if (!btn) return;
       const out = poppedOut();
       btn.innerHTML = out ? ICONS.popin : ICONS.popout;
-      btn.title = out ? 'Put it back on the page' : 'Pop out into its own window';
+      btn.title = out ? 'Put it back on the page'
+        : 'Pop out into its own window (Shift-click for always-on-top)';
       btn.setAttribute('aria-label', btn.title);
     }
 
@@ -1392,6 +1390,7 @@
     function popIn() {
       const win = pipWindow;
       pipWindow = null;
+      window.removeEventListener('pagehide', popIn);
       root.dataset.popped = 'false';
       // The window can be closed after the overlay has been torn down — a
       // channel switch with the panel popped out does exactly that — and
@@ -1414,22 +1413,23 @@
       }
     }
 
-    async function popOut() {
+    async function popOut(alwaysOnTop = false) {
       if (poppedOut()) { popIn(); return; }
-      if (!window.documentPictureInPicture) {
-        toast('This browser cannot open a pop-out window');
-        return;
-      }
       const rect = panel.getBoundingClientRect();
       let win;
       try {
-        win = await window.documentPictureInPicture.requestWindow({
+        const size = {
           width: Math.round(rect.width) || 400,
           height: Math.round(rect.height) || 640,
-        });
+        };
+        win = alwaysOnTop && window.documentPictureInPicture
+          ? await window.documentPictureInPicture.requestWindow(size)
+          : window.open('', '_blank', `popup,width=${size.width},height=${size.height}`);
+        if (!win) {
+          toast('Allow pop-ups for this site to open a chat window');
+          return;
+        }
       } catch (e) {
-        // The browser refuses without a gesture it recognises, and refuses a
-        // second one while the first is open. Neither is worth more than a line.
         toast('The browser would not open a pop-out window');
         return;
       }
@@ -1450,7 +1450,8 @@
       win.document.body.appendChild(host);
       // Covers every way the window can go: the viewer closing it, this tab
       // navigating, the browser taking it back.
-      win.addEventListener('pagehide', popIn, { once: true });
+      win.addEventListener('pagehide', () => { if (pipWindow === win) popIn(); }, { once: true });
+      window.addEventListener('pagehide', popIn, { once: true });
       refreshPopButton();
       toast('Popped out — close the window to put it back');
     }
@@ -2873,14 +2874,14 @@
     }
 
     root.querySelectorAll('.fcm-actions [data-act]').forEach((btn) => {
-      btn.addEventListener('click', () => {
+      btn.addEventListener('click', (e) => {
         const act = btn.dataset.act;
         if (act === 'collapse') setCollapsed(!collapsed);
         else if (act === 'close') setVisible(false);
         else if (act === 'settings') openSheet();
         else if (act === 'reset-placement') resetPlacement();
         else if (act === 'recheck') { onCommand({ cmd: 'recheck' }); toast('Re-checking the other platform…'); }
-        else if (act === 'popout') popOut();
+        else if (act === 'popout') popOut(e.shiftKey);
       });
     });
 
@@ -2976,8 +2977,13 @@
           onUserCard: (platform, name) => {
             if (platform !== hostPlatform) return false;
             native.expectMenu();
-            if (!native.openUserCard(name)) return false;
+            peekHoldUntil = Date.now() + NATIVE_MENU_PEEK_MS;
             setPeek(true);
+            if (!native.openUserCard(name)) {
+              peekHoldUntil = 0;
+              setPeek(false);
+              return false;
+            }
             schedulePeekCheck();
             return true;
           },
