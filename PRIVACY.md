@@ -8,8 +8,9 @@ information it uses, where that information goes, and what it never does.
 
 The short version: **your information stays in your browser, except when the
 extension sends it to Twitch, Kick, YouTube, or the emote and chat services listed below
-so the chat can work. There are no ads, no analytics, and no tracking, and
-nothing is sold.**
+so the chat can work. Friendly Chat adds no ads, analytics or tracking, and
+does not sell your information.** Third-party platform pages and services have
+their own data practices, described below.
 
 ## What the extension uses
 
