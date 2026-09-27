@@ -1,0 +1,1 @@
+Schedules the background heartbeat needed to maintain active chat sessions and periodic validation of a connected Twitch account. These alarms support chat connectivity and account validity. The Chrome Web Store build uses Chrome-managed extension updates, not GitHub update polling.

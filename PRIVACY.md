@@ -124,8 +124,9 @@ currently selected destinations and their existing sending paths.
 ### Existing Twitch/Kick data
 
 - **Your Twitch and Kick sign-ins.** When you connect an account, the extension
-  receives a sign-in token from Twitch or Kick. It uses the token only to read
-  and send chat for you, and it stores the token in your browser's local
+  receives a sign-in token from Twitch or Kick. It uses the token for the chat,
+  account, emote and moderation features you use, subject to that platform's
+  permissions, and stores the token in your browser's local
   extension storage on that device.
 - **Your Kick session cookie.** If you are signed in to kick.com, the extension
   reads Kick's `session_token` cookie so it can ask Kick about your standing in
@@ -136,13 +137,32 @@ currently selected destinations and their existing sending paths.
   channel names, and emotes for the streams you watch so it can display them.
   It does not keep a history of what you watch.
 - **Your settings.** Your preferences, favourites, and channel pairings are
-  stored in your browser's extension storage. If you choose to export your
+  stored in your browser's extension storage. General preferences use the browser's
+  sync storage and can follow your browser account when sync is enabled. Tokens,
+  saved YouTube links, per-channel send choices and display-specific sizes stay
+  local. If you choose to export your
   settings to a file, that file is saved only where you put it. Sign-in tokens
   are never included in an export.
 - **Display text sizes.** If you choose a text size for a display, the extension
   stores that size alongside the screen width and height reported by your browser.
   This stays in local extension storage on that device. It is not sent to a service,
   synced to other devices, or included in portable settings exports.
+- **Channel and account identifiers.** Display names, usernames, account IDs,
+  channel URLs and selected video IDs identify the chats and accounts needed for
+  reading, linking and sending. The extension checks the current supported page
+  and channel links; it does not collect a general browsing-history log or read
+  unrelated pages through the browser history API.
+- **Rewards and transaction-related chat information.** The overlay can display
+  the Bits, Kicks and channel-point balances shown by the native page, along with
+  subscription, gift and Cheer events and related chat metadata. These features
+  can involve virtual-currency amounts or paid activity. Purchases and their
+  confirmation remain with the platform's own controls. Friendly Chat does not
+  request or store credit-card numbers, bank details or billing credentials.
+- **Chat interactions.** Typed drafts, selected destinations, replies, supported
+  moderation actions and recalled messages are handled to carry out your chat
+  actions. There is no general click, pointer, scroll or keystroke analytics log.
+  Services contacted over the network receive your IP address as part of normal
+  requests. Friendly Chat does not obtain GPS coordinates or use IP geolocation.
 
 ## Who the extension talks to
 
@@ -158,8 +178,9 @@ that same platform:
 - **7TV**, **BetterTTV**, and **FrankerFaceZ**: to load emotes for a channel.
 - **recent-messages.robotty.de**: to show recent Twitch chat when you open a
   channel.
-- **GitHub** (api.github.com): to check whether a newer version has been
-  released.
+- **GitHub** (api.github.com): unpacked Chrome builds check for newer releases.
+  Chrome Web Store builds instead use Chrome's update system and do not include
+  this GitHub API host permission. Firefox uses its browser-managed update feed.
 - **The extension's own sign-in helper** (friendly-chat-kick-proxy.jrblaze.workers.dev,
   run on Cloudflare): Kick requires a private key to finish signing in, which
   cannot be kept safely inside an extension, so this small helper completes the
@@ -179,6 +200,17 @@ receive.
 - Its extension code is bundled with the installed package; it does not download
   and execute remote code as extension code. The embedded YouTube page loads and
   runs YouTube's own website scripts, as described above.
+
+## Limited Use
+
+Friendly Chat Extension's use and transfer of information received through
+browser permissions follows the
+[Chrome Web Store User Data Policy](https://developer.chrome.com/docs/webstore/program-policies/user-data),
+including its Limited Use requirements. Information is used only for the
+extension's disclosed chat features and shared with the services needed to
+provide them. It is not sold, used for advertising, used for creditworthiness or
+lending decisions, or transferred for unrelated purposes. Friendly Chat does not
+operate a service that stores chat conversations for the developer to read.
 
 ## Removing your information
 

@@ -1,0 +1,1 @@
+Uses the browser-managed OAuth sign-in flow and redirect URL to connect Twitch and Kick accounts for the user's selected chat features. The extension receives platform tokens rather than asking for account passwords. YouTube does not use this OAuth connection; its optional sending uses its native browser session.

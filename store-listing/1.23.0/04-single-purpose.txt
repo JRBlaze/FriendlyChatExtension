@@ -1,0 +1,1 @@
+Merge live-stream chat from Twitch, Kick, and optionally YouTube into one overlay on Twitch and Kick channel pages, with reading, selected sending, and related chat controls.

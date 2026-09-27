@@ -1,0 +1,33 @@
+Twitch, Kick, and YouTube chat together while you watch.
+
+Friendly Chat Extension brings the conversation into one merged feed on Twitch and Kick stream pages. Follow chat across platforms, choose where your messages go, and keep watching without switching between chat windows.
+
+NEW: OPTIONAL YOUTUBE CHAT
+• Add a YouTube live-video URL or channel URL.
+• See live YouTube suggestions and choose the channel you want to add.
+• Save a YouTube channel link to a Twitch or Kick channel so its live chat can load on future visits.
+• Send to YouTube when its signed-in native chat box is available. YouTube sending starts off; check the displayed account and select its red send target for the current visit.
+• Allow YouTube access through the setup page, toolbar popup, or settings. You can keep using Twitch and Kick without enabling it.
+
+ONE CHAT, YOUR CHOICES
+• Read Twitch, Kick, and attached YouTube messages in one scrolling feed.
+• Choose your sending destinations. Twitch/Kick cross-platform sending uses connected accounts; YouTube uses your available browser session.
+• Press Up/Down in the message box to recall recently sent messages, edit them, and send again.
+• Use Twitch/Kick emotes, supported 7TV, BetterTTV and FrankerFaceZ emotes, emote favorites, and autocomplete.
+• Adjust the theme, text size, spacing, and overlay position. Pop chat into its own window when you prefer.
+• Save channel pairings and back up portable settings.
+• Use supported Twitch/Kick reply and moderation controls when your account has the required permissions.
+
+MADE TO FIT THE STREAM PAGE
+Friendly Chat appears on supported Twitch and Kick channel pages, including Kick's live-chat dashboard at /stream. Other Kick dashboard, Drops, and inventory pages stay clear. Recognized native notifications and chat menus remain visible and usable.
+
+GET STARTED
+Open a Twitch or Kick channel after installing. Add the other chat or connect accounts through Friendly Chat. For YouTube, allow optional site access and add a live-video or channel URL. No YouTube Data API key or server you operate is needed.
+
+PLEASE NOTE
+The overlay appears on Twitch and Kick, not on YouTube watch pages. YouTube reading and sending depend on its embedded live chat and your browser's session/cookie settings. Being signed into a normal YouTube tab does not always make sending available. YouTube messages are plain text, up to 200 characters, and normal channel restrictions still apply. YouTube reply/moderation tools, rich stickers, and full badge rendering are not supported. Features vary by platform.
+
+PRIVACY
+Friendly Chat has no advertising or analytics of its own and does not sell your information. It handles chat content, account details, and the supported channel you are viewing to provide its features. Connected Twitch/Kick tokens stay in local extension storage; YouTube uses its native browser session. Platform, emote, history, and sign-in services receive the requests needed to operate those features. Embedded YouTube pages load YouTube's own resources under its policies. See the privacy policy for details.
+
+Independent project; not affiliated with or endorsed by Twitch, Kick, or YouTube.

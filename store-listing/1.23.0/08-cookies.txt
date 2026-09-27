@@ -1,0 +1,1 @@
+Reads Kick's session_token cookie when available to ask Kick about the signed-in user's channel standing and support permitted native-account/moderation features. It is sent only to Kick and is not persisted or included in backups. This permission is not used to read YouTube cookies or collect cookies from unrelated sites.
