@@ -46,9 +46,11 @@
   const DIALOG_SELECTOR =
     '[role="dialog"],[role="menu"],[role="listbox"],.tw-balloon,[data-popper-placement],'
     + '.viewer-card,[data-a-target="viewer-card"],[data-testid="user-card"],[data-testid="viewer-card"]';
-  // Kick's drop notification may be portalled outside the chat column and too
-  // short to count as a dialog. Reserve its actual space; never redeem it here.
-  const NOTICE_SELECTOR = '[role="alert"],[role="status"],[data-sonner-toast],'
+  // Notifications can be portalled outside the chat column and too short to
+  // count as dialogs. Reserve their actual space, including Twitch's followed-
+  // channel live toast. Keep Kick's drop hooks local to Kick; never click either.
+  const TWITCH_NOTICE_SELECTOR = '[role="alert"],[role="status"],.tw-toast,[data-a-target*="toast" i]';
+  const KICK_NOTICE_SELECTOR = '[role="alert"],[role="status"],[data-sonner-toast],'
     + '[data-testid*="drop" i],[aria-label*="drop" i],[title*="drop" i]';
   // How far under a named-but-sizeless panel to look for the box it is drawing.
   // Twitch stacks three wrappers over its menus today; this leaves room for one
@@ -406,13 +408,19 @@
        * @returns {{elements: Element[], top: number, bottom: number,
        *   left: number, right: number, height: number}|null}
        */
-      cards() {
+      cards(includeHighlights = true) {
         const list = site.messageList && site.messageList();
         if (!list) return null;
-        const { above } = splitSiblings(list);
-        if (site.id === 'kick') {
+        // Notifications must remain visible even when optional highlights are off.
+        const above = includeHighlights ? splitSiblings(list).above : [];
+        let noticeBottom = 0;
+        if (site.id === 'kick' || site.id === 'twitch') {
           const box = list.getBoundingClientRect();
-          document.querySelectorAll(NOTICE_SELECTOR).forEach((el) => {
+          const notices = site.id === 'kick' ? KICK_NOTICE_SELECTOR : TWITCH_NOTICE_SELECTOR;
+          document.querySelectorAll(notices).forEach((el) => {
+            // Chat announcements may also use alert/status roles. They are
+            // ordinary feed content, not a followed-channel notification.
+            if (site.id === 'twitch' && list.contains(el)) return;
             const r = el.getBoundingClientRect();
             if (r.width < MIN_CARD_WIDTH || r.height < MIN_BANNER_HEIGHT || !hasContent(el)) return;
             if (r.right <= box.left || r.left >= box.right || r.bottom <= box.top) return;
@@ -421,6 +429,7 @@
             if (cs.display === 'none' || el.getAttribute('data-state') === 'closed'
               || (cs.visibility === 'hidden' && !(hiddenBody && hiddenBody.contains(el)))) return;
             if (!above.includes(el)) above.push(el);
+            noticeBottom = Math.max(noticeBottom, r.bottom);
           });
         }
         if (!above.length) return null;
@@ -436,7 +445,7 @@
           right = Math.max(right, r.right);
         });
         if (!(bottom > top)) return null;
-        return { elements: above, top, bottom, left, right, height: bottom - top };
+        return { elements: above, top, bottom, left, right, height: bottom - top, noticeBottom };
       },
 
       /**

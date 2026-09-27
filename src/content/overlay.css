@@ -34,6 +34,9 @@
   --kick: #53fc18;
   --kick-dim: rgba(83, 252, 24, 0.12);
   --kick-border: rgba(83, 252, 24, 0.34);
+  --youtube-text: #ff8a8a;
+  --youtube-dim: rgba(255, 85, 85, 0.15);
+  --youtube-border: rgba(255, 85, 85, 0.38);
   --accent: #7c6bff;
   /* Used wherever white text sits on the accent. The accent itself stays for
      rules, rings and edges, which have a lower bar to clear. */
@@ -93,6 +96,9 @@
   --kick: #1f9e00;
   --kick-dim: rgba(31, 158, 0, 0.12);
   --kick-border: rgba(31, 158, 0, 0.3);
+  --youtube-text: #b01414;
+  --youtube-dim: rgba(176, 20, 20, 0.12);
+  --youtube-border: rgba(176, 20, 20, 0.38);
   --accent: #5f55e8;
   --accent-fill: #564cd8;
   --send-twitch: #7b35e8;
@@ -183,7 +189,36 @@
 .fcm-panel.fcm-collapsed .fcm-composer,
 .fcm-panel.fcm-collapsed .fcm-statusbar,
 .fcm-panel.fcm-collapsed .fcm-native,
+.fcm-panel.fcm-collapsed .fcm-youtube-wrap,
 .fcm-panel.fcm-collapsed .fcm-prompt { display: none; }
+
+/* YouTube uses the same feed; this is only its setup control. */
+.fcm-youtube-wrap { flex-shrink: 0; min-width: 0; }
+.fcm-youtube-suggestions { padding: 8px 10px; border-bottom: 1px solid var(--border); background: var(--surface2); font-size: 12px; }
+.fcm-youtube-suggestions[hidden] { display: none; }
+.fcm-youtube-suggestions > div { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 0 0 7px; min-width: 0; }
+.fcm-youtube-suggestions p { width: 100%; margin: 0; color: var(--text-muted); overflow-wrap: anywhere; }
+.fcm-youtube-suggestions a { min-width: 0; color: var(--link); overflow-wrap: anywhere; }
+.fcm-youtube-suggestions button { max-width: 100%; padding: 5px 8px; color: var(--text); background: var(--surface); border: 1px solid var(--border2); border-radius: 4px; cursor: pointer; font: inherit; }
+.fcm-youtube-suggestions > div button { border-color: var(--danger); }
+.fcm-youtube-suggestions > button { padding: 2px 0; color: var(--text-muted); background: transparent; border: 0; text-decoration: underline; }
+.fcm-youtube-suggestions :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.fcm-youtube { padding: 6px 10px; border-bottom: 1px solid var(--border); font-size: 12px; }
+.fcm-youtube summary { cursor: pointer; color: var(--text-muted); }
+.fcm-youtube form { display: flex; flex-wrap: wrap; gap: 7px; padding: 9px 0 3px; max-height: 40vh; overflow-y: auto; }
+.fcm-youtube label { width: 100%; color: var(--text); }
+.fcm-youtube input[type="text"] { display: block; width: 100%; margin-top: 3px; padding: 7px; color: var(--text); background: var(--surface); border: 1px solid var(--border2); border-radius: 4px; font: inherit; }
+.fcm-youtube .fcm-youtube-pair { display: flex; align-items: flex-start; gap: 6px; overflow-wrap: anywhere; }
+.fcm-youtube .fcm-youtube-pair[hidden] { display: none; }
+.fcm-youtube-pair input { flex-shrink: 0; margin: 2px 0 0; }
+.fcm-youtube-pair span { min-width: 0; }
+.fcm-youtube button { padding: 5px 8px; color: var(--text); background: var(--surface2); border: 1px solid var(--border2); border-radius: 4px; cursor: pointer; font: inherit; }
+.fcm-youtube button:disabled { opacity: .6; cursor: default; }
+.fcm-youtube a { color: var(--link); align-self: center; }
+.fcm-youtube p { width: 100%; color: var(--text-muted); overflow-wrap: anywhere; }
+.fcm-youtube :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.fcm-dot-youtube { background: #ff5555; }
+.fcm-author.fcm-author-youtube, .fcm-author.fcm-author-youtube:hover { color: var(--danger); cursor: text; text-decoration: none; }
 
 /* Standing aside while one of the site's own menus is open underneath. The
    panel keeps its box — the placement code is still tracking the chat column —
@@ -660,6 +695,11 @@
 .fcm-body { color: var(--text); word-break: break-word; }
 
 .fcm-emote { max-height: 26px; vertical-align: middle; margin: -2px 1px; }
+/* Twitch marks one native emote in a Gigantify message. Reserve its larger
+   layout box so following rows do not overlap it; narrow feeds still fit. */
+.fcm-emote.fcm-emote-gigantified {
+  height: 112px; max-height: 112px; max-width: 100%; object-fit: contain; margin: 2px 1px;
+}
 
 /* A GIF a Tier 2 or Tier 3 subscriber posted. Drawn at a size that reads as a
    picture in a narrow column rather than a wall, and never wider than the
@@ -1069,6 +1109,9 @@
 }
 .fcm-target[data-platform="kick"][data-on="true"] {
   border-color: var(--kick-border); background: var(--kick-dim); color: var(--kick-text);
+}
+.fcm-target[data-platform="youtube"][data-on="true"] {
+  border-color: var(--youtube-border); background: var(--youtube-dim); color: var(--youtube-text);
 }
 .fcm-target[data-route="blocked"],
 .fcm-target[data-route="no-channel"] { color: var(--text-dim); border-style: dashed; }

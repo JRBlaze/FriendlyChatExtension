@@ -510,7 +510,7 @@
   FCM.BACKUP_FORMAT = 'friendly-chat-extension-backup';
   FCM.BACKUP_VERSION = 1;
   // The storage keys a backup carries, by their name in STORAGE_KEYS.
-  FCM.BACKUP_STORES = ['settings', 'links', 'geometry', 'sendTargets'];
+  FCM.BACKUP_STORES = ['settings', 'links', 'youtubeLinks', 'geometry', 'sendTargets'];
 
   const plainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 
@@ -602,7 +602,7 @@
     };
     FCM.BACKUP_STORES.forEach((name) => {
       const value = stores && stores[name];
-      if (plainObject(value)) out[name] = value;
+      if (plainObject(value)) out[name] = name === 'youtubeLinks' ? FCM.cleanYouTubeLinks(value) : value;
     });
     return out;
   };
@@ -656,6 +656,12 @@
       keys.forEach((k) => { capped[k] = links[k]; });
       stores.links = capped;
       counts.links = keys.length;
+    }
+
+    const youtubeLinks = FCM.cleanYouTubeLinks(parsed.youtubeLinks);
+    if (youtubeLinks && Object.keys(youtubeLinks).length) {
+      stores.youtubeLinks = youtubeLinks;
+      counts.youtubeLinks = Object.keys(youtubeLinks).length;
     }
 
     const sendTargets = channelKeyed(parsed.sendTargets, (v) => Array.isArray(v)

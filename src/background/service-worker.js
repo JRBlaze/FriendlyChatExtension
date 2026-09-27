@@ -22,12 +22,17 @@ if (typeof importScripts === 'function') {
   importScripts(
     '/src/shared/namespace.js',
     '/src/shared/constants.js',
+    '/src/shared/youtube.js',
+    '/src/shared/youtube-links.js',
     '/src/shared/util.js',
     '/src/shared/irc.js',
     '/src/shared/emote-parsers.js',
     '/src/shared/kick-events.js',
     '/src/shared/clips.js',
+    '/src/background/youtube-lookup.js',
+    '/src/background/youtube-relay.js',
     '/src/background/discovery.js',
+    '/src/background/youtube-links.js',
     '/src/background/emotes.js',
     '/src/background/twitch-source.js',
     '/src/background/kick-source.js',
@@ -37,7 +42,8 @@ if (typeof importScripts === 'function') {
     '/src/background/profile.js',
     '/src/background/emote-cache.js',
     '/src/background/clips.js',
-    '/src/background/updates.js'
+    '/src/background/updates.js',
+    '/src/background/youtube-onboarding.js'
   );
 }
 

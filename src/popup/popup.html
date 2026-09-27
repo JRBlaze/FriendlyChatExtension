@@ -27,6 +27,16 @@
       the panel appears in them.</p>
   </section>
 
+  <section id="youtube-access" class="card youtube-access" aria-labelledby="youtube-access-title">
+    <strong id="youtube-access-title">New in 1.23.0: YouTube chat</strong>
+    <p class="muted">Merge YouTube chat into Twitch and Kick. Save channel links to load live chat automatically. Sending is optional and starts off; check the displayed account and select the YouTube send target for this visit when available.</p>
+    <p id="youtube-access-status" class="muted" role="status">Checking YouTube access…</p>
+    <div class="access-actions">
+      <button id="youtube-access-allow" type="button" class="primary" disabled>Allow YouTube access</button>
+    </div>
+    <a href="../youtube/permission.html" target="_blank" rel="noopener">What's new and setup</a>
+  </section>
+
   <section id="update" class="card update hidden">
     <div class="update-head">
       <strong id="update-title">Update available</strong>
@@ -94,6 +104,7 @@
   <script src="../shared/namespace.js"></script>
   <script src="../shared/constants.js"></script>
   <script src="../shared/util.js"></script>
+  <script src="../youtube/access-card.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

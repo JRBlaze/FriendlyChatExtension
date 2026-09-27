@@ -11,10 +11,20 @@
     <span class="mark"></span>
     <div>
       <h1>Friendly Chat Extension</h1>
-      <p>A merged Twitch + Kick chat overlay, laid over the chat of whichever site you are on.</p>
+      <p>Merge Twitch, Kick and YouTube chat on Twitch and Kick channel pages.</p>
     </div>
     <span class="version" id="version"></span>
   </header>
+
+  <section id="youtube-access" class="youtube-access" aria-labelledby="youtube-access-title">
+    <h2 id="youtube-access-title">New in 1.23.0: YouTube chat</h2>
+    <p class="section-note">Merge YouTube chat into Twitch and Kick. Save channel links to load live chat automatically. Sending is optional and starts off; check the displayed account and select the YouTube send target for this visit when available.</p>
+    <p id="youtube-access-status" class="section-note" role="status">Checking YouTube access…</p>
+    <div class="youtube-access-actions">
+      <button id="youtube-access-allow" type="button" class="btn" disabled>Allow YouTube access</button>
+      <a href="../youtube/permission.html" target="_blank" rel="noopener">What's new and setup</a>
+    </div>
+  </section>
 
   <section>
     <h2>Cross-platform</h2>
@@ -267,7 +277,7 @@
   <section>
     <h2>Backup</h2>
     <p class="section-note">
-      Everything on this page, your favourite emotes, the channel links below, where each
+      Everything on this page, your favourite emotes, the Twitch, Kick and YouTube channel links below, where each
       channel's messages go and where you dragged the panel — written to one file you can keep
       somewhere safe. Worth doing before you update the extension: your browser deletes an
       extension's storage if it is removed and loaded again, which is one perfectly ordinary way
@@ -301,6 +311,17 @@
   </section>
 
   <section>
+    <h2>Saved YouTube links</h2>
+    <p class="section-note">
+      Save a YouTube channel from the overlay on a Twitch or Kick page. On later visits to
+      that host channel, its live YouTube chat loads automatically when YouTube access is allowed.
+      Each row applies to the named Twitch or Kick channel; forgetting one leaves the other rows in place.
+    </p>
+    <div id="youtube-links"></div>
+    <p id="youtube-links-note" class="section-note" role="status"></p>
+  </section>
+
+  <section>
     <h2>Cached emotes</h2>
     <p class="section-note">
       The emote lists from the last few channels you watched, kept so they are ready the moment you
@@ -325,7 +346,10 @@
 
 <script src="../shared/namespace.js"></script>
 <script src="../shared/constants.js"></script>
+<script src="../shared/youtube.js"></script>
+<script src="../shared/youtube-links.js"></script>
 <script src="../shared/util.js"></script>
+<script src="../youtube/access-card.js"></script>
 <script src="options.js"></script>
 </body>
 </html>

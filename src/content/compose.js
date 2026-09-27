@@ -510,7 +510,7 @@
         // The page already identifies its streamer, even in an empty chat.
         // Keep this candidate separate from remembered activity so it survives
         // chatter eviction without inventing a message or a name colour.
-        let candidates = FCM.recentChatters();
+        let candidates = FCM.recentChatters().filter((c) => FCM.SEND_PLATFORMS.includes(c.platform));
         if (ctx.hostChannel && FCM.PLATFORMS.includes(hostPlatform)) {
           const hostName = ctx.hostChannel.toLowerCase();
           const known = candidates.find((c) => c.platform === hostPlatform
@@ -674,6 +674,7 @@
      *   posting a message that merely names somebody.
      */
     function insertMention(name, platform, messageId) {
+      if (platform && !FCM.SEND_PLATFORMS.includes(platform)) return;
       const prefix = `@${name} `;
       const current = inputEl.value;
       // Replying to a second person should add to the message, not replace it —
@@ -900,7 +901,7 @@
       event.stopPropagation();
       const name = authorEl.dataset.name || '';
       const platform = authorEl.dataset.platform || '';
-      if (!name || !FCM.PLATFORM_META[platform]) return;
+      if (!name || !FCM.SEND_PLATFORMS.includes(platform)) return;
 
       // Acting on the message that was actually clicked is more precise than
       // guessing at "their last one", and it is the id the APIs want.
@@ -1061,7 +1062,7 @@
      */
     function modBarFor(row) {
       const platform = row.dataset.platform;
-      if (!FCM.PLATFORM_META[platform] || !canModerate(platform)) return null;
+      if (!FCM.SEND_PLATFORMS.includes(platform) || !canModerate(platform)) return null;
       const target = targetOf(row);
       if (!target.username) return null;
       const meta = FCM.PLATFORM_META[platform];

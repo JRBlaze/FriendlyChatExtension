@@ -115,7 +115,7 @@
   // Which storage area each backed-up store actually lives in. Settings are
   // written to both, and loadSettings takes whichever was stamped last — so an
   // import that wrote only local would be beaten by whatever sync still held.
-  const BACKUP_AREAS = { settings: 'both', links: 'local', geometry: 'local', sendTargets: 'local' };
+  const BACKUP_AREAS = { settings: 'both', links: 'local', youtubeLinks: 'local', geometry: 'local', sendTargets: 'local' };
 
   function backupNote(text, kind) {
     const note = $('backup-note');
@@ -284,6 +284,7 @@
     if (c.settings) parts.push(`${c.settings} setting${c.settings === 1 ? '' : 's'}`);
     if (c.favourites) parts.push(`${c.favourites} favourite emote${c.favourites === 1 ? '' : 's'}`);
     if (c.links) parts.push(`${c.links} channel link${c.links === 1 ? '' : 's'}`);
+    if (c.youtubeLinks) parts.push(`${c.youtubeLinks} saved YouTube link${c.youtubeLinks === 1 ? '' : 's'}`);
     if (c.sendTargets) parts.push(`${c.sendTargets} remembered send target${c.sendTargets === 1 ? '' : 's'}`);
     if (c.geometry) parts.push('the panel position');
     const summary = parts.join(', ');
@@ -318,6 +319,71 @@
     // The page is drawn from storage, so it has to be drawn again.
     await bind();
     renderLinks();
+    renderYouTubeLinks();
+  });
+
+  // Saved YouTube links are explicit per-host choices. The worker serializes
+  // removal with saves from open overlays and compares the displayed URL, so
+  // an old options tab cannot erase a newer choice for the same host channel.
+  let youtubeLinksRender = 0;
+  async function renderYouTubeLinks() {
+    const generation = ++youtubeLinksRender;
+    const container = $('youtube-links');
+    const note = $('youtube-links-note');
+    let links;
+    try {
+      const stored = await chrome.storage.local.get(FCM.STORAGE_KEYS.youtubeLinks);
+      links = FCM.cleanYouTubeLinks(stored[FCM.STORAGE_KEYS.youtubeLinks]) || {};
+    } catch (e) {
+      if (generation === youtubeLinksRender) note.textContent = 'Saved YouTube links could not be read. Reopen settings to try again.';
+      return;
+    }
+    if (generation !== youtubeLinksRender) return;
+    container.replaceChildren();
+    const entries = Object.entries(links).sort(([a], [b]) => a.localeCompare(b));
+    if (!entries.length) {
+      const empty = document.createElement('div');
+      empty.className = 'empty';
+      empty.textContent = 'No saved YouTube links. Save one from the YouTube controls on a Twitch or Kick channel.';
+      container.appendChild(empty);
+      return;
+    }
+    entries.forEach(([hostKey, record]) => {
+      const [platform, channel] = hostKey.split(':');
+      const row = document.createElement('div');
+      row.className = 'link-row youtube-link-row';
+      const host = document.createElement('span');
+      host.className = 'from';
+      host.textContent = `${FCM.PLATFORM_META[platform].name}/${channel}`;
+      const target = document.createElement('span');
+      target.className = 'to';
+      target.textContent = record.channelUrl;
+      const remove = document.createElement('button');
+      remove.className = 'btn btn-ghost';
+      remove.textContent = 'Forget';
+      remove.addEventListener('click', async () => {
+        remove.disabled = true;
+        try {
+          const result = await chrome.runtime.sendMessage({ cmd: 'youtubeLinkForgetSaved', hostKey, channelUrl: record.channelUrl });
+          note.textContent = result && result.ok ? 'Saved YouTube link forgotten.'
+            : result && result.error === 'link-changed' ? 'That link changed in another tab. Review the updated row before forgetting it.'
+              : 'The YouTube link could not be forgotten. Try again.';
+          await renderYouTubeLinks();
+        } catch (e) {
+          note.textContent = 'The YouTube link could not be forgotten. Try again.';
+        } finally {
+          remove.disabled = false;
+        }
+      });
+      row.appendChild(host);
+      row.appendChild(target);
+      row.appendChild(remove);
+      container.appendChild(row);
+    });
+  }
+
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes[FCM.STORAGE_KEYS.youtubeLinks]) renderYouTubeLinks();
   });
 
   async function renderLinks() {
@@ -428,5 +494,6 @@
 
   bind();
   renderLinks();
+  renderYouTubeLinks();
   renderEmoteCacheNote();
 })(self.FCM);

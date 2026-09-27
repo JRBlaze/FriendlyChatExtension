@@ -5,11 +5,137 @@ merged chat feed directly on the page you are already watching.
 
 Open a Twitch channel and the merged chat overlay appears over Twitch's own chat. If that
 streamer is also live on Kick, the overlay says so and offers to add the Kick chat to the same
-feed. Open a Kick channel and it works the other way round.
+feed. Open a Kick channel and it works the other way round. You can also add
+YouTube live chat to either page, using a suggested channel or a video/channel URL.
+The overlay stays off non-channel pages, including Kick's Drops and inventory pages.
+On Kick it activates on public channel pages at `kick.com` and `www.kick.com`,
+plus the live-chat page `dashboard.kick.com/stream`. Other creator dashboard
+pages and service subdomains do not show the overlay. Moving between the live
+dashboard and other dashboard pages shows or removes it automatically.
 
 ![Platform](https://img.shields.io/badge/Chrome-MV3-blue)
 ![Firefox](https://img.shields.io/badge/Firefox-140%2B-orange)
 [![Version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FJRBlaze%2FFriendlyChatExtension%2Fmain%2Fmanifest.json&query=%24.version&label=version&color=green)](../../releases/latest)
+
+## Add YouTube chat
+
+YouTube is an optional source in the merged feed on Twitch and Kick, with separately
+selected sending through YouTube's own chat box when your browser makes it available.
+On installation, a one-time setup page introduces YouTube and offers **Allow
+YouTube access**. Existing users receive the same introduction in a background
+tab when this update arrives. Click the button and approve your browser's request,
+or choose **Not now** to keep using Twitch and Kick without YouTube.
+
+The toolbar popup and extension settings also highlight **New in 1.23.0: YouTube
+chat**, with an access button and a setup link. Already allowed access is shown
+without asking again. This works in Chrome and Firefox; the introduction is not
+reopened on ordinary browser starts, extension reloads or later updates.
+
+You can also open **YouTube** on a stream page to start setup. After
+allowing access, return to an already open stream and choose **Check YouTube** or
+refresh the page. Granting permission enables live suggestions; chat capture starts
+when you add it or visit a channel with an explicitly saved YouTube link.
+
+With access allowed, the overlay looks for a live YouTube channel when you visit a
+Twitch or Kick channel. It first checks visible YouTube channel links outside the
+site's chat. If no valid channel link is available, it tries the current username
+and any matched Twitch/Kick username as YouTube handles. Live candidates appear
+with **Add YouTube chat**. A matching username is labelled a **possible same-name
+match**; check the linked channel before adding it. Page links take priority over
+name guesses. These checks read public channel metadata. Suggestions require Add
+before capture; a channel you explicitly saved can load automatically on later visits.
+
+You can also paste a live-video URL, an 11-character video ID, or a channel URL
+such as `https://www.youtube.com/@Agent00`, then choose **Add chat**. Channel lookup
+checks the current stream listing and verifies that its single live video belongs
+to the channel. Replays and scheduled streams are excluded. If several broadcasts
+are live, paste the specific video URL. Suggestions never replace a URL you typed.
+
+**Dismiss**, **Remove YouTube**, and manual Add pause suggestions for this visit.
+**Check YouTube** resumes them while capture is off, or retries your saved channel.
+Remove stops capture and removes its rows for this visit. Hiding or collapsing the
+panel keeps an attached chat running until you remove it or leave the channel.
+
+To load the same creator automatically, open **Settings → Cross-platform → Link a
+YouTube channel**, paste their **channel URL**, and choose **Save YouTube link**.
+The link belongs to the Twitch or Kick page you are watching. If you have manually
+paired that page with a Twitch/Kick counterpart, **Also link** lets you save the
+same YouTube channel for that named counterpart too. It is unchecked by default;
+guessed matches are never linked automatically. Each saved host can be changed or
+forgotten separately, and changing a Twitch/Kick pair does not move a YouTube link.
+
+Saving checks for a live stream immediately and again on each later visit. A saved
+link takes priority over suggestions and works independently of Twitch/Kick's
+Ask/Always/Never choice. Offline, ambiguous or unavailable channels stay saved
+without opening chat; **Check YouTube** retries. There is no continuous live check.
+YouTube site access must still be granted. **Remove YouTube** pauses this visit;
+**Forget YouTube link** also disables future automatic loading for this page.
+Direct video URLs and ordinary Add actions remain temporary. Saved links are
+local to this browser and included in settings backups; manage them individually
+under **Saved YouTube links** on the extension's options page.
+
+YouTube chat uses two hidden embedded frames on the current Twitch/Kick page:
+one reads chat and the other handles explicitly selected sends. Keeping capture
+separate prevents YouTube's temporary local send preview from appearing as a
+second message. Both close when the source stops; no separate tab opens.
+It uses no YouTube Data API key and needs
+no server you operate. Browser/site embedding restrictions, withheld permission,
+or changes to YouTube's layout can prevent capture; the controls report failures
+and limit reconnect attempts. Normal YouTube page requests and browser-permitted
+cookies still apply. See [Privacy](PRIVACY.md).
+
+The feed shows ordinary text, paid-message text, and membership rows that expose
+message text. Emoji use their text alternatives and timestamps show receipt time.
+The initial recent chat can appear. Rich stickers, YouTube badges, donation
+formatting, complete history, and some moderation removals are not supported.
+Explicitly deleted rows are marked, and duplicate IDs are scoped to the video.
+Captured YouTube messages do not offer reply or moderation actions. Names have
+no extra YT badge; the platform color and message metadata still identify YouTube.
+
+**Sending to YouTube is off by default.** When the attached YouTube chat exposes an
+editable, signed-in composer, its send target shows the account that will post.
+Check that account, explicitly select the YouTube target, then type and send from
+Friendly Chat. This choice lasts only for the current visit and resets when the
+source or account changes. Adding a chat, allowing access or saving a channel link
+does not select YouTube for sending.
+
+YouTube accepts plain text up to **200 characters** here; longer messages and control
+characters are refused, never shortened. Normal YouTube rules still apply, including
+subscriber/member restrictions, slow mode and blocked accounts. An existing native
+draft is preserved. Friendly Chat uses the native send button once and never retries
+an uncertain send. Successful submission does not add a system status message.
+Failures and uncertain results remain visible; check the chat before manually
+repeating a message whose result is uncertain. A cleared native editor alone
+does not establish server delivery.
+
+Your browser must make your YouTube session available inside the attached chat.
+Being signed in on a normal YouTube tab alone may not be enough, especially with
+Firefox's cookie isolation. In Firefox, **YouTube · enable sending** opens a small
+setup panel on the stream page. Choose **Allow YouTube sign-in**, then approve
+Firefox's request if shown. This grants YouTube access to its own sign-in cookies
+on the current site while keeping Enhanced Tracking Protection enabled. Twitch
+and Kick have separate access grants. Sign into YouTube in the same Firefox
+profile and interact with its page before trying setup if Firefox refuses access.
+
+The setup briefly shows the sending frame, reloads that same frame after approval,
+and hides it once its account is ready. The capture frame keeps reading throughout.
+Check the displayed YouTube account and select its target to send; approval never
+selects it or sends a message. Cancel, denial, or a timeout leaves reading available.
+Use **Cancel setup** on the YouTube target to stop a pending setup or reload.
+If sending setup fails after reloading, remove and add YouTube chat to try again.
+On later visits, a browser permission already marked granted can be reactivated
+without a new prompt. Expired or denied grants need another explicit setup click.
+Firefox manages these site permissions; they are not Friendly Chat settings or
+part of a backup. There is no separate YouTube account connection,
+API key, hosted service, token reading or additional extension permission for sending.
+Twitch/Kick account connections and their sending controls keep their existing behavior.
+
+Channel checks omit cookies and credentials and have size/time limits. Up to six
+candidates are checked per visit, with a 30-second cache of up to 64 results in
+background memory. Three delayed page scans allow channel links to load; there is
+no continuous polling. Add performs a fresh lookup. A missing page link, different
+handle, blocked lookup, or unsupported listing may require a pasted video URL.
+The source does not automatically switch to a later broadcast.
 
 ## Install
 
@@ -23,7 +149,7 @@ has signed. Chrome is first below; Firefox is [further down](#install-in-firefox
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.22.6.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.23.0.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and an extra folder named `FriendlyChatExtension-main`
@@ -55,7 +181,7 @@ Firefox ESR 140. Firefox for Android is not supported: the sign-in API the exten
 accounts with does not exist there.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.22.6-firefox.xpi` from the Assets list. That file is the add-on, signed
+`FriendlyChatExtension-v1.23.0-firefox.xpi` from the Assets list. That file is the add-on, signed
 by Mozilla, and there is nothing to unzip.
 
 1. **Open the file with Firefox.** Click it in Firefox's downloads list, or drag the file from
@@ -82,7 +208,7 @@ The add-on is not on addons.mozilla.org, and will not be: Mozilla signs it witho
 and this repository's releases are the only place it is published.
 
 **Trying an unsigned build.** Each release also carries
-`FriendlyChatExtension-v1.22.6-firefox-unsigned.xpi`, the same package before Mozilla signed it.
+`FriendlyChatExtension-v1.23.0-firefox-unsigned.xpi`, the same package before Mozilla signed it.
 Opened the ordinary way, release Firefox refuses it as unverified; it loads only as a temporary
 add-on: open `about:debugging`, choose *This Firefox*, press *Load Temporary Add-on…* and pick the
 file itself, without unpacking it. A temporary add-on is removed when Firefox restarts, and its
@@ -142,6 +268,7 @@ inside, because Chrome builds up to v1.20.1 take the first `.zip` on a release a
   connect it. The same logic runs in reverse on Kick.
 - **One merged feed.** Twitch and Kick messages interleave in a single scroll, each tagged with
   a coloured dot and the platform's own username colour, and each filterable on and off.
+  Optional YouTube messages join that same feed, with a separately selected native send target when available.
 - **Every emote you can actually use.** Twitch global, channel, subscriber, follower, bits-tier,
   hype-train, rewards and Prime emotes; Kick's channel, global and emoji sets, the emotes your
   Kick account has collected, and the sets of the other Kick channels you subscribe to; and 7TV,
@@ -152,6 +279,8 @@ inside, because Chrome builds up to v1.20.1 take the first `.zip` on a release a
   the channel's own subscriber badges, the pictures Kick sends (the level badge), and drawn icons
   for the roles Kick sends only as a word — moderator, VIP, OG, founder, verified, gifter and the
   rest.
+- **Twitch Gigantify emotes.** A Gigantify redemption displays its selected native Twitch
+  emote at a larger size, in both live chat and recent history. Other emotes keep their normal size.
 - **Recent history on join,** with the original timestamps, so you are not staring at an empty
   panel when you arrive mid-stream.
 - **Events**: subs, resubs, gifted subs, raids, cheers, hype trains, redemptions, timeouts and
@@ -406,6 +535,9 @@ focused.
 Once a counterpart is known, its live state is re-checked every 90 seconds while you watch, so
 if they start their Kick stream halfway through the Twitch one, the overlay notices and says so.
 
+For a saved YouTube channel, use **Link a YouTube channel** in the same Cross-platform
+section. See [Add YouTube chat](#add-youtube-chat) for automatic loading and both-host linking.
+
 ### What you are asked, and when
 
 `Settings → When the streamer is also live on the other platform`:
@@ -436,6 +568,15 @@ are on.
 - **Click a username** for reply, copy, or opening that person's channel. Reply drops
   `@name ` into the box, and doing it again appends rather than replacing, so you can address
   two people at once.
+- **Recall sent messages** — press **Up** in the message box to browse older messages,
+  and **Down** for newer ones or back to your unfinished draft. Edit the recalled text
+  or press **Enter** to send it again using your current destinations. The last 50
+  messages accepted by at least one destination are kept for this channel visit;
+  consecutive duplicates take one slot. Autocomplete keeps its arrow keys, and
+  recall pauses during a send or an active reply. Old reply threads and destinations
+  are never restored. Failed-only sends, uncertain YouTube submissions and Cheers
+  are excluded. History stays in this tab's memory and clears on reload or leaving
+  the channel; it is not saved, synced or included in backups.
 - **Send wears the site's colour** — Twitch purple on Twitch, Kick green on Kick — so the box
   reads as part of the chat you are in. Kick's green is bright enough that the label goes dark on
   it, and on a light page the green is darkened so white stays readable; every combination clears
@@ -465,7 +606,7 @@ and shows a **Replying to** bar above the box saying who and where.
   fails. Kick's chat endpoint has no reply field at all, so there the mention *is* the reply and
   it stays.
 
-### Sending to one platform or both
+### Sending to Twitch, Kick and YouTube
 
 The **Send to** chips above the box decide where a typed message goes. Each one shows how it
 would actually be delivered:
@@ -481,6 +622,9 @@ word next to it is the destination.
 
 At least one target always stays selected. If a send only partly succeeds, the toast names the
 platform that refused and the reason lands in the feed as a system row.
+The Twitch/Kick chips above retain those behaviors. YouTube adds an optional target
+that starts unselected and shows its native signed-in account when available. Its
+selection is never saved; see [Add YouTube chat](#add-youtube-chat) for its limits.
 
 ## Bits, points and the cards above chat
 
@@ -546,10 +690,14 @@ the one thing that is true whenever the crate is there — drops are running her
 figures stay Twitch’s to draw and Twitch’s to keep current.
 
 The chip appears and disappears with the crate, so it is also how you find out a campaign has
-started on a channel you are already watching. Kick's emote-drop notices use their original
-page controls: with *Leave room for the site's cards* enabled, the panel also reserves space
-for short notices overlapping the top half of chat, including notifications drawn outside the
-chat column. The extension never clicks or redeems these notices automatically.
+started on a channel you are already watching. Kick's emote-drop notices and Twitch's
+followed-channel live notifications use their original page controls. The panel reserves
+space for short notices overlapping the top half of chat, including notifications drawn
+outside the chat column, even when *Leave room for the site's cards* is off. Stacked notices
+remain clickable, and a manually moved panel also makes room when it overlaps them.
+Notification clearance takes priority over the minimum chat height on a short or resized
+panel. The panel returns when a notice disappears. Optional highlight cards still follow the
+setting. The extension never clicks or redeems these notices automatically.
 
 This control takes named matches only — `data-a-target="drops-button"`, then the accessible name
 “Drops” — with none of the “whichever button is spare” fallback the points summary gets. Cheer,
@@ -889,7 +1037,7 @@ explains itself to a viewer it turns away — it only saves you a click to find 
 
 ## Connecting accounts
 
-Reading chat never needs an account. Connecting one buys you two things: sending without
+Reading chat never needs an account. Connecting a Twitch or Kick account buys you two things: sending without
 touching the page's own chat box, and — the part that matters — **sending to the platform you
 are not currently browsing**, so a message can go to Twitch and Kick at once.
 
@@ -931,11 +1079,11 @@ Chrome's comes from the extension's ID and Firefox's from a hash of the add-on's
 | Firefox | `https://91e887612fc28278646a28c0b1f4cceded6586a2.extensions.allizom.org/` |
 
 **Twitch** sends the sign-in straight back to that address, so the Twitch application lists both
-of them — one application can hold several redirect URLs. The overlay's *Settings → Accounts*
-shows the address for the browser it is running in, and says so in Firefox, because it is not the
-one a Chrome user registered. `node tools/pack.js` prints the Firefox one whenever it builds a
-Firefox package. If you registered your own Twitch application, it needs the address for each
-browser you sign in from.
+of them — one application can hold several redirect URLs. Ordinary *Settings → Accounts*
+keeps these setup details out of view. A redirect-related sign-in failure shows the address
+needed to diagnose that failure, with Firefox-specific guidance where applicable.
+`node tools/pack.js` prints the Firefox address whenever it builds a Firefox package. If you
+registered your own Twitch application, it needs the address for each browser you sign in from.
 
 In Firefox a Twitch redirect nobody registered does not fail with an error. The sign-in window
 simply sits on a page that will not load, and all Firefox ever reports is that the window was
@@ -2110,13 +2258,15 @@ was never going to see in a friendly test:
 
 ## Known limits
 
-- **Sending to the other platform needs a connected account.** Without one, a typed message can
+- **Sending between Twitch and Kick needs a connected account.** Without one, a typed message can
   only go to the site you are on, through its own chat box. The target chips say which case you
-  are in, and connecting an account is what unlocks sending to both at once.
+  are in, and connecting an account is what unlocks sending to both at once. YouTube instead
+  uses its attached native composer and requires an available signed-in session and an
+  explicit send-target selection for the current visit.
 - **Sign-in needs a one-off registration step.** Both platforms reject the OAuth redirect until
   the extension's redirect URL is registered with them. The overlay's *Settings -> Accounts*
-  panel shows the URL to register and whatever the platform actually said, and keeps it there
-  until the account connects. Nothing in the extension can do that part for you. Chrome and
+  panel shows the URL when a redirect-related sign-in failure needs attention, alongside what
+  the platform actually said, until the account connects. Chrome and
   Firefox each have a redirect URL of their own, so a Twitch application has to list both — see
   [Where each browser's sign-in comes back to](#where-each-browsers-sign-in-comes-back-to).
 - **Firefox for Android is not supported.** Firefox's sign-in API does not exist there, and the

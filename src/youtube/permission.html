@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>YouTube access · Friendly Chat</title>
+  <link rel="stylesheet" href="permission.css">
+</head>
+<body>
+  <main>
+    <header class="brand">
+      <img src="../../icons/icon48.png" width="36" height="36" alt="">
+      <span>Friendly Chat</span>
+      <span class="release">New in 1.23.0</span>
+    </header>
+    <section class="welcome" aria-labelledby="setup-title">
+      <div class="platforms" aria-label="Twitch, Kick and YouTube">
+        <span class="twitch">Twitch</span><span class="kick">Kick</span><span class="youtube">YouTube</span>
+      </div>
+      <h1 id="setup-title">YouTube joins your merged chat.</h1>
+      <p class="intro">See YouTube live messages alongside Twitch and Kick, on the stream page you already watch.</p>
+      <div class="features">
+        <article>
+          <span class="step" aria-hidden="true">01</span>
+          <h2>Add a live chat</h2>
+          <p>Paste a live-video or channel URL into <strong>YouTube</strong>, or choose <strong>Add YouTube chat</strong> on a live suggestion.</p>
+        </article>
+        <article>
+          <span class="step" aria-hidden="true">02</span>
+          <h2>Save a channel link</h2>
+          <p>In the stream panel's <strong>Settings → Cross-platform</strong>, link a YouTube channel to the Twitch or Kick channel you are watching. Its live chat can load automatically on future visits.</p>
+        </article>
+        <article>
+          <span class="step" aria-hidden="true">03</span>
+          <h2>Choose where to send</h2>
+          <p>Sending starts off. When YouTube's signed-in chat box is available, check the displayed account and select its send target for this visit. Use up to <strong>200 characters</strong>; YouTube's normal chat restrictions still apply.</p>
+        </article>
+      </div>
+      <section class="permission" aria-labelledby="permission-title">
+        <h2 id="permission-title">Allow YouTube access to get started</h2>
+        <p>Access is optional. It lets Friendly Chat find live suggestions and load chat when you press Add or visit a channel with a saved YouTube link.</p>
+        <p class="privacy">Sending needs your YouTube session to be available inside the attached chat. Being signed in on a normal YouTube tab may not be enough, especially in Firefox. Reading still works without sending. Captured messages have no reply or moderation controls.</p>
+        <p class="privacy">A submitted message means YouTube cleared its editor, not that delivery was confirmed. An uncertain send is never retried automatically; check the chat before repeating it. No separate YouTube account connection is needed.</p>
+        <p class="privacy">Channel lookups omit cookies and credentials. Attached chat loads YouTube content inside the stream page and may use cookies allowed by your browser. Captured messages are not saved to extension storage. You can revoke access in your browser's extension settings.</p>
+        <div class="actions">
+          <button id="allow" type="button">Allow YouTube access</button>
+          <button id="continue" class="secondary" type="button">Not now</button>
+        </div>
+        <p id="status" role="status" aria-live="polite">Checking YouTube access…</p>
+      </section>
+    </section>
+    <footer>Set this up later from the Friendly Chat toolbar button or <a href="../options/options.html">extension settings</a>.</footer>
+  </main>
+  <script src="permission.js"></script>
+</body>
+</html>

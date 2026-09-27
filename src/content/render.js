@@ -237,6 +237,7 @@
   const CHATTER_LIMIT = 200;
 
   FCM.rememberChatter = function (platform, author, color) {
+    if (!FCM.SEND_PLATFORMS.includes(platform)) return;
     const key = `${platform}:${String(author).toLowerCase()}`;
     const existing = chatters.get(key);
     if (existing) {
@@ -862,10 +863,24 @@
   };
 
   FCM.renderMessageBody = function (platform, text, opts = {}) {
+    // Captured YouTube text is read-only: never reinterpret it as another
+    // provider's emotes, GIFs, reply targets or other executable row markup.
+    if (platform === 'youtube') return { html: FCM.escapeHtml(text), mentioned: false };
     let tokens;
     if (platform === 'twitch') tokens = tokenizeTwitch(text, opts.emoteMap, opts.gifs);
     else if (platform === 'kick') tokens = tokenizeKick(text, opts.emotes);
     else tokens = [{ type: 'text', text }];
+
+    // Gigantify applies to the last native Twitch emote, including when the
+    // same emote appears earlier. Do this before text expands into third-party
+    // emotes, so those and ordinary messages never inherit the paid effect.
+    if (platform === 'twitch' && opts.gigantifiedEmote === true) {
+      const emote = tokens.findLast(token => token.type === 'emote');
+      if (emote) {
+        emote.cls += ' fcm-emote-gigantified';
+        emote.url = FCM.largerEmoteUrl(emote.url);
+      }
+    }
 
     // A Cheer is only a Cheer because the message paid for it. Somebody typing
     // "Cheer100" with no Bits behind it spends nothing and Twitch draws it as
@@ -1056,6 +1071,7 @@
   }
 
   FCM.renderBadges = function (platform, badgesRaw) {
+    if (platform === 'youtube') return '';
     if (platform === 'twitch') return renderTwitchBadges(String(badgesRaw || ''));
     return renderKickBadges(Array.isArray(badgesRaw) ? badgesRaw : []);
   };
@@ -1197,7 +1213,7 @@
       + firstTag
       + `<span class="fcm-author fcm-author-${platform}"${colorAttr}`
       + ` data-name="${FCM.escapeHtml(msg.author)}" data-platform="${platform}"`
-      + ` title="${FCM.escapeHtml(msg.author)} — click for reply and more">`
+      + ` title="${platform === 'youtube' ? 'YouTube · replies and moderation unavailable' : `${FCM.escapeHtml(msg.author)} — click for reply and more`}">`
       + `${badgeHtml}${chip}${FCM.escapeHtml(msg.author)}</span>`
       + (msg.action ? '' : '<span class="fcm-colon">:</span>')
       + `<span class="fcm-body"${msg.action ? colorAttr : ''}>${body.html}</span>`;

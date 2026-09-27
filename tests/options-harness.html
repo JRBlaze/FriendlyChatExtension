@@ -84,6 +84,17 @@
     runtime: {
       getManifest: () => ({ version: '0.0.0-harness', host_permissions: window.__hostPermissions.slice() }),
       getURL: (p = '') => `${harnessBrowser === 'firefox' ? 'moz-extension' : 'chrome-extension'}://harness/${p}`,
+      // Offline stand-in for the options page's serialized Forget command.
+      // The real worker's sender and concurrency guards have separate tests.
+      sendMessage: async ({ cmd, hostKey, channelUrl }) => {
+        if (cmd !== 'youtubeLinkForgetSaved') return { error: 'unsupported' };
+        const key = window.FCM.STORAGE_KEYS.youtubeLinks;
+        const links = window.FCM.cleanYouTubeLinks(areas.local[key]) || {};
+        if (!links[hostKey] || links[hostKey].channelUrl !== channelUrl) return { error: 'link-changed' };
+        delete links[hostKey];
+        areas.local[key] = links;
+        return { ok: true };
+      },
     },
     permissions: {
       contains: async ({ origins = [] } = {}) => origins.every(isGranted),
