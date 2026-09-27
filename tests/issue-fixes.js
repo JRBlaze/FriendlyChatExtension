@@ -150,7 +150,8 @@ async function run() {
           windows.push({ url, name, features, win }); return win;
         },
         addEventListener: (type, fn) => listeners.set(type, fn), removeEventListener: type => listeners.delete(type),
-      }, document, host, root: { dataset: {} }, destroyed: false, collapsed: false,
+      }, document, host, pageParent: () => document.documentElement,
+      root: { dataset: {} }, destroyed: false, collapsed: false,
       panel: { getBoundingClientRect: () => ({ width: 380, height: 640 }) },
       FCM: { PLATFORM_META: { twitch: { name: 'Twitch' } } }, hostPlatform: 'twitch', channel: 'test',
       $: () => button, ICONS: { popin: '', popout: '' },

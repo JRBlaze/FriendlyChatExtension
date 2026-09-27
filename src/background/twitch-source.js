@@ -234,6 +234,9 @@
             // typing the shape of one. Twitch leaves Cheermotes out of the
             // emotes tag, so without this the renderer has nothing to go on.
             bits: Number(tags.bits) || 0,
+            // The same marker is used for Gigantify redemptions regardless of
+            // how they were paid for; never infer the effect from message text.
+            gigantifiedEmote: tags['msg-id'] === 'gigantified-emote-message',
             color: tags.color || '',
             badgesRaw: badgesTag,
             badgeClass: FCM.twitchBadgeClass(badgesTag, tags),
@@ -321,6 +324,7 @@
             // a line that drew its Cheermote below the join and its text above
             // it would be the same message twice over.
             bits: Number(tags.bits) || 0,
+            gigantifiedEmote: tags['msg-id'] === 'gigantified-emote-message',
             // Deliberately not carried into the replay, even though the tag
             // is there. The highlight is a prompt to do something — say hello,
             // keep an eye on them — and acting on it is meaningless for a

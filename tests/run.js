@@ -185,6 +185,8 @@ function buildDomStub(html) {
 const SHARED = [
   'src/shared/namespace.js',
   'src/shared/constants.js',
+  'src/shared/youtube.js',
+  'src/shared/youtube-links.js',
   'src/shared/util.js',
   'src/shared/irc.js',
   'src/shared/emote-parsers.js',
@@ -197,6 +199,36 @@ const SHARED = [
 const FCM_LINKS_KEY = 'fcm_channel_links_v1';
 
 const suites = {};
+suites.openissues = async function () {
+  await require('./issue-62.test')();
+  await require('./issue-63.test')();
+  await require('./issue-64.test').run();
+  require('./release-coverage').selfTest();
+  ok(true, 'issue #62-64 regression checks');
+};
+suites.youtube = async function () {
+  await require('./youtube-links.test')();
+  await require('./youtube-links-backup.test').run();
+  await require('./youtube-reader.test')();
+  await require('./youtube-transport.test').run();
+    await require('./youtube-send.test')();
+    await require('./youtube-storage-access.test').run();
+  await require('./youtube-send-transport.test')();
+  await require('./youtube-sending-ui.test')();
+  await require('./youtube-resolve-route.test')();
+  await require('./youtube-lookup.test')();
+  await require('./youtube-suggestions.test')();
+  await require('./youtube-hints.test')();
+  await require('./youtube-view.test')();
+  await require('./youtube-controls.test')();
+  await require('./youtube-permission.test')();
+  await require('./youtube-access-card.test')();
+  await require('./youtube-onboarding.test')();
+  await require('./youtube-trial.test')();
+  await require('./youtube-integration.test')();
+  require('./youtube-coverage').selfTest();
+  ok(true, 'YouTube capture and sending unit/integration checks');
+};
 suites.issuefixes = async function () {
   await require('./issue-fixes')();
   require('./issue-fixes-coverage').selfTest();
@@ -1120,20 +1152,19 @@ suites.firefox = function () {
       && /^ {2}let stylesheetFailureLogged = false;$/m.test(code),
     'firefox: once for the page, not once for every channel it goes through');
 
-    // The redirect note. No content script can reach chrome.identity, in either
-    // browser, so the overlay asking it printed an empty box; the address now
-    // comes from the background with the accounts, and so does the browser.
+    // Ordinary account settings omit redirect setup details. The background
+    // still supplies the address for actionable sign-in failure diagnostics.
     missing(code, 'chrome.identity', 'firefox: the overlay no longer asks chrome.identity, which no content script can reach');
-    contains(code, "Twitch must list this browser's redirect URL",
-      "firefox: the note says whose list the redirect URL belongs on");
-    contains(code, '<code class="fcm-code">${FCM.escapeHtml(signInAddress.redirectUri)}</code>',
-      'firefox: and shows the address the background sent');
-    ok(/\$\{signInAddress\.redirectUri \? `<p class="fcm-note">/.test(code),
-      'firefox: leaving the note out until there is an address to show, rather than an empty box');
+    missing(code, "Twitch must list this browser's redirect URL",
+      'firefox: ordinary account settings omit the developer setup note');
+    missing(code, '<code class="fcm-code">${FCM.escapeHtml(signInAddress.redirectUri)}</code>',
+      'firefox: ordinary account settings omit the redirect URL box');
+    contains(code, '<code class="fcm-code">${FCM.escapeHtml(authProblem.redirectUri || \'\')}</code>',
+      'firefox: a redirect-related sign-in failure retains its escaped diagnostic address');
     ok(/const onFirefox = signInAddress\.browser === 'firefox';/.test(code),
       'firefox: telling the browsers apart by what the background said this one is');
-    ok(/\$\{onFirefox\s*\? ` Firefox's address is different from Chrome's; both can be listed on the same app\.` : ''\}/
-      .test(code), "firefox: in Firefox the note adds that it is not Chrome's address, and a Twitch app can list both");
+    missing(code, " Firefox's address is different from Chrome's; both can be listed on the same app.",
+      'firefox: ordinary settings also omit the browser-specific setup note');
     ok(new RegExp('onFirefox && authProblem\\.redirectUri && authProblem\\.redirectUri === signInAddress\\.redirectUri'
       + "\\s*\\? ` This is Firefox's address for the add-on; it is different from Chrome's, and the app can list both\\.`")
       .test(code), "firefox: and a failed sign-in says the same only of the add-on's own address, not the desktop app's or the proxy's");
@@ -1934,8 +1965,8 @@ suites.firefox = function () {
           if (w.browser === 'chrome') {
             eq(w.permissionChecks, [], `firefox: site access: ${what}, the browser is never asked`);
             eq([w.badge.text, typeof w.listeners.permissionsAdded, typeof w.listeners.permissionsRemoved],
-              ['', 'undefined', 'undefined'],
-              `firefox: site access: ${what}, the badge is left alone and no permission event is listened for`);
+              ['', 'function', 'function'],
+              `firefox: site access: ${what}, the badge is unchanged while YouTube cancellation listeners remain active`);
           }
         } finally { w.teardown(); }
       }
@@ -4600,6 +4631,7 @@ suites.options = function () {
       },
     });
     const FCM = load(sandbox, 'src/shared/namespace.js', 'src/shared/constants.js',
+      'src/shared/youtube.js', 'src/shared/youtube-links.js',
       'src/shared/util.js', 'src/options/options.js');
     const press = (id) => {
       handlingClick = true;

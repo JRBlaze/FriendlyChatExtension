@@ -508,6 +508,7 @@ window.chrome = {
     sendMessage: (msg, reply) => {
       if (msg && msg.cmd === 'updateStatus') setTimeout(() => reply && reply(window.fakeUpdate || null), 20);
       else if (msg && msg.cmd === 'updateDismiss') { console.log('dismissed update', msg.version); reply && reply({ ok: true }); }
+      else if (msg && msg.cmd === 'youtubeLinkGet') { if (reply) reply({ ok: true, link: null, counterpart: null }); }
       else if (reply) reply(null);
     },
   },
@@ -527,6 +528,8 @@ window.chrome = {
 const SOURCES = [
   '/src/shared/namespace.js',
   '/src/shared/constants.js',
+  '/src/shared/youtube.js',
+  '/src/shared/youtube-links.js',
   '/src/shared/util.js',
   '/src/shared/irc.js',
   '/src/shared/emote-parsers.js',
@@ -538,6 +541,9 @@ const SOURCES = [
   '/src/content/compose.js',
   '/src/content/native.js',
   '/src/content/native-events.js',
+  '/src/content/youtube-suggestions.js',
+  '/src/content/youtube-source.js',
+  '/src/content/youtube-controls.js',
   '/src/content/overlay.js',
   '/src/content/sites.js',
   '/src/content/gif-errand.js',
@@ -557,8 +563,16 @@ function loadSources(bust) {
 (async function () {
   await loadSources(Date.now());
   const FCM = window.FCM;
+  function harnessSite(id, channel) {
+    const host = window.harnessHost = { platform: id, channel };
+    // The mock page keeps its localhost URL as the displayed host changes.
+    // Copy the adapter so direct route-parser tests still exercise real URLs.
+    return { ...FCM.SITES[id], channelFromUrl() {
+      return window.harnessHost === host ? channel : null;
+    } };
+  }
   let overlay = FCM.createOverlay({
-    site: FCM.SITES.twitch,
+    site: harnessSite('twitch', 'examplestreamer'),
     channel: 'examplestreamer',
     // Commands normally go to the background worker over a port. Here they are
     // captured, and a send can be answered with a canned result so the whole
@@ -657,9 +671,9 @@ function loadSources(bust) {
 
   overlay.setStatus('twitch', 'connected', 'examplestreamer');
   // The account summary the worker answers authStatus with, carrying the
-  // sign-in address only it can ask the browser for — so the settings sheet's
-  // redirect note shows here as it does in the extension (?browser=firefox for
-  // Firefox's address and wording).
+  // sign-in address only it can ask the browser for. Ordinary settings omit it;
+  // a redirect-related failure can still show it (?browser=firefox for Firefox
+  // diagnostic wording).
   overlay.setAccounts({ twitch: { connected: false }, kick: { connected: false } },
     { redirectUri: window.chrome.identity.getRedirectURL(), browser: window.FCM.BROWSER });
 
@@ -1025,7 +1039,7 @@ function loadSources(bust) {
     document.querySelector('.kickcol').style.display = id === 'kick' ? '' : 'none';
     window.destroyAllOverlays();
     overlay = FCM.createOverlay({
-      site: FCM.SITES[id],
+      site: harnessSite(id, id === 'twitch' ? 'examplestreamer' : 'examplestreamer-kick'),
       channel: id === 'twitch' ? 'examplestreamer' : 'examplestreamer-kick',
       onCommand: () => {},
     });
@@ -1059,7 +1073,7 @@ function loadSources(bust) {
       for (let i = 0; i < times; i++) {
         window.destroyAllOverlays();
         overlay = FCM.createOverlay({
-          site: FCM.SITES.twitch,
+          site: harnessSite('twitch', `channel${i}`),
           channel: `channel${i}`,
           onCommand: () => {},
         });

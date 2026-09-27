@@ -100,6 +100,11 @@
     // Which platforms a typed message goes to, and which have a connected
     // account to send it with.
     let sendTargets = new Set(FCM.SEND_PLATFORMS);
+    // YouTube uses the embedded page's account. Selection lasts only while
+    // that exact reader/account capability is current and is never stored.
+    let youtubeSelected = false;
+    let youtubeSendState = { available: false, reason: 'composer-unavailable', accountLabel: '', sourceId: '' };
+    let youtubeReady = false;
     // Who the current message is addressed to, as platform -> display name.
     // A reply has to land in the chat the person actually spoke in, so while
     // this is non-empty it overrides the chosen send targets entirely.
@@ -193,6 +198,12 @@
     host.id = 'friendly-chat-merge-host';
     host.style.cssText = 'all:initial;position:static;';
     const shadow = host.attachShadow({ mode: 'open' });
+
+    function pageParent() {
+      // Firefox can insert text outside body but cannot delete it (Mozilla
+      // bug 1634351). Resolve again when docking after a pop-out or body change.
+      return FCM.BROWSER === 'firefox' ? (document.body || document.documentElement) : document.documentElement;
+    }
 
     const root = document.createElement('div');
     root.className = 'fcm-root';
@@ -317,6 +328,19 @@
 
     const feed = FCM.createFeed(feedEl, () => settings);
     feed.onCount((n) => { countEl.textContent = `${n} message${n === 1 ? '' : 's'}`; });
+    // The optional reader owns a separate lifecycle; it never joins a sending
+    // connection or changes the Twitch/Kick counterpart for this channel.
+    const youtube = FCM.attachYouTubeControls
+      ? FCM.attachYouTubeControls({ site, channel, container: chipsEl.parentNode.insertBefore(document.createElement('div'), promptEl), feed, filter, onFilterChange: renderChips,
+        onSendState(state) {
+          if (destroyed) return;
+          if (state.sourceId !== youtubeSendState.sourceId || state.accountLabel !== youtubeSendState.accountLabel
+            || (!state.available && state.reason !== 'busy')) youtubeSelected = false;
+          youtubeSendState = state;
+          if (youtubeReady) { renderTargets(); refreshSendNote(); }
+        } })
+      : null;
+    youtubeReady = true;
 
     // ── Scrolling back through the chat ───────────────────────────────────────
     //
@@ -533,7 +557,7 @@
      * scrolls on every message that arrives.
      */
     function refreshCards() {
-      const found = settings.revealHighlights === false ? null : native.cards();
+      const found = native.cards(settings.revealHighlights !== false);
       lastCards = found;
       const next = found ? found.elements : [];
       const changed = next.length !== cardEls.length
@@ -558,7 +582,6 @@
      * The result is capped: a tall card must not squeeze the feed out entirely.
      */
     function cardInsetFor(columnRect) {
-      if (settings.revealHighlights === false) { lastCardInset = 0; return 0; }
       if (!cardEls.length) { lastCardInset = 0; return 0; }
       let bottom = -Infinity;
       for (const el of cardEls) {
@@ -572,6 +595,8 @@
       const gap = bottom === -Infinity ? 0 : bottom - columnRect.top;
       const room = Math.round(columnRect.height) - MIN_PANEL_HEIGHT;
       lastCardInset = gap <= 2 ? 0 : Math.max(0, Math.min(Math.round(gap), room));
+      // A minimum chat height must never force it over a notification.
+      if (lastCards.noticeBottom) lastCardInset = Math.max(lastCardInset, lastCards.noticeBottom - columnRect.top);
       return lastCardInset;
     }
 
@@ -597,15 +622,15 @@
       if (endDrag) return;
 
       const box = clampToViewport(manualRect);
-      const cards = settings.revealHighlights === false ? null : lastCards;
+      const cards = lastCards;
       if (cards && overlapsCards(box, cards)) {
         const bottom = box.top + box.height;
         // The bottom edge is theirs and stays put, so the panel gives up height
         // rather than walking down the page. It gives up no more than it can
         // spare: a partial dodge still shows most of the card.
-        const top = Math.max(box.top, Math.min(cards.bottom, bottom - MIN_PANEL_HEIGHT));
+        const top = Math.max(box.top, Math.min(cards.bottom, bottom - MIN_PANEL_HEIGHT), cards.noticeBottom || 0);
         box.top = Math.round(top);
-        box.height = Math.round(bottom - top);
+        box.height = Math.max(0, Math.round(bottom - top));
       }
 
       if (collapsed) {
@@ -671,7 +696,7 @@
         left: r.left,
         top: r.top + inset,
         width: r.width,
-        height: r.height - inset,
+        height: Math.max(0, r.height - inset),
       };
       observeTarget(target);
       // While collapsed the panel is auto-height, so only track position and
@@ -1400,8 +1425,9 @@
         if (win) { try { win.close(); } catch (e) { /* already gone */ } }
         return;
       }
-      if (host.parentNode !== document.documentElement) {
-        document.documentElement.appendChild(host);
+      const parent = pageParent();
+      if (host.parentNode !== parent) {
+        parent.appendChild(host);
       }
       refreshPopButton();
       // The panel has been sitting with the page's geometry overridden, so it
@@ -1490,6 +1516,9 @@
     }
 
     async function saveSendTargets() {
+      // A YouTube-only choice is local to this visit. An empty binary record
+      // would erase the user's established Twitch/Kick preference.
+      if (!sendTargets.size) return;
       try {
         const stored = await chrome.storage.local.get(SEND_TARGETS_KEY);
         const all = stored[SEND_TARGETS_KEY] || {};
@@ -1968,10 +1997,6 @@
             ${authProblem.raw && authProblem.raw !== authProblem.message
               ? `<p class="fcm-authfail-raw">${FCM.escapeHtml(authProblem.raw)}</p>` : ''}
           </div>` : ''}
-          ${signInAddress.redirectUri ? `<p class="fcm-note">Twitch must list this browser's redirect URL
-            before sign-in will work:
-            <code class="fcm-code">${FCM.escapeHtml(signInAddress.redirectUri)}</code>${onFirefox
-              ? ` Firefox's address is different from Chrome's; both can be listed on the same app.` : ''}</p>` : ''}
 
           <div class="fcm-section-title">Cross-platform</div>
           <div class="fcm-field">
@@ -1997,6 +2022,12 @@
               <button class="fcm-btn fcm-btn-ghost" data-act="clear-link">Reset</button>
             </span>
           </div>
+          ${youtube ? `<div class="fcm-field fcm-field-col">
+            <label>YouTube channel for this streamer
+              <small>Save a channel to add its live chat automatically on future visits.</small>
+            </label>
+            <button class="fcm-btn" data-act="youtube-link">Link a YouTube channel</button>
+          </div>` : ''}
 
           <div class="fcm-section-title">Overlay</div>
           <div class="fcm-field">
@@ -2216,6 +2247,11 @@
         toast('Reset — looking the channel up again');
         closeSheet();
       });
+      if (youtube) sheet.querySelector('[data-act="youtube-link"]').addEventListener('click', () => {
+        closeSheet();
+        setCollapsed(false);
+        youtube.openLinks();
+      });
     }
 
     // ── Settings application ──────────────────────────────────────────────────
@@ -2274,7 +2310,7 @@
     // empty chat column would be worse than the duplicate it was hiding.
     function applyNativeChatVisibility() {
       const hide = !!settings.hideNativeChat && !collapsed && visible && !peeking;
-      native.setNativeHidden(hide, settings.revealHighlights === false ? [] : cardEls);
+      native.setNativeHidden(hide, cardEls);
     }
 
     // ── Misc UI ───────────────────────────────────────────────────────────────
@@ -2457,8 +2493,8 @@
     function refreshSendNote() {
       const active = effectiveTargets();
       const replying = replyTo.size > 0;
-      const live = FCM.SEND_PLATFORMS.filter(
-        (p) => active.has(p) && ['api', 'native'].includes(routeFor(p))
+      const live = [...FCM.SEND_PLATFORMS, 'youtube'].filter(
+        (p) => active.has(p) && ['api', 'native', 'youtube'].includes(routeFor(p))
       );
       // An emote on its own is only going where it exists, so the row says so
       // rather than promising both chats and then quietly sending to one.
@@ -2486,6 +2522,7 @@
         : (replying ? 'reply has nowhere to go' : 'nowhere to send');
       sendNoteEl.title = going.map((p) => {
         const meta = FCM.PLATFORM_META[p];
+        if (p === 'youtube') return `YouTube: as ${youtubeSendState.accountLabel || 'the signed-in YouTube account'}; 200 characters maximum`;
         return routeFor(p) === 'api'
           ? `${meta.name}: as ${accounts[p].login || 'your connected account'}`
           : `${meta.name}: through this page's own chat box`;
@@ -2500,6 +2537,7 @@
     //            chat box can be driven instead
     // 'blocked'— the other platform with no account: nothing we can do
     function routeFor(platform) {
+      if (platform === 'youtube') return youtubeSendState.available ? 'youtube' : 'blocked';
       if (!status[platform].channel) return 'no-channel';
       if (accounts[platform] && accounts[platform].connected) return 'api';
       return platform === hostPlatform ? 'native' : 'blocked';
@@ -2508,7 +2546,8 @@
     // Where a typed message actually goes. A reply wins over the chips: clicking
     // a Kick viewer's name and typing must not post to Twitch.
     function effectiveTargets() {
-      return replyTo.size ? new Set(replyTo.keys()) : sendTargets;
+      if (replyTo.size) return new Set(replyTo.keys());
+      return youtubeSelected ? new Set([...sendTargets, 'youtube']) : sendTargets;
     }
 
     function renderReplyBar() {
@@ -2623,7 +2662,7 @@
             const others = FCM.SEND_PLATFORMS.filter(
               (p) => p !== platform && sendTargets.has(p) && ['api', 'native'].includes(routeFor(p))
             );
-            if (!others.length) { toast('At least one target has to stay selected'); return; }
+            if (!others.length && !(youtubeSelected && youtubeSendState.available)) { toast('At least one target has to stay selected'); return; }
             sendTargets.delete(platform);
           } else {
             sendTargets.add(platform);
@@ -2637,9 +2676,73 @@
 
         targetsEl.appendChild(btn);
       });
+      if (youtube) renderYouTubeTarget(active);
+    }
+
+    function youtubeNeedsAccessSetup() {
+      return FCM.BROWSER === 'firefox' && !youtubeSendState.available
+        && ['needed', 'denied', 'error'].includes(youtubeSendState.access);
+    }
+
+    function youtubeAccessSetupOpen() {
+      return FCM.BROWSER === 'firefox' && !youtubeSendState.available
+        && ['requesting', 'reloading'].includes(youtubeSendState.access);
+    }
+
+    function renderYouTubeTarget(active) {
+      const setupAccess = youtubeNeedsAccessSetup();
+      const cancelAccess = youtubeAccessSetupOpen();
+      const accessHelp = {
+        unknown: 'Firefox is checking whether the embedded chat can use your YouTube sign-in.',
+        needed: 'Firefox needs permission to use your signed-in YouTube account here. Click to enable sending.',
+        granted: 'Firefox has access to your YouTube sign-in. Sending still needs a signed-in account and an available YouTube chat box.',
+        denied: 'Firefox did not allow YouTube sign-in access here. Click to try enabling sending again.',
+        unsupported: 'Firefox cannot request YouTube sign-in access here. Receiving chat can still work.',
+        error: 'Firefox could not check YouTube sign-in access. Click to try enabling sending again.',
+        requesting: 'Cancel the YouTube sign-in access setup in Firefox. This does not send a chat message.',
+        reloading: 'YouTube chat is reloading with Firefox sign-in access. Click to cancel setup.',
+        failed: 'YouTube sending setup did not finish. Remove and add YouTube chat to try again.',
+      };
+      const btn = document.createElement('button');
+      btn.className = 'fcm-target';
+      btn.dataset.platform = 'youtube';
+      btn.dataset.on = String(active.has('youtube'));
+      btn.dataset.route = routeFor('youtube');
+      btn.disabled = !youtubeSendState.available && !setupAccess && !cancelAccess;
+      const label = document.createElement('span');
+      label.textContent = 'YouTube';
+      const tag = document.createElement('span');
+      tag.className = 'fcm-target-tag';
+      tag.textContent = cancelAccess ? 'cancel setup' : setupAccess ? 'enable sending' : youtubeSendState.accountLabel ? `as ${youtubeSendState.accountLabel}`
+        : youtubeSendState.reason === 'signed-out' ? 'sign in on YouTube' : 'unavailable';
+      btn.appendChild(label);
+      btn.appendChild(tag);
+      btn.title = youtubeSendState.available
+        ? 'Select to send through the embedded YouTube chat as the account shown. Maximum 200 characters.'
+        : (FCM.BROWSER === 'firefox' && accessHelp[youtubeSendState.access])
+          || 'YouTube sending needs a connected chat, a signed-in YouTube account and an available chat box.';
+      btn.addEventListener('click', (event) => {
+        if (!event.isTrusted || destroyed) return;
+        if (youtubeAccessSetupOpen()) { youtube.closeAccessSetup(); return; }
+        if (youtubeNeedsAccessSetup()) {
+          if (!youtube.openAccessSetup()) toast('YouTube access setup could not open. Check the attached chat and try again.');
+          return;
+        }
+        if (!youtubeSendState.available) return;
+        if (replyTo.size) { clearReplyTo(); toast('Reply cancelled — select YouTube to send there'); return; }
+        if (youtubeSelected && !FCM.SEND_PLATFORMS.some(p => sendTargets.has(p) && ['api', 'native'].includes(routeFor(p)))) {
+          toast('At least one target has to stay selected'); return;
+        }
+        youtubeSelected = !youtubeSelected;
+        renderTargets();
+        refreshSendNote();
+      });
+      targetsEl.appendChild(btn);
     }
 
     const SEND_FAILURE_TEXT = {
+      'youtube-not-sent': () => 'YouTube did not submit the message. Check its sign-in, chat restrictions and any existing draft.',
+      'youtube-uncertain': () => 'YouTube submission could not be confirmed. Check YouTube chat before sending it again.',
       // Native-composer failures
       'no-composer': (name) => `No ${name} chat box on this page — sending needs the site's own composer.`,
       'composer-disabled': (name) => `${name}'s chat box is disabled — sign in, or the channel may be in a restricted mode.`,
@@ -2714,18 +2817,59 @@
       });
     }
 
-    async function doSend() {
+    // Text only, scoped to this overlay/channel visit. Never persist drafts or
+    // restore old destination/reply metadata when recalling a sent message.
+    const sentHistory = [];
+    let historyIndex = -1, historyDraft = '';
+    function resetHistoryBrowse() {
+      historyIndex = -1;
+      historyDraft = '';
+    }
+    function recallSent(e) {
+      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return false;
+      if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey || e.isComposing
+        || destroyed || sendEl.disabled || replyTo.size || !sentHistory.length) return false;
+      // Picker insertions can change the draft without an input event.
+      if (historyIndex >= 0 && inputEl.value !== sentHistory[historyIndex]) resetHistoryBrowse();
+      if (historyIndex < 0) {
+        if (e.key === 'ArrowDown') return false;
+        historyDraft = inputEl.value;
+        historyIndex = sentHistory.length;
+      }
+      e.preventDefault();
+      if (e.key === 'ArrowUp') historyIndex = Math.max(0, historyIndex - 1);
+      else historyIndex++;
+      if (historyIndex === sentHistory.length) {
+        inputEl.value = historyDraft;
+        resetHistoryBrowse();
+      } else inputEl.value = sentHistory[historyIndex];
+      inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
+      refreshSendNote();
+      return true;
+    }
+
+    async function doSend(event) {
+      if (sendEl.disabled) return;
       const text = inputEl.value.trim();
       if (!text) return;
 
       const active = effectiveTargets();
       const replying = replyTo.size > 0;
-      const wanted = FCM.SEND_PLATFORMS.filter((p) => active.has(p));
+      const wanted = [...FCM.SEND_PLATFORMS, 'youtube'].filter((p) => active.has(p));
       // Nothing but emotes goes only where they exist. This only ever narrows,
       // and never past what the viewer asked for: somebody who has picked one
       // chat gets that chat, bare word and all, because they said so.
       const emoteHome = FCM.emoteOnlyPlatform(text);
       const chosen = emoteHome && wanted.includes(emoteHome) ? [emoteHome] : wanted;
+      if (chosen.includes('youtube')) {
+        // Sending from an open shadow root still requires a real action.
+        // Validate the whole mixed send before handing any site its copy.
+        if (!event || !event.isTrusted || destroyed) return;
+        if (!youtubeSendState.available) { toast('YouTube chat is not ready to send. Select it again when available.'); return; }
+        if (text.length > 200 || /[\u0000-\u001f\u007f-\u009f]/.test(text)) {
+          toast('YouTube messages must be at most 200 characters and contain no control characters.'); return;
+        }
+      }
       const routes = new Map(chosen.map((p) => [p, routeFor(p)]));
 
       // A Cheer cannot go through the API. Twitch has no endpoint that spends
@@ -2748,6 +2892,8 @@
 
       const apiTargets = chosen.filter((p) => routes.get(p) === 'api');
       const nativeTargets = chosen.filter((p) => routes.get(p) === 'native');
+      const youtubeTarget = chosen.includes('youtube');
+      const youtubeSource = youtubeSendState.sourceId;
 
       // What each platform is actually sent. Kick needs its emotes written as
       // the tokens it draws — see FCM.toKickMessage — and the box keeps what
@@ -2756,7 +2902,7 @@
         ? FCM.toKickMessage(text, FCM.view.emotes.kick.native)
         : text);
 
-      if (!apiTargets.length && !nativeTargets.length) {
+      if (!apiTargets.length && !nativeTargets.length && !youtubeTarget) {
         const blocked = chosen.filter((p) => routes.get(p) === 'blocked');
         const who = blocked[0] || chosen[0];
         const name = who ? FCM.PLATFORM_META[who].name : '';
@@ -2778,13 +2924,33 @@
       // Clear straight away so a slow send does not swallow the next message,
       // and put the text back if none of the targets accepted it.
       inputEl.value = '';
+      resetHistoryBrowse();
       if (compose) compose.closeAll();
 
       const failures = [];
       let delivered = 0;
+      let youtubeUncertain = false;
 
       try {
         const work = [];
+        if (youtubeTarget) {
+          work.push(Promise.resolve().then(() => youtubeSource === youtubeSendState.sourceId && youtubeSendState.available
+            ? youtube.send(text) : { outcome: 'not-sent' }).then(result => {
+            if (destroyed) return;
+            if (result && result.outcome === 'submitted') delivered++;
+            else if (result && result.outcome === 'not-sent') failures.push({ platform: 'youtube', reason: 'youtube-not-sent' });
+            else {
+              youtubeUncertain = true;
+              failures.push({ platform: 'youtube', reason: 'youtube-uncertain' });
+              feed.addSys('YouTube submission could not be confirmed. Check YouTube chat before sending it again.');
+            }
+          }, () => {
+            if (destroyed) return;
+            youtubeUncertain = true;
+            failures.push({ platform: 'youtube', reason: 'youtube-uncertain' });
+            feed.addSys('YouTube submission could not be confirmed. Check YouTube chat before sending it again.');
+          }));
+        }
         if (apiTargets.length) {
           // Only where the reply names a specific message. Replying from the
           // autocomplete has no parent to thread onto, and that is still a
@@ -2802,7 +2968,7 @@
           // The box keeps what the viewer typed, and so does the text put back
           // if the send fails.
           const twitchText = replies.twitch
-            ? FCM.dropLeadingMention(text, (replyTo.get('twitch') || {}).name)
+            ? FCM.dropLeadingMention(text, replyTo.get('twitch').name)
             : text;
           // Grouped by the message each platform is actually sent, so the two
           // that differ cost two calls and the ordinary send stays the one it
@@ -2815,7 +2981,7 @@
           });
           const batches = [...byBody.entries()].map(([body, targets]) => [targets, body]);
           batches.forEach(([targets, body]) => {
-            if (!targets.length) return;
+            // Every group was created by pushing at least one target above.
             work.push(sendViaApi(targets, body, replies).then((results) => {
               targets.forEach((p) => {
                 const r = results[p] || { ok: false, reason: 'timeout' };
@@ -2848,13 +3014,21 @@
         focusInput(true);
       }
 
+      if (destroyed) return;
       // A Cheer Twitch never confirmed is the one failure whose text is not put
       // back. It may well have gone out — Twitch clears its own box when it is
       // ready, not when we stop watching — and Send pressed again on a message
       // that spends Bits spends them again. The line below says so, and the
       // viewer's own balance is the answer.
       const unconfirmedCheer = failures.some((f) => f.reason === 'cheer-unconfirmed');
-      if (!delivered && !unconfirmedCheer && !inputEl.value) inputEl.value = text;
+      // Exclude paid Cheers and uncertain submissions from convenient replay.
+      // A combined send is one entry even if several destinations accepted it.
+      if (delivered && !cheer && !unconfirmedCheer && !youtubeUncertain
+        && sentHistory[sentHistory.length - 1] !== text) {
+        sentHistory.push(text);
+        if (sentHistory.length > 50) sentHistory.shift();
+      }
+      if (!delivered && !unconfirmedCheer && !youtubeUncertain && !inputEl.value) inputEl.value = text;
       // The reply is finished with once the message has gone out; keep it if
       // nothing was delivered so a retry still goes to the right chat.
       if (delivered) clearReplyTo();
@@ -2889,6 +3063,7 @@
     sendEl.addEventListener('click', doSend);
     gifBtn.addEventListener('click', () => { openGifKeyboard(); });
     inputEl.addEventListener('input', () => {
+      resetHistoryBrowse();
       // Clearing the box abandons the reply, so the targets go back to normal.
       if (!inputEl.value.trim()) clearReplyTo();
       // Where a message is going can depend on the message: an emote on its own
@@ -2901,12 +3076,13 @@
       // Tab, the arrows, Enter and Escape belong to the suggestion list while it
       // is open, so it gets first refusal on every key.
       if (compose && compose.handleKey(e)) return;
+      if (recallSent(e)) return;
       if (e.key === 'Escape' && replyTo.size) { e.preventDefault(); clearReplyTo(); return; }
       if (e.key === 'Enter') {
         // Both, not just the unshifted one: a contenteditable would happily
         // take Shift+Enter as a new line, and this box is a single line.
         e.preventDefault();
-        if (!e.shiftKey) doSend();
+        if (!e.shiftKey) doSend(e);
       }
     });
     inputEl.addEventListener('keyup', (e) => e.stopPropagation());
@@ -2924,7 +3100,7 @@
         // nothing is left holding a reference to remove.
         if (destroyed) return api;
         FCM.setViewSettings(settings);
-        document.documentElement.appendChild(host);
+        pageParent().appendChild(host);
         await Promise.all([loadGeometry(), loadSendTargets(), displayFont.refresh()]);
         if (destroyed) { host.remove(); return api; }
         applySettings(settings);
@@ -3026,6 +3202,9 @@
         // not a reason to throw it away.
         flushSettings();
         destroyed = true;
+        sentHistory.length = 0;
+        resetHistoryBrowse();
+        if (youtube) youtube.destroy();
         displayFont.destroy();
         // Only the handle. The window is Twitch's own chat, it may have a GIF
         // half-picked in it, and the channel it was opened for is still the
@@ -3109,6 +3288,7 @@
 
       setCounterpart(info, wentLive) {
         counterpart = info;
+        if (youtube) youtube.updateCounterpart(info);
         renderChips();
         if (info && info.exists && info.live) {
           const other = FCM.PLATFORM_META[otherPlatform].name;
@@ -3204,7 +3384,7 @@
       setAccounts(next, about) {
         accounts = next || accounts;
         // Kept from the last summary that carried an address, so one without it
-        // cannot blank the note the settings sheet shows.
+        // cannot blank the redirect guidance for a sign-in failure.
         if (about && about.redirectUri) {
           signInAddress = { redirectUri: String(about.redirectUri), browser: about.browser || FCM.BROWSER };
         }

@@ -1,15 +1,16 @@
 {
   "manifest_version": 3,
   "name": "Friendly Chat Extension",
-  "version": "1.22.6",
-  "description": "Merged Twitch and Kick chat in one overlay on the stream you are watching, with emotes, history, and sending to both.",
+  "version": "1.23.0",
+  "description": "Merge Twitch, Kick, and optional YouTube live chat, with emotes, linked channels, and multi-platform messaging.",
   "minimum_chrome_version": "116",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0vdefhQX2a3wYoBWqcRPP5DrXABtsBjLzSDmZrqnG3T4vpBLOsgUGShsxCHkMB9DRJFujPYi/aizVVVIcvtFEcpVDmtnavLpIw8iBAoOhiAesi8Kt1OAvXps0CvmVJN3KCNWDf27uWqHxqChDZHPaZXKaqmy/fyZSAb79W+2OPXCs51IBzE8uUUEiv7t1Qg8RMdeXSIWBFBCqHagebuKXf4HlkzdsGXJ0jmMewK3TktyCRu8Js85oU66nsdkxUkdh43e/98s1QZAJpzlQ/CHkEGZFZAFTBbGDSdqvx/O/SEnseyMsR40dO9is6SK5OY3MpFKUBemnnvt4g1Xa1F0sQIDAQAB",
   "permissions": [
     "storage",
     "alarms",
     "identity",
-    "cookies"
+    "cookies",
+    "scripting"
   ],
   "host_permissions": [
     "*://*.twitch.tv/*",
@@ -26,6 +27,7 @@
     "https://recent-messages.robotty.de/*",
     "https://api.github.com/*"
   ],
+  "optional_host_permissions": ["https://www.youtube.com/*"],
   "background": {
     "service_worker": "src/background/service-worker.js"
   },
@@ -38,6 +40,8 @@
       "js": [
         "src/shared/namespace.js",
         "src/shared/constants.js",
+        "src/shared/youtube.js",
+        "src/shared/youtube-links.js",
         "src/shared/util.js",
         "src/shared/irc.js",
         "src/shared/emote-parsers.js",
@@ -49,6 +53,9 @@
         "src/content/compose.js",
         "src/content/native.js",
         "src/content/native-events.js",
+        "src/content/youtube-suggestions.js",
+        "src/content/youtube-source.js",
+        "src/content/youtube-controls.js",
         "src/content/overlay.js",
         "src/content/sites.js",
         "src/content/gif-errand.js",
@@ -82,6 +89,7 @@
     {
       "resources": [
         "src/content/overlay.css",
+        "src/youtube/permission.html",
         "icons/*"
       ],
       "matches": [

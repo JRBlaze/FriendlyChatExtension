@@ -9,6 +9,7 @@
   FCM.PLATFORM_META = {
     twitch: { name: 'Twitch', short: 'TW', color: '#9146ff', host: 'twitch.tv' },
     kick:   { name: 'Kick',   short: 'KI', color: '#53fc18', host: 'kick.com' },
+    youtube: { name: 'YouTube', short: 'YT', color: '#ff5555', host: 'youtube.com' },
   };
 
   // Twitch's own web client id. It is public (it ships in every page load of
@@ -186,6 +187,9 @@
   FCM.STORAGE_KEYS = {
     settings: 'fcm_settings_v1',
     links:    'fcm_channel_links_v1',
+    youtubeLinks: 'fcm_youtube_links_v1',
+    // This installation's one-time YouTube introduction; never synced or backed up.
+    youtubeOnboarding: 'fcm_youtube_onboarding_v1',
     choices:  'fcm_connect_choices_v1',
     // Tokens live in storage.local, never storage.sync: they are per-device
     // credentials and must not be replicated across a user's browsers.
@@ -319,7 +323,7 @@
 
   // Kick URL segments that are pages, not channels.
   FCM.KICK_RESERVED = new Set([
-    '', 'browse', 'following', 'categories', 'category', 'search', 'settings',
+    '', 'browse', 'following', 'categories', 'category', 'search', 'settings', 'drops',
     'dashboard', 'clips', 'about', 'help', 'careers', 'privacy', 'terms',
     'community-guidelines', 'transparency-report', 'creator', 'subscriptions',
     'wallet', 'messages', 'notifications', 'video', 'popout',

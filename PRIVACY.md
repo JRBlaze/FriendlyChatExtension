@@ -1,17 +1,127 @@
 # Privacy Policy — Friendly Chat Extension
 
-_Last updated: September 20, 2026_
+_Last updated: September 26, 2026_
 
-Friendly Chat Extension shows a merged Twitch and Kick chat on the stream you
-are watching. This page explains what information it uses, where that
-information goes, and what it never does.
+Friendly Chat Extension shows merged Twitch and Kick chat on the stream you
+are watching, with optional YouTube chat and explicitly selected native sending. This page explains what
+information it uses, where that information goes, and what it never does.
 
 The short version: **your information stays in your browser, except when the
-extension sends it to Twitch, Kick, or the emote and chat services listed below
+extension sends it to Twitch, Kick, YouTube, or the emote and chat services listed below
 so the chat can work. There are no ads, no analytics, and no tracking, and
 nothing is sold.**
 
 ## What the extension uses
+
+### Optional YouTube chat
+
+Installation or the first update containing this feature opens a local setup page
+with an optional access button. No permission is requested until you click it.
+The popup and settings offer the same control. A local version marker
+(`fcm_youtube_onboarding_v1`, value `1.23.0`) prevents repeated introductions;
+it contains no channel or account information and is not synced, backed up or sent
+to a server. Opening setup itself makes no YouTube request.
+
+YouTube requires optional site access. After you grant it, visiting a
+Twitch/Kick channel allows bounded public-page lookups for
+YouTube suggestions. The extension considers visible YouTube channel links outside
+site chat. If no valid channel link is available, it tries the current and
+matched Twitch/Kick usernames as possible YouTube handles. YouTube receives the requested channel/video and your network address.
+These metadata requests omit cookies and credentials. Without site access, they
+do not contact YouTube.
+
+Three delayed scans let the channel page finish loading. At most six distinct
+candidates are checked per visit; up to 64 results are cached in background memory
+for 30 seconds to reduce repeat requests. The cache is not stored, synced or
+included in backups, and disappears when the background stops. There is no
+continuous polling. Dismiss, manual Add and Remove pause these suggestions until
+you choose Check YouTube or visit another channel. No suggested identity is saved.
+
+An explicit Add action or a saved YouTube link loads two hidden YouTube
+chat frames. One only captures messages; the other provides the native composer
+for explicitly selected sending. Message rows in the sending frame are not
+forwarded to the merged feed, so its temporary send previews cannot duplicate
+captured messages. Both frames use normal YouTube page requests and may consume
+more browser resources than a single chat frame. Both close when capture stops.
+Saving opts the selected Twitch/Kick host into a fresh live lookup and
+automatic capture on future visits. A paired host is included only when you select
+the named Also link option. Offline or failed lookups do not load a frame, and site
+access is always required. Saved links take priority over suggestions.
+The extension reads the frame's displayed author names, message IDs, plain
+message text, emoji alternatives and explicit deletion markers. It does not read
+YouTube account tokens, moderate chat or change a normal YouTube page's layout.
+The reader runs in the extension's isolated content-script world
+only in a marked chat frame. A channel URL is resolved again when you choose Add,
+Save, Check for a saved link, or visit a host with a saved link;
+a failed lookup does not load chat. Direct video input does not need discovery.
+
+YouTube sending is off by default and is never enabled by granting site access,
+adding chat or saving a channel link. When the sending frame exposes a signed-in editable
+composer, the extension reads its displayed account label and shows it beside the
+YouTube send target. You must select that target for the current visit. This choice
+and account label stay in memory, are not synced or backed up, and the choice resets
+when the source or account changes.
+
+An explicit send passes the typed text through the extension's local message bridge
+to the sending frame's native composer and presses its Send button once. YouTube receives the
+message under the displayed account, using its normal website session and requests.
+Friendly Chat does not read or copy YouTube tokens or cookies for sending and adds
+no API, hosted relay or browser permission. Messages are limited to 200 characters;
+normal YouTube restrictions remain in effect. Existing native drafts are preserved.
+The extension treats a cleared editor as submitted, without claiming server delivery,
+and never retries an uncertain result. The native composer must be available in the
+embedded context; a separate signed-in YouTube tab does not guarantee that, particularly
+when the browser partitions or blocks third-party cookies. Captured messages have no
+reply or moderation controls in Friendly Chat.
+
+In Firefox, an optional **Enable sending** setup briefly shows the sender frame
+with a Friendly Chat permission button. Clicking that button inside the frame
+uses the browser's Storage Access API to let YouTube use its own sign-in cookies
+on the current Twitch or Kick site. Enhanced Tracking Protection remains enabled.
+These are separate browser-managed site grants, which can expire or be revoked;
+they are not saved in extension settings, sync, or backups. The extension reads
+only access/permission status, never cookie contents or account credentials.
+When Firefox reports a previously granted permission and the native sender is
+unavailable, the extension can reactivate that existing grant without a prompt.
+It never requests new access automatically when permission is prompt, denied,
+unknown, or unsupported. After a grant, the same sender frame reloads once to
+load YouTube with that browser-approved session. The capture frame keeps running.
+Setup can be cancelled, and failed access leaves reading available. Successful
+setup still requires checking the native account and explicitly selecting YouTube
+before sending; it does not send a message or change Twitch/Kick send choices.
+
+Temporary input and captured rows stay in the current tab's memory/feed,
+not extension storage, sync or settings backups. Explicit saved links store only
+the Twitch/Kick host, canonical YouTube channel URL and save time in local storage
+(`fcm_youtube_links_v1`, at most 400 hosts). They are included in portable settings
+backups and do not sync automatically. No video IDs, chat history or tokens are
+stored in those records. Remove stops the current capture; Forget removes the
+current host's saved link. The options page also offers individual removal.
+Changing channels or reloading stops that reader; a saved host can then start a
+fresh reader for its current live stream. Browser caching and YouTube's own retention
+are separate. YouTube receives normal embedded-page requests, including your
+network address, video selection and embedding site; browser-permitted cookies
+may accompany them. Its page loads its own normal website scripts and resources.
+No Google API key or additional hosted relay is used.
+
+As with the existing merged feed, the overlay has an open shadow root: the Twitch
+or Kick page can access the messages displayed on it. Captured rows are not sent
+by the extension to an analytics service or stored by a Friendly Chat server.
+You can revoke YouTube site access in the browser's extension settings.
+
+### Sent-message recall
+
+The composer keeps up to 50 recently sent message texts in the current tab's
+memory so Up/Down can recall them for editing or an explicit resend. It keeps
+texts accepted by at least one destination, excluding uncertain YouTube sends
+and Cheers; consecutive identical texts use one entry. The draft you were typing
+is held while browsing and restored when you move back past the newest entry.
+This history is discarded when the overlay is destroyed, including on channel
+navigation or page reload. It is not written to extension storage, synced,
+included in backups or sent to any service by recalling it. A resend uses the
+currently selected destinations and their existing sending paths.
+
+### Existing Twitch/Kick data
 
 - **Your Twitch and Kick sign-ins.** When you connect an account, the extension
   receives a sign-in token from Twitch or Kick. It uses the token only to read
@@ -42,6 +152,9 @@ that same platform:
 
 - **Twitch** (twitch.tv) and **Kick** (kick.com): to read and send chat and
   sign you in.
+- **YouTube / Google** (youtube.com and its normal page-resource services):
+  for optional permitted channel suggestions, explicitly attached chat, and messages you
+  choose to send through its native composer, as described above.
 - **7TV**, **BetterTTV**, and **FrankerFaceZ**: to load emotes for a channel.
 - **recent-messages.robotty.de**: to show recent Twitch chat when you open a
   channel.
@@ -63,7 +176,9 @@ receive.
   unrelated to showing and sending chat.
 - It never sends your information to any service other than the ones listed
   above.
-- It never runs code downloaded from the internet.
+- Its extension code is bundled with the installed package; it does not download
+  and execute remote code as extension code. The embedded YouTube page loads and
+  runs YouTube's own website scripts, as described above.
 
 ## Removing your information
 

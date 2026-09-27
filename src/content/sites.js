@@ -444,7 +444,7 @@
    * when it is asked for. It is `requestAnimationFrame` that stops, which is a
    * trap documented elsewhere in here and not one this shares.
    */
-  function scrapeHints(otherHostPattern, site) {
+  function scrapeHints(otherHostPattern, site, ownerDocument = document) {
     let chat = [];
     try {
       chat = site && site.chatScope ? site.chatScope() : [];
@@ -459,7 +459,7 @@
     // Finding nothing is the safe answer: the pairing falls back to the name.
     if (!chat.length) return [];
     const out = [];
-    document.querySelectorAll('a[href]').forEach((a) => {
+    ownerDocument.querySelectorAll('a[href]').forEach((a) => {
       const href = a.getAttribute('href') || '';
       if (!otherHostPattern.test(href)) return;
       if (!a.getClientRects().length) return;
@@ -794,6 +794,10 @@
       return scrapeHints(/kick\.com/i, this);
     },
 
+    youtubeHints(ownerDocument) {
+      return scrapeHints(/^https:\/\/(?:www\.|m\.)?youtube\.com\//i, this, ownerDocument);
+    },
+
     composer() {
       return findComposer(this, [
         'div[data-a-target="chat-input"][contenteditable="true"]',
@@ -835,7 +839,8 @@
 
   const kick = {
     id: 'kick',
-    matches: () => /(^|\.)kick\.com$/.test(location.hostname),
+    // The dashboard needs navigation detection for its live-chat /stream page.
+    matches: () => /^(www\.|dashboard\.)?kick\.com$/.test(location.hostname),
 
     // Kick has no GIF keyboard, so there is nothing to open. Answered rather
     // than left off, for the same reason watchNow is on Twitch.
@@ -843,6 +848,7 @@
     gifTab() { return null; },
 
     channelFromUrl() {
+      if (location.hostname === 'dashboard.kick.com' && !/^\/stream\/?$/.test(location.pathname)) return null;
       const parts = location.pathname.split('/').filter(Boolean);
       if (!parts.length) return null;
       let slug = parts[0].toLowerCase();
@@ -1051,6 +1057,10 @@
 
     hints() {
       return scrapeHints(/twitch\.tv/i, this);
+    },
+
+    youtubeHints(ownerDocument) {
+      return scrapeHints(/^https:\/\/(?:www\.|m\.)?youtube\.com\//i, this, ownerDocument);
     },
 
     composer() {
