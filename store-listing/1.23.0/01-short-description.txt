@@ -1,0 +1,1 @@
+Merge Twitch, Kick, and optional YouTube live chat, with emotes, linked channels, and multi-platform messaging.

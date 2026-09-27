@@ -1,0 +1,42 @@
+[
+  {
+    "file": "01-three-platform-chat.png",
+    "width": 1280,
+    "height": 800,
+    "bitDepth": 8,
+    "colorType": 2,
+    "bytes": 277299
+  },
+  {
+    "file": "02-youtube-sending.png",
+    "width": 1280,
+    "height": 800,
+    "bitDepth": 8,
+    "colorType": 2,
+    "bytes": 284765
+  },
+  {
+    "file": "03-saved-youtube-links.png",
+    "width": 1280,
+    "height": 800,
+    "bitDepth": 8,
+    "colorType": 2,
+    "bytes": 285654
+  },
+  {
+    "file": "04-kick-merged-chat.png",
+    "width": 1280,
+    "height": 800,
+    "bitDepth": 8,
+    "colorType": 2,
+    "bytes": 287916
+  },
+  {
+    "file": "05-youtube-access-settings.png",
+    "width": 1280,
+    "height": 800,
+    "bitDepth": 8,
+    "colorType": 2,
+    "bytes": 63478
+  }
+]

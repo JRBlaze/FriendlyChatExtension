@@ -1,7 +1,8 @@
 # Friendly Chat Extension
 
-A Chrome and Firefox extension that puts [Friendly Chat](https://github.com/JRBlaze/FriendlyChat)'s
-merged chat feed directly on the page you are already watching.
+A Chrome and Firefox extension that merges **Twitch, Kick, and optional YouTube
+live chat** into one feed on the Twitch or Kick stream page you are watching.
+Read across platforms and choose where to send each message without switching chats.
 
 Open a Twitch channel and the merged chat overlay appears over Twitch's own chat. If that
 streamer is also live on Kick, the overlay says so and offers to add the Kick chat to the same
@@ -16,6 +17,39 @@ dashboard and other dashboard pages shows or removes it automatically.
 ![Platform](https://img.shields.io/badge/Chrome-MV3-blue)
 ![Firefox](https://img.shields.io/badge/Firefox-140%2B-orange)
 [![Version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FJRBlaze%2FFriendlyChatExtension%2Fmain%2Fmanifest.json&query=%24.version&label=version&color=green)](../../releases/latest)
+
+## New in 1.23.0
+
+- **YouTube in the merged feed:** add a live-video or channel URL, choose a live
+  suggestion, or save a channel link for automatic loading when that creator is live.
+- **Optional YouTube sending:** sign into YouTube in the same browser, check the
+  displayed account, and select its red send target when available. Sending starts off.
+- **Easier setup:** new and existing users receive an introduction with an optional
+  YouTube access button. Firefox can enable embedded sign-in without disabling tracking protection.
+- **Message recall:** use Up/Down to recall recently sent messages, edit them, and send again.
+- **Browser and layout fixes:** Firefox Backspace/Delete, Twitch Gigantify emotes,
+  visible Twitch/Kick notifications, and no unwanted overlay on Kick's non-chat pages.
+
+### Platform support
+
+| Feature | Twitch | Kick | YouTube |
+| --- | --- | --- | --- |
+| Merged reading | Yes | Yes | Optional, after allowing site access |
+| Where the overlay appears | Twitch channel pages | Kick channel pages and dashboard `/stream` | Inside the overlay on Twitch/Kick; no overlay on YouTube pages |
+| Sending | Connected account or the current site's native composer | Connected account or the current site's native composer | Signed-in embedded native composer; explicitly selected per visit |
+| Saved channel links | Twitch/Kick pairing | Twitch/Kick pairing | Link a YouTube channel to either or both manually paired hosts |
+| Reply and moderation tools | With the required account/standing | With the required account/standing | Not supported |
+| Rich emotes and badges | Native and supported third-party sets | Native and supported third-party sets | Plain message text and emoji alternatives; no rich badge/sticker rendering |
+
+YouTube support uses its embedded live chat, so browser cookie restrictions and
+YouTube page changes can affect availability. It needs no YouTube Data API key
+and no server you operate. See [setup and limitations below](#add-youtube-chat)
+and the [privacy policy](PRIVACY.md).
+
+![Friendly Chat merging Twitch, Kick and YouTube messages](store-screenshots/2026-09-27/01-three-platform-chat.png)
+
+Actual extension UI with sample chat and accounts. [More screenshots](store-screenshots/2026-09-27/README.md)
+show YouTube sending, saved links, Kick, and access setup.
 
 ## Add YouTube chat
 
@@ -317,7 +351,9 @@ inside, because Chrome builds up to v1.20.1 take the first `.zip` on a release a
   text, because that is what chat is.
 - **Favourite emotes.** Star one in the picker and it gets a row of its own at the top, and sorts
   first in `:` autocomplete.
-- **Send to both platforms at once**, or either one — the same target chips the desktop app has.
+- **Choose your send destinations.** Send to Twitch, Kick, or both with their target
+  chips. Add YouTube as a separately selected destination when its signed-in native
+  composer is available; YouTube sending is never selected automatically.
 - **An emote on its own goes where that emote is.** Sent to the other chat it would arrive as a
   bare word — `PogU`, alone, to people with no idea what it was meant to be — so a message that
   is nothing but emotes is only sent where they exist, and the row above the box says so as you
@@ -1146,8 +1182,9 @@ does.
 
 ## Where the data comes from
 
-Chat, history and emotes come straight from Twitch, Kick and the emote services, with no server of
-ours in between. Signing in is the one exception: which application each platform signs in against,
+Chat, history and emotes come from Twitch, Kick, optional embedded YouTube chat,
+and the emote services, with no Friendly Chat chat relay in between. Signing in is
+the exception: which application Twitch/Kick signs in against,
 and Kick's token exchange and refresh, go through the Cloudflare Worker — see
 [Connecting accounts](#connecting-accounts).
 
@@ -1158,18 +1195,22 @@ and Kick's token exchange and refresh, go through the Cloudflare Worker — see
 | Twitch history | `recent-messages.robotty.de` (the service Chatterino uses) |
 | Kick chat | Kick's Pusher WebSocket, subscribed anonymously to the chatroom |
 | Kick channel, live state, history, emotes | `kick.com/api/v2/...` and `kick.com/emotes/...` |
+| Optional YouTube live discovery | Public YouTube channel/video pages, fetched without credentials after site access is granted |
+| Optional YouTube reading and sending | Two attached `youtube.com/live_chat` frames using YouTube's normal page requests and browser-permitted session |
 | Third-party emotes | 7TV, BetterTTV, FrankerFaceZ |
 | Sending, when an account is connected | `api.twitch.tv/helix/chat/messages`, `api.kick.com/public/v1/chat` |
 | Cheermotes, so a Cheer draws as one | `api.twitch.tv/helix/bits/cheermotes`, on join |
 | Which application to sign in against | the Cloudflare Worker's `/twitch-config` and `/kick-config`, at sign-in only |
 | Kick sign-in: the token exchange and each refresh | the Cloudflare Worker's `/kick-token` and `/kick-refresh`, which hold Kick's client secret — plus `/kick-authorize` and `/kick-callback` when Kick returns through the proxy |
-| Whether a newer release exists (Chrome) | `api.github.com`, every six hours |
+| Whether a newer release exists (unpacked Chrome build) | `api.github.com`, every six hours; Chrome Web Store builds use browser-managed updates instead |
 | Updates to the signed Firefox add-on | fetched by Firefox itself from `github.com/JRBlaze/FriendlyChatExtension/releases/latest/download/updates.json` |
 
-Reading chat is anonymous — no account, no API key. Requests to Kick are made with
-`credentials: 'omit'` so your Kick cookies are never attached. What gets stored is your settings,
-the channel-to-channel mappings above, and — only if you connect an account — that account's
-token in `chrome.storage.local`.
+Twitch/Kick reading does not require connecting an account. Ordinary public Kick
+requests omit credentials; permission-checked Kick moderation/standing requests
+can use the site's session cookie. YouTube embeds may use browser-permitted cookies,
+and its sending requires a signed-in native composer. Settings and saved channel
+links are stored by the extension; connected Twitch/Kick tokens stay in
+`chrome.storage.local`. See [Privacy](PRIVACY.md) for storage, services and retention.
 
 ## Architecture
 
@@ -1183,7 +1224,9 @@ src/
     irc.js           Twitch IRCv3 line/tag/emote-position parsing
     kick-events.js   Pusher event names -> readable summaries
     emote-parsers.js Kick emote payloads, 7TV url building
-  background/      everything that touches the network: Chrome's service worker,
+    youtube.js       YouTube input parsing and bounded message validation
+    youtube-links.js saved YouTube channel-link validation
+  background/      extension-managed network sessions: Chrome's service worker,
                    Firefox's event page
     service-worker.js  per-tab sessions, the port protocol, live polling; in
                        Chrome it loads everything else with importScripts, and
@@ -1194,12 +1237,16 @@ src/
     discovery.js       platform lookups, badges, counterpart matching
     emotes.js          third-party emote providers
     auth.js            Twitch implicit + Kick PKCE sign-in, token storage
-    send.js            posting a message to each platform's chat API
+    youtube-lookup.js  public YouTube channel and live-video resolution
+    youtube-links.js   local saved-link operations
+    youtube-relay.js   role-bound host/reader/sender bridge and optional access
+    youtube-onboarding.js one-time install/update introduction
+    send.js            posting a message to Twitch/Kick chat APIs
     profile.js         who a chatter is: join date, follow date, sub length
     emote-cache.js     last visit's emote lists, so a channel you have been
                        in before has them on arrival
-    updates.js         the release check and the toolbar badge; off in a
-                       Firefox build that Firefox updates itself
+    updates.js         the release check and toolbar badge; off in browser-managed
+                       Firefox and Chrome Web Store builds
   content/         everything that touches the page
     boot.js          channel detection, SPA navigation, the port
     overlay.js       the shadow-DOM panel, prompt, targets and settings sheet
@@ -1214,7 +1261,15 @@ src/
     sites.js         per-site selectors, the native composer and the
                      bits/points controls
     overlay.css
-  options/ popup/  including Site access, which only Firefox ever shows
+    youtube-source.js attached reader/sender frame lifecycle
+    youtube-reader.js bounded native chat capture inside marked frames
+    youtube-send.js   explicitly selected native sends and result checking
+    youtube-access.js Firefox embedded sign-in access setup
+    youtube-controls.js add/remove/link controls and current-visit capture
+    youtube-suggestions.js permitted live-channel suggestions
+  youtube/         optional access introduction and setup page
+  options/ popup/  settings, account controls and YouTube access cards;
+                   Firefox also has the required-host Site access section
 tools/
   pack.js          builds the packages: --target chrome|firefox|all, and
                    --unpacked <dir> for a folder to load straight from disk
@@ -1464,7 +1519,9 @@ name down the panel, 300px tall for a name that fits comfortably on one line.
 
 ### Which chats a message goes to
 
-The *Send to* chips are remembered per channel, in `storage.local`, under their own key.
+The Twitch/Kick *Send to* chips are remembered per channel, in `storage.local`,
+under their own key. YouTube's send selection is separate: it stays only for the
+current visit and resets when its source or account changes.
 
 Both halves of that are deliberate. Settings live in one blob that is broadcast to every open tab
 the moment any part of it changes, and every overlay re-reads the whole thing when it arrives —
@@ -2258,6 +2315,11 @@ was never going to see in a friendly test:
 
 ## Known limits
 
+- **YouTube is an optional attached source.** The overlay runs on Twitch/Kick,
+  not YouTube watch pages. Reading/sending depend on YouTube's live-chat page and
+  browser embedding/session rules. Sending starts off, accepts up to 200 plain-text
+  characters, and does not provide YouTube reply or moderation controls. See
+  [YouTube setup](#add-youtube-chat) for supported content and sign-in details.
 - **Sending between Twitch and Kick needs a connected account.** Without one, a typed message can
   only go to the site you are on, through its own chat box. The target chips say which case you
   are in, and connecting an account is what unlocks sending to both at once. YouTube instead
