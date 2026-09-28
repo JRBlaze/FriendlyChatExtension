@@ -79,7 +79,7 @@ async function checks(page, mode, platform) {
   assert.deepEqual(await count(), { youtube: 0, api: 0 }, 'editing never sends a message');
   await yt.waitFor();
   assert.equal(await yt.isEnabled(), true);
-  assert.equal(await yt.getAttribute('data-on'), 'false', 'YouTube sending starts off even when signed in');
+  assert.equal(await yt.getAttribute('data-on'), 'true', 'YouTube sending selects a ready signed-in composer');
   assert.match(await yt.innerText(), /as @SyntheticYouTube/i);
   await page.evaluate(() => sendFixture.emit({ available: false, reason: 'signed-out', accountLabel: '', access: 'needed' }));
   assert.equal(await yt.isEnabled(), mode === 'firefox', 'only Firefox offers the embedded sign-in access setup');
@@ -113,9 +113,12 @@ async function checks(page, mode, platform) {
     assert.match(await yt.getAttribute('title'), /Remove and add YouTube chat/);
   }
   await page.evaluate(() => sendFixture.emit({ available: true, reason: 'ready', accountLabel: '@SyntheticYouTube', access: 'granted' }));
-  assert.equal(await yt.getAttribute('data-on'), 'false', 'a ready account after setup still needs explicit selection');
+  assert.equal(await yt.getAttribute('data-on'), 'true', 'a ready account after setup is selected automatically');
   await yt.evaluate(button => button.click());
-  assert.equal(await yt.getAttribute('data-on'), 'false', 'synthetic host-page click cannot arm YouTube');
+  assert.equal(await yt.getAttribute('data-on'), 'true', 'synthetic host-page clicks cannot change YouTube selection');
+  await yt.click();
+  await page.evaluate(() => sendFixture.emit({ available: true, reason: 'ready' }));
+  assert.equal(await yt.getAttribute('data-on'), 'false', 'a manual opt-out survives state refreshes');
   await input.fill('Existing destinations only');
   await send.click(); await page.waitForFunction(() => !document.querySelector('#friendly-chat-merge-host').shadowRoot.querySelector('.fcm-send').disabled);
   assert.equal((await count()).youtube, 0);
@@ -241,22 +244,128 @@ async function checks(page, mode, platform) {
   await page.evaluate(() => sendFixture.emit({ available: true, reason: 'ready' }));
   assert.equal(await yt.getAttribute('data-on'), 'true');
   await page.evaluate(() => sendFixture.emit({ sourceId: 'AbCdEfGhI_1:synthetic:2', capability: 2 }));
-  assert.equal(await yt.getAttribute('data-on'), 'false', 'a new reader capability requires fresh selection');
-  await yt.click();
+  assert.equal(await yt.getAttribute('data-on'), 'true', 'a new ready reader capability selects automatically');
   await page.evaluate(() => sendFixture.emit({ accountLabel: '@DifferentSyntheticAccount' }));
-  assert.equal(await yt.getAttribute('data-on'), 'false', 'an account change cannot retain consent');
-  await yt.click();
+  assert.equal(await yt.getAttribute('data-on'), 'true', 'a new ready account is selected automatically');
   await page.evaluate(() => sendFixture.emit({ available: false, reason: 'signed-out', accountLabel: '' }));
   assert.equal(await yt.getAttribute('data-on'), 'false');
   assert.match(await yt.innerText(), /sign in on YouTube/i);
   await page.evaluate(() => sendFixture.emit({ available: true, reason: 'ready', accountLabel: '@SyntheticYouTube' }));
-  await yt.click();
   await page.screenshot({ path: path.join(output, `${mode}-${platform}-send.png`) });
   const column = page.locator(platform === 'kick' ? '.kickcol' : '.chatcol:not(.kickcol)');
   await column.evaluate(element => { element.style.width = '260px'; element.style.boxSizing = 'border-box'; });
   await page.waitForTimeout(150);
   assert.equal(await page.locator('.fcm-targets').evaluate(element => element.scrollWidth <= element.clientWidth + 1), true, 'targets fit the 260px panel');
   await page.screenshot({ path: path.join(output, `${mode}-${platform}-send-narrow.png`) });
+}
+
+async function replyChecks(page, mode, platform) {
+  const input = page.locator('.fcm-input'), send = page.locator('.fcm-send');
+  const count = () => page.evaluate(() => ({ youtube: sendFixture.sends.length, api: commands.filter(c => c.cmd === 'send').length }));
+  await page.evaluate(() => {
+    sendFixture.outcome = 'submitted';
+    sendFixture.emit({ available: true, reason: 'ready', accountLabel: '@SyntheticYouTube' });
+    sendFixture.instances.at(-1).onBatch({ messages: [{ id: 'youtube:AbCdEfGhI_1:reply',
+      displayName: '@ReplyViewer猫', username: '@ReplyViewer猫', text: 'reply fixture', ts: Date.now() }], deleted: [] });
+  });
+  const author = page.locator('.fcm-msg[data-platform="youtube"] .fcm-author').last();
+  await author.waitFor();
+  await input.fill('Draft');
+  const initial = await count();
+  await author.click();
+  assert.equal(await input.evaluate(el => el.value), 'Draft @ReplyViewer猫 ');
+  await author.click();
+  assert.equal(await input.evaluate(el => el.value), 'Draft @ReplyViewer猫 ');
+  assert.match(await page.locator('.fcm-reply').innerText(), /ReplyViewer猫[\s\S]*YouTube/i);
+  assert.equal(await page.locator('.fcm-um').isVisible(), false);
+  assert.equal(await page.locator('.fcm-modbar[data-platform="youtube"]').count(), 0);
+  assert.deepEqual(await count(), initial, 'selecting a recipient never sends');
+  await send.click();
+  await page.waitForFunction(n => sendFixture.sends.length === n + 1, initial.youtube);
+  await page.waitForFunction(() => !document.querySelector('#friendly-chat-merge-host').shadowRoot.querySelector('.fcm-send').disabled);
+  assert.equal((await count()).api, initial.api);
+  assert.equal(await page.evaluate(() => sendFixture.sends.at(-1).text), 'Draft @ReplyViewer猫');
+  await input.fill('@ReplyV');
+  const candidate = page.locator('.fcm-ac-item').filter({ hasText: '@ReplyViewer猫' });
+  await candidate.waitFor();
+  await input.press('Tab');
+  assert.equal(await input.evaluate(el => el.value), '@ReplyViewer猫 ');
+  await input.pressSequentially('autocomplete reply');
+  const beforeMention = await count(); await input.press('Enter');
+  await page.waitForFunction(n => sendFixture.sends.length === n + 1, beforeMention.youtube);
+  await page.waitForFunction(() => !document.querySelector('#friendly-chat-merge-host').shadowRoot.querySelector('.fcm-send').disabled);
+  assert.equal((await count()).api, beforeMention.api);
+  await author.click(); await input.pressSequentially('draft survives source changes');
+  const draft = await input.evaluate(el => el.value), beforeSwitch = await count();
+  await page.evaluate(() => sendFixture.emit({ sourceId: 'replacement-source' }));
+  await send.click();
+  assert.deepEqual(await count(), beforeSwitch);
+  assert.equal(await input.evaluate(el => el.value), draft);
+  assert.match(await page.locator('.fcm-toast').innerText(), /Select the recipient again/);
+  await page.screenshot({ path: path.join(output, `${mode}-${platform}-youtube-reply.png`) });
+  await input.fill(''); await input.fill('@ReplyV'); await candidate.waitFor();
+  await page.getByRole('button', { name: 'Remove YouTube', exact: true }).click();
+  assert.equal(await page.evaluate(() => FCM.recentChatters().some(c => c.platform === 'youtube')), false);
+  await input.press('Tab');
+  assert.equal(await page.locator('.fcm-reply').isVisible(), false);
+  assert.deepEqual(await count(), beforeSwitch);
+}
+
+async function recentChecks(page, mode, platform) {
+  await page.evaluate(() => {
+    sendFixture.outcome = 'submitted';
+    const store = prefix => Object.fromEntries(Array.from({ length: 14 }, (_, i) =>
+      [prefix + i, { url: location.origin + '/icons/icon48.png', id: String(i + 1) }]));
+    overlay.setEmotes('twitch', 'native', store('RecentTW'));
+    overlay.setEmotes('kick', 'native', store('RecentKI'));
+    overlay.applyStoredSettings({ ...FCM.view.settings, showRecentEmotes: true });
+  });
+  for (const platform of ['twitch', 'kick']) {
+    const target = page.locator(`.fcm-target[data-platform="${platform}"]`);
+    if (await target.getAttribute('data-on') !== 'true') await target.click();
+  }
+  const yt = page.locator('.fcm-target[data-platform="youtube"]');
+  if (await yt.getAttribute('data-on') === 'true') await yt.click();
+  const input = page.locator('.fcm-input'), bar = page.locator('.fcm-recent-emotes');
+  await input.fill('hi RecentTW0 RecentKI0');
+  await page.locator('.fcm-send').click();
+  await page.getByRole('button', { name: 'Insert RecentTW0 (Twitch)', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Insert RecentKI0 (Kick)', exact: true }).waitFor();
+  const before = await page.evaluate(() => commands.filter(c => c.cmd === 'send').length);
+  await input.fill('gg'); await input.press('End');
+  await page.getByRole('button', { name: 'Insert RecentTW0 (Twitch)', exact: true }).click();
+  assert.equal(await input.evaluate(el => el.value), 'gg RecentTW0 ');
+  assert.equal(await page.evaluate(() => commands.filter(c => c.cmd === 'send').length), before, 'bar click inserts without sending');
+  await page.locator('[data-act="settings"]').click();
+  await page.getByRole('checkbox', { name: /Recent emote bar/ }).uncheck();
+  assert.equal(await bar.isVisible(), false);
+  await page.getByRole('checkbox', { name: /Recent emote bar/ }).check();
+  assert.equal(await bar.isVisible(), true);
+  await page.locator('[data-act="close-sheet"]').click();
+  await page.evaluate(async () => {
+    const key = FCM.STORAGE_KEYS.recentEmotes;
+    await chrome.storage.local.set({
+      [key + ':twitch']: Array.from({ length: 12 }, (_, i) => 'RecentTW' + i),
+      [key + ':kick']: Array.from({ length: 12 }, (_, i) => 'RecentKI' + i),
+    });
+  });
+  assert.equal(await bar.getByRole('button').count(), 24);
+  assert.equal(await bar.evaluate(el => el.scrollWidth > el.clientWidth), true, 'long bar scrolls in a narrow panel');
+  const bounds = await bar.boundingBox(), inputBounds = await input.boundingBox();
+  assert.ok(bounds.y + bounds.height <= inputBounds.y, 'bar sits above the message box');
+  assert.equal(await page.locator('.fcm-composer').evaluate(el => el.scrollWidth <= el.clientWidth + 1), true);
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('#friendly-chat-merge-host').shadowRoot.querySelector('.fcm-toast')).opacity === '0');
+  await page.mouse.move(0, 0);
+  for (const theme of ['dark', 'light']) {
+    await page.evaluate(theme => overlay.applyStoredSettings({ ...FCM.view.settings, theme }), theme);
+    await page.locator('.fcm-composer').screenshot({ path: path.join(output, `${mode}-${platform}-recent-${theme}.png`) });
+  }
+  await page.getByRole('button', { name: 'Insert RecentTW0 (Twitch)', exact: true }).focus();
+  await page.keyboard.press('Enter');
+  assert.equal(await input.evaluate(el => el.value), 'gg RecentTW0 RecentTW0 ', 'keyboard activation inserts at the saved caret');
+  assert.equal(await page.evaluate(() => commands.filter(c => c.cmd === 'send').length), before);
+  await page.evaluate(() => overlay.setStatus('kick', 'idle', null));
+  assert.equal(await bar.getByRole('button').count(), 12, 'leaving a platform removes its bar buttons');
 }
 
 async function main() {
@@ -288,6 +397,8 @@ async function main() {
       await page.locator('.fcm-msg').first().waitFor();
       await fixture(page, platform);
       await checks(page, mode, platform);
+      await recentChecks(page, mode, platform);
+      await replyChecks(page, mode, platform);
       assert.deepEqual(errors, []);
       coverage.push(...await page.coverage.stopJSCoverage());
       results.push({ engine: 'installed Chrome', simulatedBrowserMode: mode, platform, passed: true, externalRequestsServed: 0, blocked: blocked.length });

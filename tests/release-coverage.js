@@ -1,5 +1,5 @@
 // Combined actual-source coverage for YouTube support and issues #62-64.
-// node tests/release-coverage.js <node-output.json> <browser-coverage.json> [...]
+// node tests/release-coverage.js [--changed-only] <node-output.json> <browser-coverage.json> [...]
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -9,8 +9,8 @@ const { execFileSync } = require('node:child_process');
 const gate = require('./youtube-coverage');
 const ROOT = path.resolve(__dirname, '..');
 
-function targets() {
-  const selected = new Map(gate.targets().map(target => [target.file, target]));
+function targets(changedOnly = false) {
+  const selected = new Map((changedOnly ? [] : gate.targets()).map(target => [target.file, target]));
   const changed = execFileSync('git', ['diff', 'HEAD', '--name-only', '--', 'src'], { cwd: ROOT, encoding: 'utf8' });
   const added = execFileSync('git', ['ls-files', '--others', '--exclude-standard', '--', 'src'], { cwd: ROOT, encoding: 'utf8' });
   for (const [files, whole] of [[changed, false], [added, true]]) {
@@ -26,19 +26,23 @@ function selfTest() {
   const selected = targets();
   assert.equal(new Set(selected.map(target => target.file)).size, selected.length);
   assert.ok(selected.some(target => target.file === 'src/content/youtube-controls.js' && target.whole));
+  assert.ok(targets(true).every(target => selected.some(item => item.file === target.file)));
+  assert.equal(new Set(targets(true).map(target => target.file)).size, targets(true).length);
 }
 
 async function main(args) {
   selfTest();
   if (args[0] === '--self-test') return;
   if (!args[0]) throw Error('A node coverage output path is required.');
-  const selected = targets(), session = new inspector.Session();
+  const changedOnly = args[0] === '--changed-only';
+  if (changedOnly) args.shift();
+  const selected = targets(changedOnly), session = new inspector.Session();
   session.connect();
   const post = promisify(session.post.bind(session)), scripts = [];
   await post('Debugger.enable'); await post('Profiler.enable');
   await post('Profiler.startPreciseCoverage', { callCount: true, detailed: true });
   try {
-    for (const name of ['youtube-reader', 'youtube-transport', 'youtube-send', 'youtube-storage-access', 'youtube-send-transport', 'youtube-sending-ui', 'youtube-resolve-route', 'youtube-lookup',
+    for (const name of ['recent-emotes', 'youtube-reader', 'youtube-transport', 'youtube-send', 'youtube-storage-access', 'youtube-send-transport', 'youtube-sending-ui', 'youtube-resolve-route', 'youtube-lookup',
       'youtube-suggestions', 'youtube-hints', 'youtube-view', 'youtube-controls', 'youtube-links', 'youtube-links-backup', 'youtube-permission',
       'youtube-access-card', 'youtube-onboarding', 'youtube-trial', 'youtube-integration', 'issue-62', 'issue-63', 'issue-64']) {
       const suite = require(`./${name}.test`);

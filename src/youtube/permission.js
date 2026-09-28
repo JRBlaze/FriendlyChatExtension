@@ -15,7 +15,7 @@
     done.textContent = granted ? 'Done' : 'Not now';
     status.dataset.granted = String(granted);
     status.textContent = message || (granted
-      ? 'YouTube is ready. Open a Twitch or Kick channel, then use YouTube to add chat or save a channel link. Sending stays off until you select its available send target. On an already open stream page, choose Check YouTube or refresh it.'
+      ? 'YouTube is ready. Open a Twitch or Kick channel, then use YouTube to add chat or save a channel link. Sending turns on automatically when the signed-in YouTube chat box is ready. Check the displayed account and turn the target off if you do not want to send there. On an already open stream page, choose Check YouTube or refresh it.'
       : 'You can keep using Twitch and Kick without YouTube access, and enable it here later.');
   }
 

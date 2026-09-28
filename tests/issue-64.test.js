@@ -18,7 +18,7 @@ function harness(history) {
   });
   context.self = context;
   for (const file of ['src/shared/namespace.js', 'src/shared/constants.js', 'src/shared/util.js',
-    'src/shared/irc.js', 'src/shared/emote-parsers.js', 'src/background/twitch-source.js',
+    'src/shared/irc.js', 'src/shared/youtube.js', 'src/shared/emote-parsers.js', 'src/background/twitch-source.js',
     'src/content/render.js']) {
     vm.runInContext(fs.readFileSync(path.join(ROOT, file), 'utf8'), context, { filename: file });
   }

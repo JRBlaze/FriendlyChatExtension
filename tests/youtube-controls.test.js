@@ -5,13 +5,13 @@ const vm = require('node:vm');
 const ROOT = path.resolve(__dirname, '..');
 
 async function fixture(withSuggestions = true, options = {}) {
-  const elements = [];
+  const elements = [], forgotten = [];
   const doc = { createElement(tag) {
-    const el = { tag, ownerDocument: doc, children: [], listeners: {},
+    const el = { tag, ownerDocument: doc, children: [], listeners: {}, dataset: {},
       append(...children) { this.children.push(...children); },
       replaceChildren(...children) { this.children = children; },
       appendChild(child) { this.children.push(child); },
-      setAttribute(key, value) { this[key] = value; },
+      setAttribute(key, value) { this[key] = value; }, removeAttribute(key) { delete this[key]; },
       addEventListener(key, fn) { this.listeners[key] = fn; },
       removeEventListener(key, fn) { assert.equal(this.listeners[key], fn); delete this.listeners[key]; },
       remove() { this.removed = true; },
@@ -32,7 +32,7 @@ async function fixture(withSuggestions = true, options = {}) {
   const discovery = { pause() { calls.push("pause"); }, refresh() { calls.push("refresh"); },
     updateCounterpart(info) { calls.push(info); }, destroy() { calls.push("discovery-destroy"); } };
   let stored = options.link || null;
-  const context = { URL, FCM: { PLATFORMS: ['twitch', 'kick'], createYouTubeSource(opts) { callbacks = opts; return source; } },
+  const context = { URL, FCM: { view: { settings: { showEvents: true } }, PLATFORMS: ['twitch', 'kick'], forgetChatters(platform) { assert.equal(platform, 'youtube'); forgotten.push(platform); }, createYouTubeSource(opts) { callbacks = opts; return source; } },
     chrome: { runtime: { getURL: p => 'chrome-extension://trial/' + p,
       async sendMessage(message) {
         requests.push(message);
@@ -64,7 +64,7 @@ async function fixture(withSuggestions = true, options = {}) {
   const status = elements.find(e => e.role === 'status');
   const start = add.listeners.click;
   const event = { isTrusted: true, preventDefault() { calls.push('preventDefault'); } };
-  const batch = { messages: [{ id: 'youtube:AbCdEfGhI_0:one', username: '@fixture', displayName: 'Fixture', text: '<safe> 😀', ts: 100 }], deleted: ['youtube:AbCdEfGhI_0:two'] };
+  const batch = { videoId: 'AbCdEfGhI_0', messages: [{ id: 'youtube:AbCdEfGhI_0:one', username: '@fixture', displayName: 'Fixture', text: '<safe> 😀', ts: 100 }], deleted: ['youtube:AbCdEfGhI_0:two'] };
   const save = elements.find(e => e.textContent === 'Save YouTube link');
   const forget = elements.find(e => e.textContent === 'Forget YouTube link');
   const pairCheck = elements.find(e => e.type === 'checkbox');
@@ -72,7 +72,7 @@ async function fixture(withSuggestions = true, options = {}) {
   if (!options.pending) await flush();
   calls.length = 0;
   return { api, callbacks, suggestionOptions, discovery, container, source, filter, rows, deletions, drops, elements, form, add, stop, input, status, calls, start, event, batch,
-    site, starts, requests, save, forget, pairCheck, note, options };
+    FCM: context.FCM, forgotten, site, starts, requests, save, forget, pairCheck, note, options };
 }
 async function flush() { for (let i = 0; i < 12; i++) await Promise.resolve(); }
 
@@ -116,8 +116,36 @@ async function run() {
     text: '<safe> 😀', timestamp: 100, readOnly: true,
   });
   assert.deepEqual(f.deletions, [['youtube', f.batch.deleted[0]]]);
+  const withEmote = JSON.parse(JSON.stringify(f.batch));
+  withEmote.messages[0].youtubeEmotes = [{ start: 7, end: 9, url: 'https://yt3.ggpht.com/fixture=s48' }];
+  f.callbacks.onBatch(withEmote);
+  assert.deepEqual(f.rows[1].youtubeEmotes, withEmote.messages[0].youtubeEmotes, 'image ranges reach the merged feed');
+  f.rows.pop();
+
+
+  const visibility = f.elements.find(e => e['aria-label'] === 'Show or hide YouTube messages');
+  const nativeChat = f.elements.find(e => e.textContent === 'Open YouTube chat');
+  assert.equal(visibility.disabled, false);
+  assert.equal(nativeChat.href, 'https://www.youtube.com/live_chat?v=AbCdEfGhI_0&is_popout=1');
+  assert.equal(nativeChat.rel, 'noopener noreferrer');
+  visibility.listeners.click(); assert.equal(f.filter.has('youtube'), false);
+  f.callbacks.onBatch(f.batch); assert.equal(f.filter.has('youtube'), false, 'new messages respect a hidden YouTube feed');
+  f.rows.pop();
+  visibility.listeners.click(); assert.equal(f.filter.has('youtube'), true);
+  const paid = JSON.parse(JSON.stringify(f.batch)); paid.messages[0].youtubeEvent = { kind: 'superchat', amount: '$5', header: '' };
+  paid.messages[0].youtubeBadges = [{ type: 'owner', label: 'Owner', url: 'https://yt3.ggpht.com/fixture-badge=s16' }];
+  f.callbacks.onBatch(paid);
+  assert.equal(f.rows.at(-1).youtubeEvent.kind, 'superchat'); assert.equal(f.rows.at(-1).youtubeBadges[0].url, 'https://yt3.ggpht.com/fixture-badge=s16'); f.rows.pop();
+  f.FCM.view.settings.showEvents = false;
+  paid.messages[0].youtubeEvent.kind = 'membership'; f.callbacks.onBatch(paid);
+  assert.equal(f.rows.length, 1, 'the existing event setting hides membership/gift notices');
+  f.FCM.view.settings.showEvents = true;
+  f.callbacks.onBatch({ ...f.batch, videoId: 'invalid', messages: [] });
+
   f.filter.delete('twitch'); f.filter.delete('kick');
+  visibility.listeners.click(); assert.equal(f.filter.has('youtube'), true, 'cannot hide the last source');
   f.stop.listeners.click();
+  assert.equal(nativeChat.hidden, true); assert.equal(visibility.disabled, true); visibility.listeners.click();
   assert.equal(f.filter.has('youtube'), false);
   assert.deepEqual([...f.filter], ['twitch', 'kick'], 'removing the only visible source restores the normal chats');
   assert.ok(f.calls.includes('filter')); assert.ok(f.calls.includes('applyFilter'));
@@ -213,6 +241,7 @@ async function run() {
   assert.equal(states.length, 1);
   sending.api.destroy(); sending.callbacks.onSendState({ available: false });
   assert.equal(states.length, 1, 'destroyed controls never revive a send target');
+  assert.equal(f.forgotten.length, f.drops.length + 1, 'every source replacement/removal and teardown forgets its mention candidates');
   console.log('YouTube controls unit tests passed.');
 }
 

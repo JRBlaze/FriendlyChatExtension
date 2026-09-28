@@ -218,7 +218,14 @@
 .fcm-youtube p { width: 100%; color: var(--text-muted); overflow-wrap: anywhere; }
 .fcm-youtube :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .fcm-dot-youtube { background: #ff5555; }
-.fcm-author.fcm-author-youtube, .fcm-author.fcm-author-youtube:hover { color: var(--danger); cursor: text; text-decoration: none; }
+.fcm-author.fcm-author-youtube { color: var(--youtube-text); cursor: pointer; }
+.fcm-author.fcm-author-youtube:hover { text-decoration: underline; }
+.fcm-youtube-wrap > .fcm-chip-btn { margin: 4px 8px; }
+.fcm-youtube-wrap > .fcm-chip-btn[data-on="true"] { border-color: var(--youtube-text); }
+.fcm-youtube-event { border-left: 2px solid var(--youtube-text); }
+.fcm-youtube-event-label { font-weight: 700; color: var(--youtube-text); margin-right: 5px; }
+.fcm-youtube-event-header { display: block; color: var(--text-muted); overflow-wrap: anywhere; }
+.fcm-mention-youtube { color: var(--youtube-text); }
 
 /* Standing aside while one of the site's own menus is open underneath. The
    panel keeps its box — the placement code is still tracking the chat column —
@@ -1048,6 +1055,13 @@
   flex-shrink: 0;
 }
 .fcm-composer-row { display: flex; align-items: center; gap: 6px; }
+.fcm-recent-emotes { display: flex; gap: 4px; overflow-x: auto; max-width: 100%; padding: 2px 0 6px; }
+.fcm-recent-emotes[hidden] { display: none; }
+.fcm-recent-emote { flex: 0 0 32px; height: 32px; padding: 3px; border: 1px solid var(--border); border-radius: 5px; background: transparent; cursor: pointer; }
+.fcm-recent-emote[data-platform="twitch"] { border-bottom-color: #9146ff; }
+.fcm-recent-emote[data-platform="kick"] { border-bottom-color: #53fc18; }
+.fcm-recent-emote img { display: block; width: 24px; height: 24px; object-fit: contain; }
+.fcm-recent-emote:hover, .fcm-recent-emote:focus-visible { background: var(--surface3); outline: 2px solid var(--text); outline-offset: -2px; }
 
 /* Reply bar: names who the message is addressed to, and which chat it goes to. */
 .fcm-reply {

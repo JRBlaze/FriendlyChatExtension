@@ -103,6 +103,7 @@
     // YouTube uses the embedded page's account. Selection lasts only while
     // that exact reader/account capability is current and is never stored.
     let youtubeSelected = false;
+    let youtubeChoice = null;
     let youtubeSendState = { available: false, reason: 'composer-unavailable', accountLabel: '', sourceId: '' };
     let youtubeReady = false;
     // Who the current message is addressed to, as platform -> display name.
@@ -138,6 +139,7 @@
     const CLIP_ANSWERS_LIMIT = 300;
     let sendSeq = 0;
     let compose = null;
+    let recentEmotes = null;
     let themeWatcher = null;
     // The last sign-in failure, kept so the settings sheet can explain it in
     // full rather than flashing it past in a toast.
@@ -272,6 +274,7 @@
         <div class="fcm-composer">
           <div class="fcm-reply fcm-hidden"></div>
           <div class="fcm-targets"><span class="fcm-targets-label">Send to</span></div>
+          <div class="fcm-recent-emotes" role="group" aria-label="Recently used emotes" hidden></div>
           <div class="fcm-composer-row">
             <button class="fcm-emote-btn" title="Emotes (or type : in the box)">&#9786;</button>
             <button class="fcm-gif-btn fcm-hidden" type="button"
@@ -334,9 +337,13 @@
       ? FCM.attachYouTubeControls({ site, channel, container: chipsEl.parentNode.insertBefore(document.createElement('div'), promptEl), feed, filter, onFilterChange: renderChips,
         onSendState(state) {
           if (destroyed) return;
-          if (state.sourceId !== youtubeSendState.sourceId || state.accountLabel !== youtubeSendState.accountLabel
-            || (!state.available && state.reason !== 'busy')) youtubeSelected = false;
+          if (state.sourceId !== youtubeSendState.sourceId || state.accountLabel !== youtubeSendState.accountLabel) youtubeChoice = null;
+          if (state.available) {
+            youtubeSelected = !!state.sourceId && !!state.accountLabel && youtubeChoice !== false;
+          } else if (state.reason !== 'busy' || state.sourceId !== youtubeSendState.sourceId
+            || state.accountLabel !== youtubeSendState.accountLabel) youtubeSelected = false;
           youtubeSendState = state;
+          FCM.setYouTubeIdentity(state.accountLabel);
           if (youtubeReady) { renderTargets(); refreshSendNote(); }
         } })
       : null;
@@ -421,7 +428,8 @@
     function showEmotePeek(img) {
       const name = img.getAttribute('alt') || '';
       if (!name) return;
-      const known = FCM.findEmote(name);
+      const youtubeEmote = img.classList.contains('youtube-emote');
+      const known = youtubeEmote ? null : FCM.findEmote(name);
       const src = (known && known.url) || img.getAttribute('src') || '';
       if (!src) return;
 
@@ -431,6 +439,7 @@
       // edge being clipped by it, and what keeps the box centred on the emote
       // it is describing. A cached image still fires this, where it is a no-op.
       peekImg.onload = () => { if (peekedEl === img) placeEmotePeek(img); };
+      peekImg.referrerPolicy = youtubeEmote ? 'no-referrer' : '';
       peekImg.src = FCM.largerEmoteUrl(src);
       peekImg.alt = name;
       peekName.textContent = name;
@@ -441,7 +450,7 @@
       // above finds nothing. The row still says which platform drew it, which
       // is less than the store would have said and better than saying nothing.
       const fromClass = img.classList.contains('twitch-emote') ? 'Twitch'
-        : img.classList.contains('kick-emote') ? 'Kick' : '';
+        : img.classList.contains('kick-emote') ? 'Kick' : youtubeEmote ? 'YouTube' : '';
       const source = (known && known.source) || fromClass;
       peekFrom.textContent = owner
         ? `${owner}${source ? ` · ${source}` : ''}`
@@ -2134,6 +2143,10 @@
             <input type="checkbox" data-set="thirdPartyEmotes">
           </div>
           <div class="fcm-field">
+            <label for="fcm-show-recent-emotes">Recent emote bar<small>Remember recently sent Twitch and Kick emotes on this device</small></label>
+            <input id="fcm-show-recent-emotes" type="checkbox" data-set="showRecentEmotes">
+          </div>
+          <div class="fcm-field">
             <label>Timestamps</label>
             <input type="checkbox" data-set="timestamps">
           </div>
@@ -2259,6 +2272,7 @@
     function applySettings(next) {
       settings = { ...FCM.DEFAULT_SETTINGS, ...(next || {}) };
       FCM.setViewSettings(settings);
+      if (recentEmotes) recentEmotes.refresh();
       // Only the starting point. A channel that has been given targets of its
       // own keeps them: this runs again every time any setting changes in any
       // tab, and following it then is exactly how one stream's choice used to
@@ -2575,14 +2589,19 @@
     }
 
     function setReplyTo(platform, name, messageId) {
-      if (!FCM.SEND_PLATFORMS.includes(platform)) return;
+      if (!FCM.REPLY_PLATFORMS.includes(platform) || (platform === 'youtube' && !youtube)) return;
+      // YouTube replies never inherit a reply on either API-backed platform.
+      if (platform === 'youtube') replyTo.clear();
+      else replyTo.delete('youtube');
       // Completing the same person's name from the autocomplete arrives here
       // with no message id, and overwriting the one the reply menu armed would
       // quietly turn a threaded reply back into a bare mention while the reply
       // bar still said otherwise. A name already being answered keeps its id.
       const held = replyTo.get(platform);
       const keep = !messageId && held && held.name === name ? held.messageId : '';
-      replyTo.set(platform, { name, messageId: messageId || keep });
+      replyTo.set(platform, platform === 'youtube'
+        ? { name, messageId: '', sourceId: youtubeSendState.sourceId, accountLabel: youtubeSendState.accountLabel }
+        : { name, messageId: messageId || keep });
       renderReplyBar();
       renderTargets();
       refreshSendNote();
@@ -2593,7 +2612,8 @@
       if (route === 'no-channel') {
         toast(`${meta.name} chat is not connected here, so this reply cannot be sent`);
       } else if (route === 'blocked') {
-        toast(`Connect a ${meta.name} account in settings to reply on ${meta.name}`);
+        toast(platform === 'youtube' ? 'A signed-in YouTube chat box must be ready before you can send this reply'
+          : `Connect a ${meta.name} account in settings to reply on ${meta.name}`);
       }
     }
 
@@ -2718,7 +2738,7 @@
       btn.appendChild(label);
       btn.appendChild(tag);
       btn.title = youtubeSendState.available
-        ? 'Select to send through the embedded YouTube chat as the account shown. Maximum 200 characters.'
+        ? 'Turn sending to YouTube on or off for the account shown. Maximum 200 characters.'
         : (FCM.BROWSER === 'firefox' && accessHelp[youtubeSendState.access])
           || 'YouTube sending needs a connected chat, a signed-in YouTube account and an available chat box.';
       btn.addEventListener('click', (event) => {
@@ -2729,11 +2749,12 @@
           return;
         }
         if (!youtubeSendState.available) return;
-        if (replyTo.size) { clearReplyTo(); toast('Reply cancelled — select YouTube to send there'); return; }
+        if (replyTo.size) { clearReplyTo(); toast('Reply cancelled — check the selected destinations before sending'); return; }
         if (youtubeSelected && !FCM.SEND_PLATFORMS.some(p => sendTargets.has(p) && ['api', 'native'].includes(routeFor(p)))) {
           toast('At least one target has to stay selected'); return;
         }
         youtubeSelected = !youtubeSelected;
+        youtubeChoice = youtubeSelected;
         renderTargets();
         refreshSendNote();
       });
@@ -2855,6 +2876,12 @@
 
       const active = effectiveTargets();
       const replying = replyTo.size > 0;
+      const youtubeReply = replyTo.get('youtube');
+      if (youtubeReply && (youtubeReply.sourceId !== youtubeSendState.sourceId
+        || youtubeReply.accountLabel !== youtubeSendState.accountLabel)) {
+        toast('YouTube connection changed. Select the recipient again before sending this reply.');
+        return;
+      }
       const wanted = [...FCM.SEND_PLATFORMS, 'youtube'].filter((p) => active.has(p));
       // Nothing but emotes goes only where they exist. This only ever narrows,
       // and never past what the viewer asked for: somebody who has picked one
@@ -2865,7 +2892,7 @@
         // Sending from an open shadow root still requires a real action.
         // Validate the whole mixed send before handing any site its copy.
         if (!event || !event.isTrusted || destroyed) return;
-        if (!youtubeSendState.available) { toast('YouTube chat is not ready to send. Select it again when available.'); return; }
+        if (!youtubeSendState.available) { toast('YouTube chat is not ready to send. Wait for its signed-in chat box.'); return; }
         if (text.length > 200 || /[\u0000-\u001f\u007f-\u009f]/.test(text)) {
           toast('YouTube messages must be at most 200 characters and contain no control characters.'); return;
         }
@@ -2929,6 +2956,7 @@
 
       const failures = [];
       let delivered = 0;
+      const deliveredPlatforms = [];
       let youtubeUncertain = false;
 
       try {
@@ -2985,7 +3013,7 @@
             work.push(sendViaApi(targets, body, replies).then((results) => {
               targets.forEach((p) => {
                 const r = results[p] || { ok: false, reason: 'timeout' };
-                if (r.ok) delivered++;
+                if (r.ok) { delivered++; deliveredPlatforms.push(p); }
                 else failures.push({ platform: p, reason: r.reason, detail: r.detail });
               });
             }));
@@ -2996,7 +3024,7 @@
           // that must not be submitted a second time to hurry it along.
           work.push(FCM.sendViaNativeComposer(site, bodyFor(p), { cheer: !!cheer && p === 'twitch' })
             .then((r) => {
-              if (r.ok) delivered++;
+              if (r.ok) { delivered++; deliveredPlatforms.push(p); }
               else failures.push({ platform: p, reason: r.reason });
             }));
         });
@@ -3021,6 +3049,7 @@
       // that spends Bits spends them again. The line below says so, and the
       // viewer's own balance is the answer.
       const unconfirmedCheer = failures.some((f) => f.reason === 'cheer-unconfirmed');
+      if (recentEmotes && deliveredPlatforms.length && !cheer && !unconfirmedCheer) recentEmotes.record(text, deliveredPlatforms);
       // Exclude paid Cheers and uncertain submissions from convenient replay.
       // A combined send is one entry even if several destinations accepted it.
       if (delivered && !cheer && !unconfirmedCheer && !youtubeUncertain
@@ -3115,6 +3144,10 @@
             renderUpdate(status);
           });
         } catch (e) { /* no worker to ask; the next check will say */ }
+        recentEmotes = FCM.createRecentEmotes({
+          container: $('.fcm-recent-emotes'), inputEl, toast, getSettings: () => settings,
+          getPlatforms: () => FCM.SEND_PLATFORMS.filter(p => status[p].channel),
+        });
         compose = FCM.createCompose({
           panel, inputEl, feedEl, emoteBtn, toast,
           onReplyTo: setReplyTo,
@@ -3205,7 +3238,9 @@
         sentHistory.length = 0;
         resetHistoryBrowse();
         if (youtube) youtube.destroy();
+        FCM.setYouTubeIdentity('');
         displayFont.destroy();
+        if (recentEmotes) recentEmotes.destroy();
         // Only the handle. The window is Twitch's own chat, it may have a GIF
         // half-picked in it, and the channel it was opened for is still the
         // channel it will post to — closing it would throw away work the viewer
@@ -3260,6 +3295,7 @@
       setStatus(platform, state, chan) {
         const previous = status[platform].channel;
         status[platform] = { state, channel: chan || null };
+        if (recentEmotes) recentEmotes.refresh();
         syncNativeEvents();
         // Leaving takes that platform's emotes with it. Only a real leave gets
         // here: joining a different channel on the same platform leaves the old
@@ -3304,6 +3340,7 @@
 
       setEmotes(platform, kind, store) {
         FCM.setEmotes(platform, kind, store);
+        if (recentEmotes) recentEmotes.refresh();
       },
 
       // Re-applies settings changed elsewhere (the options page, another tab) to

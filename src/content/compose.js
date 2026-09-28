@@ -167,6 +167,102 @@
     return sections;
   };
 
+  // Recent emotes stay on this device, separately for each sending platform.
+  // Store names only; images and availability always come from the current sets.
+  FCM.createRecentEmotes = function ({ container, inputEl, getSettings, getPlatforms, toast }) {
+    const platforms = ['twitch', 'kick'];
+    const keys = Object.fromEntries(platforms.map(p => [p, `${FCM.STORAGE_KEYS.recentEmotes}:${p}`]));
+    const recent = { twitch: [], kick: [] };
+    let destroyed = false;
+    const clean = list => [...new Set((Array.isArray(list) ? list : [])
+      .filter(name => typeof name === 'string' && name.length > 0 && name.length <= 100))].slice(0, 12);
+    function emote(platform, name) {
+      const sets = FCM.view.emotes[platform];
+      if (!sets) return null;
+      for (const store of [sets.native, sets.thirdparty]) {
+        if (store && Object.prototype.hasOwnProperty.call(store, name) && store[name]?.url) return store[name];
+      }
+      return null;
+    }
+    function refresh() {
+      container.replaceChildren();
+      container.hidden = true;
+      if (destroyed || getSettings().showRecentEmotes === false) return;
+      for (const platform of getPlatforms().filter(p => platforms.includes(p))) {
+        for (const name of recent[platform]) {
+          const item = emote(platform, name);
+          if (!item) continue;
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'fcm-recent-emote';
+          button.dataset.platform = platform;
+          button.title = `${name} (${FCM.PLATFORM_META[platform].name})`;
+          button.setAttribute('aria-label', `Insert ${button.title}`);
+          const image = document.createElement('img');
+          image.src = item.url; image.alt = name;
+          button.appendChild(image);
+          button.addEventListener('mousedown', event => event.preventDefault());
+          button.addEventListener('click', () => {
+            if (destroyed || getSettings().showRecentEmotes === false
+              || !getPlatforms().includes(platform) || !emote(platform, name)) return;
+            const before = inputEl.value.slice(0, inputEl.selectionStart);
+            const after = inputEl.value.slice(inputEl.selectionEnd);
+            const insert = `${before && !/\s$/.test(before) ? ' ' : ''}${name} `;
+            const next = before + insert + after;
+            if (next.length > 480) { toast('This emote would exceed the message length limit'); return; }
+            inputEl.value = next;
+            inputEl.setSelectionRange(before.length + insert.length, before.length + insert.length);
+            inputEl.focus();
+            inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+          });
+          container.appendChild(button);
+        }
+      }
+      container.hidden = container.children.length === 0;
+    }
+    function changed(changes, area) {
+      if (area !== 'local') return;
+      for (const platform of platforms) {
+        if (changes[keys[platform]]) recent[platform] = clean(changes[keys[platform]].newValue);
+      }
+      refresh();
+    }
+    chrome.storage.onChanged.addListener(changed);
+    container.hidden = true;
+    const ready = chrome.storage.local.get(Object.values(keys)).then(data => {
+      if (destroyed) return;
+      for (const platform of platforms) recent[platform] = clean(data[keys[platform]]);
+      refresh();
+    }).catch(() => {});
+    let pending = ready;
+    return {
+      ready, refresh,
+      record(text, sentPlatforms) {
+        // Capture eligibility now, before a delayed storage read or account change.
+        const used = platforms.filter(p => sentPlatforms.includes(p)).map(platform => ({ platform,
+          names: clean(text.split(/\s+/).filter(name => emote(platform, name))) }));
+        pending = pending.then(async () => {
+          if (destroyed) return;
+          for (const { platform, names } of used) {
+            if (!names.length) continue;
+            let stored = [];
+            try { stored = clean((await chrome.storage.local.get(keys[platform]))[keys[platform]]); } catch (e) { /* keep the session list */ }
+            if (destroyed) return;
+            recent[platform] = clean([...names, ...recent[platform], ...stored]);
+            refresh();
+            try { await chrome.storage.local.set({ [keys[platform]]: recent[platform] }); } catch (e) { /* keep the session list */ }
+          }
+        });
+        return pending;
+      },
+      destroy() {
+        destroyed = true;
+        chrome.storage.onChanged.removeListener(changed);
+        refresh();
+      },
+    };
+  };
+
   /**
    * @param {object} ctx { panel, inputEl, feedEl, emoteBtn, toast, onReplyTo }
    *   onReplyTo(platform, name) fires whenever the user addresses a specific
@@ -510,7 +606,7 @@
         // The page already identifies its streamer, even in an empty chat.
         // Keep this candidate separate from remembered activity so it survives
         // chatter eviction without inventing a message or a name colour.
-        let candidates = FCM.recentChatters().filter((c) => FCM.SEND_PLATFORMS.includes(c.platform));
+        let candidates = FCM.recentChatters().filter((c) => FCM.REPLY_PLATFORMS.includes(c.platform));
         if (ctx.hostChannel && FCM.PLATFORMS.includes(hostPlatform)) {
           const hostName = ctx.hostChannel.toLowerCase();
           const known = candidates.find((c) => c.platform === hostPlatform
@@ -558,6 +654,11 @@
     function applyAutocomplete(index) {
       const item = AC.items[index === undefined ? AC.index : index];
       if (!item) return;
+      if (item.type === 'mention' && item.platform === 'youtube'
+        && !FCM.recentChatters().some(c => c.platform === 'youtube' && c.name === item.name)) {
+        closePopup();
+        return;
+      }
 
       if (AC.browse) {
         // Picker: insert at the cursor, leaving what was already typed alone.
@@ -674,13 +775,16 @@
      *   posting a message that merely names somebody.
      */
     function insertMention(name, platform, messageId) {
-      if (platform && !FCM.SEND_PLATFORMS.includes(platform)) return;
+      if (platform && !FCM.REPLY_PLATFORMS.includes(platform)) return;
+      if (platform === 'youtube') name = name.replace(/^@+/, '');
+      if (!name) return;
       const prefix = `@${name} `;
       const current = inputEl.value;
       // Replying to a second person should add to the message, not replace it —
       // but the same person twice is never what anybody meant, and the menu is
       // easy to reach twice because the only sign it worked is the reply bar.
-      const already = new RegExp(`(^|\\s)@${FCM.escapeRegExp(name)}\\b`, 'i').test(current);
+      const end = platform === 'youtube' ? '(?=\\s|$)' : '\\b';
+      const already = new RegExp(`(^|\\s)@${FCM.escapeRegExp(name)}${end}`, 'i').test(current);
       if (already) inputEl.value = current;
       else inputEl.value = current.trim() ? `${current.replace(/\s*$/, ' ')}${prefix}` : prefix;
       inputEl.focus();
@@ -896,12 +1000,37 @@
       menu.appendChild(box);
     }
 
+    // Copy only the rendered body. Images contribute their text alternatives;
+    // decorative duplicates (Cheer amounts and hidden GIF labels) do not.
+    function messageText(row) {
+      const body = row && row.querySelector('.fcm-body');
+      if (!body || row.classList.contains('fcm-deleted')) return '';
+      const stack = [body];
+      let text = '';
+      while (stack.length) {
+        const node = stack.pop();
+        if (node.nodeType === 3) text += node.nodeValue;
+        else if (node.nodeType === 1) {
+          if (node.classList.contains('fcm-cheer-amount') || node.classList.contains('fcm-gif-label')) continue;
+          if (node.tagName === 'IMG') text += node.getAttribute('alt') || '';
+          else if (node.tagName === 'BR') text += '\n';
+          else stack.push(...Array.from(node.childNodes).reverse());
+        }
+      }
+      return text;
+    }
+
     function openMenu(event, authorEl) {
       event.preventDefault();
       event.stopPropagation();
       const name = authorEl.dataset.name || '';
       const platform = authorEl.dataset.platform || '';
-      if (!name || !FCM.SEND_PLATFORMS.includes(platform)) return;
+      if (!name || !FCM.REPLY_PLATFORMS.includes(platform)) return;
+      if (platform === 'youtube' && event.type !== 'contextmenu') {
+        insertMention(name, platform);
+        closeMenu();
+        return;
+      }
 
       // Acting on the message that was actually clicked is more precise than
       // guessing at "their last one", and it is the id the APIs want.
@@ -915,8 +1044,8 @@
 
       menu.innerHTML = `<div class="fcm-um-head"><span class="fcm-dot fcm-dot-${esc(platform)}"></span>`
         + `<b>${esc(name)}</b><span>${esc(meta.name)}</span></div>`
-        + '<div class="fcm-um-profile" data-state="loading">Looking them up…</div>';
-      fillProfile(platform, name);
+        + (platform === 'youtube' ? '' : '<div class="fcm-um-profile" data-state="loading">Looking them up…</div>');
+      if (platform !== 'youtube') fillProfile(platform, name);
 
       addAction(`Reply on ${meta.name}`, {
         hint: `@${name}`,
@@ -939,10 +1068,24 @@
           },
         });
       }
+      addAction('Copy message', {
+        disabled: !messageText(row).trim(),
+        run: async () => {
+          const text = messageText(row);
+          closeMenu();
+          if (!text.trim()) { toast('This message is no longer available to copy'); return; }
+          try {
+            await navigator.clipboard.writeText(text);
+            toast('Message copied');
+          } catch (_) {
+            toast('Could not copy. Select the message text and copy it manually.');
+          }
+        },
+      });
       addAction('Copy username', {
         run: () => { navigator.clipboard.writeText(name).catch(() => {}); closeMenu(); },
       });
-      addAction(`Open their ${meta.name} channel`, {
+      if (platform !== 'youtube') addAction(`Open their ${meta.name} channel`, {
         run: () => {
           window.open(
             platform === 'twitch'
@@ -955,7 +1098,8 @@
       });
 
       // ── Moderation, shown only where this viewer actually holds the badge ──
-      if (canModerate(platform)) {
+      if (platform === 'youtube') addHistory(platform, name);
+      if (platform !== 'youtube' && canModerate(platform)) {
         const act = (action, extra) => {
           onModerate(platform, action, Object.assign({}, target, extra));
           closeMenu();
@@ -1240,6 +1384,12 @@
       const author = e.target.closest('.fcm-author');
       if (author) openMenu(e, author);
       else closeMenu();
+    });
+
+    feedEl.addEventListener('contextmenu', (e) => {
+      const row = e.target.closest('.fcm-msg');
+      const author = row && row.querySelector('.fcm-author');
+      if (author) openMenu(e, author);
     });
 
     panel.addEventListener('mousedown', (e) => {
