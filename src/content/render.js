@@ -237,7 +237,9 @@
   const CHATTER_LIMIT = 200;
 
   FCM.rememberChatter = function (platform, author, color) {
-    if (!FCM.SEND_PLATFORMS.includes(platform)) return;
+    if (!FCM.REPLY_PLATFORMS.includes(platform)) return;
+    if (platform === 'youtube') author = String(author || '').replace(/^@+/, '');
+    if (!author) return;
     const key = `${platform}:${String(author).toLowerCase()}`;
     const existing = chatters.get(key);
     if (existing) {
@@ -275,6 +277,12 @@
     return (hit && hit.color) || '';
   }
   FCM.chatterColor = chatterColor;
+
+  FCM.forgetChatters = function (platform) {
+    for (const [key, chatter] of chatters) {
+      if (chatter.platform === platform) chatters.delete(key);
+    }
+  };
 
   FCM.recentChatters = function () {
     return [...chatters.values()];
@@ -324,6 +332,13 @@
   FCM.resetChannelView = function () {
     FCM.PLATFORMS.forEach((platform) => FCM.resetPlatformView(platform));
     chatters.clear();
+    FCM.setYouTubeIdentity('');
+  };
+
+  FCM.setYouTubeIdentity = function (name) {
+    view.youtubeSelfName = String(name || '').replace(/^@+/, '').slice(0, 100).trim().toLowerCase();
+    const names = [...view.selfNames, view.youtubeSelfName].filter(Boolean).sort((a, b) => b.length - a.length);
+    view.youtubeMentionPattern = names.length ? new RegExp(`@?(?:${names.map(FCM.escapeRegExp).join('|')})`, 'giu') : null;
   };
 
   FCM.setViewSettings = function (settings) {
@@ -337,6 +352,7 @@
     view.mentionPattern = view.selfNames.length
       ? new RegExp(`@?(?:${view.selfNames.map(FCM.escapeRegExp).join('|')})`, 'gi')
       : null;
+    FCM.setYouTubeIdentity(view.youtubeSelfName);
   };
 
   /**
@@ -491,10 +507,10 @@
    */
   function mentionTokenFor(word, platform) {
     if (!platform || word.charCodeAt(0) !== 64) return null;
-    const match = AT_MENTION_RE.exec(word);
+    const match = (platform === 'youtube' ? /^@([\p{L}\p{N}\p{M}_.·-]{1,100})([!?,;:]*)$/u : AT_MENTION_RE).exec(word);
     if (!match) return null;
     const name = match[1];
-    if (view.selfNames.includes(name.toLowerCase())) return null;
+    if (view.selfNames.includes(name.toLowerCase()) || (platform === 'youtube' && name.toLowerCase() === view.youtubeSelfName)) return null;
     return {
       token: { type: 'user', text: `@${name}`, platform, color: chatterColor(platform, name) },
       tail: match[2],
@@ -753,10 +769,9 @@
   // Splits text tokens so each occurrence of one of the user's names becomes its
   // own token. Word boundaries are checked by hand because names can contain
   // underscores and may be preceded by '@'.
-  function highlightMentionTokens(tokens) {
-    const pattern = view.mentionPattern;
+  function highlightMentionTokens(tokens, pattern = view.mentionPattern, unicode = false) {
     if (!pattern) return { tokens, mentioned: false };
-    const isWordChar = (ch) => /[A-Za-z0-9_]/.test(ch);
+    const isWordChar = (ch) => (unicode ? /[\p{L}\p{N}\p{M}_.·-]/u : /[A-Za-z0-9_]/).test(ch);
     let mentioned = false;
 
     const out = [];
@@ -772,7 +787,6 @@
         const beforeOk = start === 0 || !isWordChar(text[start - 1]) || text[start] === '@';
         const afterOk = end >= text.length || !isWordChar(text[end]);
         if (!beforeOk || !afterOk) {
-          if (pattern.lastIndex === start) pattern.lastIndex++;
           continue;
         }
         if (start > last) out.push({ type: 'text', text: text.slice(last, start) });
@@ -781,7 +795,6 @@
         last = end;
       }
       if (last < text.length) out.push({ type: 'text', text: text.slice(last) });
-      else if (last === 0 && !text) out.push(token);
     });
 
     return { tokens: out, mentioned };
@@ -796,7 +809,7 @@
         // `alt` still carries the name, for a screen reader and for the preview
         // to look the emote up by.
         return `<img class="fcm-emote ${token.cls}" src="${FCM.escapeHtml(token.url)}"`
-          + ` alt="${FCM.escapeHtml(token.name)}" loading="lazy">`;
+          + ` alt="${FCM.escapeHtml(token.name)}" loading="lazy"${token.cls === 'youtube-emote' ? ' referrerpolicy="no-referrer"' : ''}>`;
       }
       if (token.type === 'gif') {
         // The picture, and behind it a link to the same address so it can be
@@ -863,9 +876,21 @@
   };
 
   FCM.renderMessageBody = function (platform, text, opts = {}) {
-    // Captured YouTube text is read-only: never reinterpret it as another
-    // provider's emotes, GIFs, reply targets or other executable row markup.
-    if (platform === 'youtube') return { html: FCM.escapeHtml(text), mentioned: false };
+    // YouTube images come only from validated positions in captured text.
+    // Never reinterpret ordinary words as another provider's emotes or markup.
+    if (platform === 'youtube') {
+      const content = text == null ? '' : String(text);
+      const tokens = [];
+      let end = 0;
+      for (const emote of FCM.youtube.sanitizeEmotes(opts.youtubeEmotes, content)) {
+        tokens.push(...expandTextRun(content.slice(end, emote.start), 'youtube'),
+          { type: 'emote', cls: 'youtube-emote', url: emote.url, name: content.slice(emote.start, emote.end) });
+        end = emote.end;
+      }
+      tokens.push(...expandTextRun(content.slice(end), 'youtube'));
+      const result = highlightMentionTokens(tokens, view.youtubeMentionPattern, true);
+      return { html: serializeTokens(result.tokens), mentioned: result.mentioned };
+    }
     let tokens;
     if (platform === 'twitch') tokens = tokenizeTwitch(text, opts.emoteMap, opts.gifs);
     else if (platform === 'kick') tokens = tokenizeKick(text, opts.emotes);
@@ -1071,7 +1096,12 @@
   }
 
   FCM.renderBadges = function (platform, badgesRaw) {
-    if (platform === 'youtube') return '';
+    if (platform === 'youtube') {
+      const badges = FCM.youtube.sanitizeBadges(badgesRaw);
+      return badges.length ? '<span class="fcm-badges">' + badges.map(badge =>
+        `<img class="fcm-badge-img youtube-badge" src="${FCM.escapeHtml(badge.url)}"`
+        + ` alt="" role="img" aria-label="${FCM.escapeHtml(badge.label)}" title="${FCM.escapeHtml(badge.label)}" referrerpolicy="no-referrer">`).join('') + '</span>' : '';
+    }
     if (platform === 'twitch') return renderTwitchBadges(String(badgesRaw || ''));
     return renderKickBadges(Array.isArray(badgesRaw) ? badgesRaw : []);
   };
@@ -1156,7 +1186,7 @@
 
     const body = FCM.renderMessageBody(platform, msg.text, msg);
     const authorLower = String(msg.author || '').toLowerCase();
-    const isSelf = view.selfNames.includes(authorLower);
+    const isSelf = view.selfNames.includes(authorLower) || (platform === 'youtube' && authorLower.replace(/^@+/, '') === view.youtubeSelfName);
     if (body.mentioned && !isSelf) classes.push('fcm-mentioned');
     // `/me`: the platform's own chats drop the colon and paint the whole line
     // in the sender's colour, which is the only thing that tells an action
@@ -1186,8 +1216,8 @@
     // The per-badge labels already say MOD/SUB/VIP, so the summary chip is only
     // rendered when nothing else identified the role — otherwise every Kick row
     // reads "SUBSUBname".
-    const badgeHtml = FCM.renderBadges(platform, msg.badgesRaw);
-    const chip = (!badgeHtml && msg.badgeClass)
+    const badgeHtml = FCM.renderBadges(platform, platform === 'youtube' ? msg.youtubeBadges : msg.badgesRaw);
+    const chip = (platform !== 'youtube' && !badgeHtml && msg.badgeClass)
       ? `<span class="fcm-chip fcm-chip-${msg.badgeClass}">${msg.badgeClass.toUpperCase()}</span>`
       : '';
     // Timestamps and badges are always built and hidden with CSS rather than
@@ -1207,16 +1237,38 @@
         + 'FIRST MESSAGE</span>'
       : '';
 
+    const youtubeEvent = platform === 'youtube' && FCM.youtube.sanitizeEvent(msg.youtubeEvent);
+    let eventHtml = '';
+    if (youtubeEvent) {
+      el.classList.add('fcm-youtube-event');
+      if (!youtubeEvent.header && msg.text === FCM.youtube.EVENT_LABELS[youtubeEvent.kind]) body.html = '';
+      eventHtml = `<span class="fcm-youtube-event-label">${FCM.youtube.EVENT_LABELS[youtubeEvent.kind]}`
+        + `${youtubeEvent.amount ? ' · ' + FCM.escapeHtml(youtubeEvent.amount) : ''}</span>`;
+      if (youtubeEvent.header && youtubeEvent.header !== msg.text) eventHtml += `<span class="fcm-youtube-event-header">${FCM.escapeHtml(youtubeEvent.header)}</span>`;
+    }
+
     el.innerHTML = replyContextHtml(platform, msg.reply)
       + `<span class="fcm-dot fcm-dot-${platform}"></span>`
       + time
       + firstTag
       + `<span class="fcm-author fcm-author-${platform}"${colorAttr}`
       + ` data-name="${FCM.escapeHtml(msg.author)}" data-platform="${platform}"`
-      + ` title="${platform === 'youtube' ? 'YouTube · replies and moderation unavailable' : `${FCM.escapeHtml(msg.author)} — click for reply and more`}">`
+      + ` title="${platform === 'youtube' ? 'click to reply on YouTube with an @mention' : `${FCM.escapeHtml(msg.author)} — click for reply and more`}">`
       + `${badgeHtml}${chip}${FCM.escapeHtml(msg.author)}</span>`
       + (msg.action ? '' : '<span class="fcm-colon">:</span>')
+      + eventHtml
       + `<span class="fcm-body"${msg.action ? colorAttr : ''}>${body.html}</span>`;
+
+    if (platform === 'youtube') el.addEventListener('error', event => {
+      const img = event.target;
+      if (img.classList.contains('youtube-emote')) img.replaceWith(document.createTextNode(img.alt));
+      else if (img.classList.contains('youtube-badge')) {
+        const group = img.parentElement;
+        img.remove();
+        if (!group.childElementCount) group.remove();
+      }
+    }, true);
+
 
     return el;
   };

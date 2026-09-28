@@ -18,12 +18,23 @@ dashboard and other dashboard pages shows or removes it automatically.
 ![Firefox](https://img.shields.io/badge/Firefox-140%2B-orange)
 [![Version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FJRBlaze%2FFriendlyChatExtension%2Fmain%2Fmanifest.json&query=%24.version&label=version&color=green)](../../releases/latest)
 
+## New in 1.23.1
+
+- **Recent emote bar:** quickly reuse sent Twitch/Kick emotes, remembered separately
+  on this device, with an option to hide the bar.
+- **YouTube messaging:** sending selects automatically when its signed-in composer
+  is ready; click a name or use @autocomplete for a YouTube-only mention reply.
+- **Richer YouTube chat:** received emotes, available badge images without text
+  replacements, links, mention highlights, paid messages and membership notices.
+- **More chat tools:** YouTube feed visibility and author menus, plus **Copy message**
+  on all three platforms for pasting a message elsewhere without its author header.
+
 ## New in 1.23.0
 
 - **YouTube in the merged feed:** add a live-video or channel URL, choose a live
   suggestion, or save a channel link for automatic loading when that creator is live.
 - **Optional YouTube sending:** sign into YouTube in the same browser, check the
-  displayed account, and select its red send target when available. Sending starts off.
+  displayed account; its red send target turns on automatically when ready and can be toggled off.
 - **Easier setup:** new and existing users receive an introduction with an optional
   YouTube access button. Firefox can enable embedded sign-in without disabling tracking protection.
 - **Message recall:** use Up/Down to recall recently sent messages, edit them, and send again.
@@ -36,10 +47,10 @@ dashboard and other dashboard pages shows or removes it automatically.
 | --- | --- | --- | --- |
 | Merged reading | Yes | Yes | Optional, after allowing site access |
 | Where the overlay appears | Twitch channel pages | Kick channel pages and dashboard `/stream` | Inside the overlay on Twitch/Kick; no overlay on YouTube pages |
-| Sending | Connected account or the current site's native composer | Connected account or the current site's native composer | Signed-in embedded native composer; explicitly selected per visit |
+| Sending | Connected account or the current site's native composer | Connected account or the current site's native composer | Signed-in embedded native composer; selected automatically when ready |
 | Saved channel links | Twitch/Kick pairing | Twitch/Kick pairing | Link a YouTube channel to either or both manually paired hosts |
-| Reply and moderation tools | With the required account/standing | With the required account/standing | Not supported |
-| Rich emotes and badges | Native and supported third-party sets | Native and supported third-party sets | Plain message text and emoji alternatives; no rich badge/sticker rendering |
+| Reply and moderation tools | With the required account/standing | With the required account/standing | Mention replies; no moderation |
+| Rich emotes and badges | Native and supported third-party sets | Native and supported third-party sets | Captured native emotes, available badge images, and supported sticker images |
 
 YouTube support uses its embedded live chat, so browser cookie restrictions and
 YouTube page changes can affect availability. It needs no YouTube Data API key
@@ -51,10 +62,23 @@ and the [privacy policy](PRIVACY.md).
 Actual extension UI with sample chat and accounts. [More screenshots](store-screenshots/2026-09-27/README.md)
 show YouTube sending, saved links, Kick, and access setup.
 
+## Copy a chat message
+
+Right-click a message in the merged Twitch, Kick or YouTube feed, then choose
+**Copy message**. Paste it into another chat or app with your usual Paste command
+(Ctrl+V on Windows). This is useful for carrying a raid message to the next channel.
+
+Only the message body is copied: the author's name, timestamp, badges and reply
+header are left out. Spacing, line breaks, links and mentions within the message
+are preserved, and rendered emotes become their text names. Copying leaves your
+draft alone and does not send or automatically paste anything. Empty or deleted
+messages cannot be copied through this action. A confirmation appears after a
+successful copy; if the browser blocks it, select the text and copy it manually.
+
 ## Add YouTube chat
 
-YouTube is an optional source in the merged feed on Twitch and Kick, with separately
-selected sending through YouTube's own chat box when your browser makes it available.
+YouTube is an optional source in the merged feed on Twitch and Kick. Sending through
+YouTube's own chat box turns on automatically when its signed-in composer is ready.
 On installation, a one-time setup page introduces YouTube and offers **Allow
 YouTube access**. Existing users receive the same introduction in a background
 tab when this update arrives. Click the button and approve your browser's request,
@@ -109,7 +133,7 @@ local to this browser and included in settings backups; manage them individually
 under **Saved YouTube links** on the extension's options page.
 
 YouTube chat uses two hidden embedded frames on the current Twitch/Kick page:
-one reads chat and the other handles explicitly selected sends. Keeping capture
+one reads chat and the other handles messages sent to YouTube. Keeping capture
 separate prevents YouTube's temporary local send preview from appearing as a
 second message. Both close when the source stops; no separate tab opens.
 It uses no YouTube Data API key and needs
@@ -118,20 +142,66 @@ or changes to YouTube's layout can prevent capture; the controls report failures
 and limit reconnect attempts. Normal YouTube page requests and browser-permitted
 cookies still apply. See [Privacy](PRIVACY.md).
 
-The feed shows ordinary text, paid-message text, and membership rows that expose
-message text. Emoji use their text alternatives and timestamps show receipt time.
-The initial recent chat can appear. Rich stickers, YouTube badges, donation
-formatting, complete history, and some moderation removals are not supported.
+The feed shows ordinary messages, paid messages and supported membership events. Native YouTube emoji and channel emotes render inline when the captured
+message exposes a supported image URL. Hover to preview the image and its name.
+Unsupported or failed images keep their text alternatives. Timestamps show receipt time.
+The initial recent chat can appear. Complete server history and some moderation
+removals are not available through the attached reader.
 Explicitly deleted rows are marked, and duplicate IDs are scoped to the video.
-Captured YouTube messages do not offer reply or moderation actions. Names have
-no extra YT badge; the platform color and message metadata still identify YouTube.
+Emote rendering uses the images already identified in captured messages; it does not
+add a YouTube emote picker, membership entitlement lookup or emote sending. Up to
+32 emotes per message are rendered; additional emotes retain their text. Images
+come from validated YouTube image hosts, with no referrer sent by the overlay.
+**YouTube chat tools:** the YouTube button above its setup controls shows or hides
+that source in the feed without disconnecting it. New messages respect that choice.
+**Open YouTube chat** opens the attached video’s native chat in a separate tab for
+moderation, polls, membership/emote selection and other controls that require
+YouTube’s own interface. The shortcut disappears when this source is removed.
 
-**Sending to YouTube is off by default.** When the attached YouTube chat exposes an
-editable, signed-in composer, its send target shows the account that will post.
-Check that account, explicitly select the YouTube target, then type and send from
-Friendly Chat. This choice lasts only for the current visit and resets when the
-source or account changes. Adding a chat, allowing access or saving a channel link
-does not select YouTube for sending.
+Links in captured messages are clickable, and mentions use the same highlighting
+rules as other chats. Your currently displayed YouTube sending identity is included
+automatically; names in **Highlight my names** still apply. This identity stays in
+memory and clears on disconnect or leaving the channel. Emote names do not create
+false mention highlights or turn into another platform’s emotes.
+
+YouTube badges use the actual image exposed by its chat, when a supported image
+URL is available. Badges without a usable image, including failed downloads, are
+omitted; there are no MEMBER, MOD or other text replacements. Available captions
+remain on hover. **Badges** hides these images like Twitch/Kick badges. Up to four
+badge images are shown per message. They never grant moderation or membership
+rights. Super Chats show their amount and message. Super Stickers show available
+supported images or a text fallback. Membership milestones, gifted memberships and
+gift-received notices retain available header text, even without a message body.
+Turning **Events** off hides new membership/gift notices; paid chat remains visible.
+Amounts and durations are displayed as supplied, without guessing a currency,
+conversion, membership length or purchase entitlement.
+
+Right-click a YouTube author for **Copy username**, **Reply on YouTube**, and the
+last six messages from that person still in this feed. This is local recent history;
+it does not fetch their account or older messages. A normal click still replies.
+
+**Reply to a YouTube viewer** by clicking their name in the merged feed, or typing
+`@` followed by part of their name and selecting the YouTube autocomplete entry
+with Tab, Enter or a click. This inserts one `@mention`, preserves your draft,
+and shows **Replying to ... on YouTube**. Press Send or Enter to send the reply
+only to YouTube, even if Twitch and Kick are normally selected. The mention counts
+toward YouTube's 200-character limit. Escape or the reply bar's cancel button
+returns to your normal send targets.
+
+These are plain-text mention replies, not native reply threads. A signed-in,
+available YouTube composer is required. A source or account change blocks an
+unfinished reply until you select its recipient again; it never reroutes that
+reply to another chat. Suggestions use recently captured authors, and are cleared
+when the YouTube source is replaced or removed. YouTube moderation remains
+unavailable. Names have no extra YT badge; their color identifies the platform.
+
+**Sending to YouTube turns on automatically** when the attached chat exposes an
+editable, signed-in composer. Its send target shows the account that will post.
+Check that account before sending; click the YouTube target to turn it off or on.
+A manual deselection survives readiness updates for that connection. A new source
+or account uses the automatic default again. This choice stays in memory for the
+current visit. Adding chat, allowing access or saving a link alone cannot send a
+message: the native composer must be ready, and you must press Send or Enter.
 
 YouTube accepts plain text up to **200 characters** here; longer messages and control
 characters are refused, never shortened. Normal YouTube rules still apply, including
@@ -153,8 +223,8 @@ profile and interact with its page before trying setup if Firefox refuses access
 
 The setup briefly shows the sending frame, reloads that same frame after approval,
 and hides it once its account is ready. The capture frame keeps reading throughout.
-Check the displayed YouTube account and select its target to send; approval never
-selects it or sends a message. Cancel, denial, or a timeout leaves reading available.
+Check the displayed YouTube account before sending. Once its composer is ready,
+the target turns on automatically; approval alone never sends a message. Cancel, denial, or a timeout leaves reading available.
 Use **Cancel setup** on the YouTube target to stop a pending setup or reload.
 If sending setup fails after reloading, remove and add YouTube chat to try again.
 On later visits, a browser permission already marked granted can be reactivated
@@ -183,7 +253,7 @@ has signed. Chrome is first below; Firefox is [further down](#install-in-firefox
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.23.0.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.23.1.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and an extra folder named `FriendlyChatExtension-main`
@@ -215,7 +285,7 @@ Firefox ESR 140. Firefox for Android is not supported: the sign-in API the exten
 accounts with does not exist there.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.23.0-firefox.xpi` from the Assets list. That file is the add-on, signed
+`FriendlyChatExtension-v1.23.1-firefox.xpi` from the Assets list. That file is the add-on, signed
 by Mozilla, and there is nothing to unzip.
 
 1. **Open the file with Firefox.** Click it in Firefox's downloads list, or drag the file from
@@ -242,7 +312,7 @@ The add-on is not on addons.mozilla.org, and will not be: Mozilla signs it witho
 and this repository's releases are the only place it is published.
 
 **Trying an unsigned build.** Each release also carries
-`FriendlyChatExtension-v1.23.0-firefox-unsigned.xpi`, the same package before Mozilla signed it.
+`FriendlyChatExtension-v1.23.1-firefox-unsigned.xpi`, the same package before Mozilla signed it.
 Opened the ordinary way, release Firefox refuses it as unverified; it loads only as a temporary
 add-on: open `about:debugging`, choose *This Firefox*, press *Load Temporary Add-on…* and pick the
 file itself, without unpacking it. A temporary add-on is removed when Firefox restarts, and its
@@ -302,7 +372,7 @@ inside, because Chrome builds up to v1.20.1 take the first `.zip` on a release a
   connect it. The same logic runs in reverse on Kick.
 - **One merged feed.** Twitch and Kick messages interleave in a single scroll, each tagged with
   a coloured dot and the platform's own username colour, and each filterable on and off.
-  Optional YouTube messages join that same feed, with a separately selected native send target when available.
+  Optional YouTube messages join that same feed, with an automatically selected native send target when its signed-in composer is ready.
 - **Every emote you can actually use.** Twitch global, channel, subscriber, follower, bits-tier,
   hype-train, rewards and Prime emotes; Kick's channel, global and emoji sets, the emotes your
   Kick account has collected, and the sets of the other Kick channels you subscribe to; and 7TV,
@@ -352,8 +422,16 @@ inside, because Chrome builds up to v1.20.1 take the first `.zip` on a release a
 - **Favourite emotes.** Star one in the picker and it gets a row of its own at the top, and sorts
   first in `:` autocomplete.
 - **Choose your send destinations.** Send to Twitch, Kick, or both with their target
-  chips. Add YouTube as a separately selected destination when its signed-in native
-  composer is available; YouTube sending is never selected automatically.
+  chips. YouTube becomes a selected destination automatically when its signed-in native
+  composer is ready; its chip can turn sending off or on.
+- **Recent emote bar:** recently sent Twitch and Kick emotes appear above the message
+  box. Click or keyboard-activate an emote to insert it at the caret without sending.
+  Up to 12 names per platform are remembered on this device, separately for Twitch
+  and Kick. Only emotes available in the current chat's loaded sets are shown; a
+  long bar scrolls horizontally. **Recent emote bar** in overlay settings or the
+  options page turns the bar off or on. Hiding it retains your recent names.
+  The names are local only and excluded from sync and settings backups; the
+  visibility preference syncs and is included in backups like other settings.
 - **An emote on its own goes where that emote is.** Sent to the other chat it would arrive as a
   bare word — `PogU`, alone, to people with no idea what it was meant to be — so a message that
   is nothing but emotes is only sent where they exist, and the row above the box says so as you
@@ -1263,7 +1341,7 @@ src/
     overlay.css
     youtube-source.js attached reader/sender frame lifecycle
     youtube-reader.js bounded native chat capture inside marked frames
-    youtube-send.js   explicitly selected native sends and result checking
+    youtube-send.js   user-triggered native sends and result checking
     youtube-access.js Firefox embedded sign-in access setup
     youtube-controls.js add/remove/link controls and current-visit capture
     youtube-suggestions.js permitted live-channel suggestions
@@ -2317,14 +2395,14 @@ was never going to see in a friendly test:
 
 - **YouTube is an optional attached source.** The overlay runs on Twitch/Kick,
   not YouTube watch pages. Reading/sending depend on YouTube's live-chat page and
-  browser embedding/session rules. Sending starts off, accepts up to 200 plain-text
-  characters, and does not provide YouTube reply or moderation controls. See
+  browser embedding/session rules. Sending turns on when signed in and ready, accepts up to 200 plain-text
+  characters including mentions, and provides no native reply threads or moderation controls. See
   [YouTube setup](#add-youtube-chat) for supported content and sign-in details.
 - **Sending between Twitch and Kick needs a connected account.** Without one, a typed message can
   only go to the site you are on, through its own chat box. The target chips say which case you
   are in, and connecting an account is what unlocks sending to both at once. YouTube instead
-  uses its attached native composer and requires an available signed-in session and an
-  explicit send-target selection for the current visit.
+  uses its attached native composer and requires an available signed-in session. Its
+  target is selected automatically and can be toggled for the current visit.
 - **Sign-in needs a one-off registration step.** Both platforms reject the OAuth redirect until
   the extension's redirect URL is registered with them. The overlay's *Settings -> Accounts*
   panel shows the URL when a redirect-related sign-in failure needs attention, alongside what

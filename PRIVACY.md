@@ -1,9 +1,9 @@
 # Privacy Policy — Friendly Chat Extension
 
-_Last updated: September 26, 2026_
+_Last updated: September 28, 2026_
 
 Friendly Chat Extension shows merged Twitch and Kick chat on the stream you
-are watching, with optional YouTube chat and explicitly selected native sending. This page explains what
+are watching, with optional YouTube chat and native sending when signed in and ready. This page explains what
 information it uses, where that information goes, and what it never does.
 
 The short version: **your information stays in your browser, except when the
@@ -40,7 +40,7 @@ you choose Check YouTube or visit another channel. No suggested identity is save
 
 An explicit Add action or a saved YouTube link loads two hidden YouTube
 chat frames. One only captures messages; the other provides the native composer
-for explicitly selected sending. Message rows in the sending frame are not
+for messages you choose to send. Message rows in the sending frame are not
 forwarded to the merged feed, so its temporary send previews cannot duplicate
 captured messages. Both frames use normal YouTube page requests and may consume
 more browser resources than a single chat frame. Both close when capture stops.
@@ -49,19 +49,31 @@ automatic capture on future visits. A paired host is included only when you sele
 the named Also link option. Offline or failed lookups do not load a frame, and site
 access is always required. Saved links take priority over suggestions.
 The extension reads the frame's displayed author names, message IDs, plain
-message text, emoji alternatives and explicit deletion markers. It does not read
+message text, emoji alternatives, supported emote/sticker/badge image URLs, displayed
+author-role captions, paid/membership/gift event details and explicit deletion markers. It does not read
 YouTube account tokens, moderate chat or change a normal YouTube page's layout.
 The reader runs in the extension's isolated content-script world
 only in a marked chat frame. A channel URL is resolved again when you choose Add,
 Save, Check for a saved link, or visit a host with a saved link;
 a failed lookup does not load chat. Direct video input does not need discovery.
 
-YouTube sending is off by default and is never enabled by granting site access,
-adding chat or saving a channel link. When the sending frame exposes a signed-in editable
-composer, the extension reads its displayed account label and shows it beside the
-YouTube send target. You must select that target for the current visit. This choice
-and account label stay in memory, are not synced or backed up, and the choice resets
-when the source or account changes.
+Captured native emotes and available badges may load images from `yt3.ggpht.com`,
+`yt3.googleusercontent.com` or YouTube's `/s/gaming/emoji/` directory. The overlay
+validates HTTPS URLs and emote positions, renders at most 32 emotes and four badge
+images per message, and sends no referrer for these images or emote hover previews. Image requests
+reach those services under your browser's network and cookie policies; normal
+browser caching may apply. Image metadata stays with the current feed in memory,
+is not saved in extension storage, synced or backed up, and gives no membership
+or sending rights. Unsupported or failed emotes retain their text alternatives;
+unsupported or failed badge images are omitted, with no visible text replacement.
+
+When the sending frame exposes a signed-in editable composer, the extension reads
+its displayed account label, shows it beside the YouTube send target and selects
+that target automatically. Check the account before sending; you can turn the
+target off or on. A manual deselection is retained for that connection. This choice
+and account label stay in memory, are not synced or backed up, and a new source or
+account uses the automatic default again. Granting access, adding chat or saving a
+link alone never sends a message. You must still press Send or Enter.
 
 An explicit send passes the typed text through the extension's local message bridge
 to the sending frame's native composer and presses its Send button once. YouTube receives the
@@ -72,8 +84,24 @@ normal YouTube restrictions remain in effect. Existing native drafts are preserv
 The extension treats a cleared editor as submitted, without claiming server delivery,
 and never retries an uncertain result. The native composer must be available in the
 embedded context; a separate signed-in YouTube tab does not guarantee that, particularly
-when the browser partitions or blocks third-party cookies. Captured messages have no
-reply or moderation controls in Friendly Chat.
+when the browser partitions or blocks third-party cookies. You can click a captured
+YouTube author's name or select an @mention suggestion to prepare a plain-text
+reply addressed only to YouTube. Recently captured author names are held in the
+bounded in-memory chatter list; they are not saved, synced or backed up. YouTube
+candidates are cleared when that source is replaced, removed or destroyed. Replies
+still require your Send/Enter action and an available signed-in composer. A source
+or account change blocks an unfinished reply until you choose the recipient again.
+YouTube moderation and native reply threads are not provided.
+Clickable message links and the **Open YouTube chat** shortcut open only when you
+choose them. The shortcut points to the attached video’s native chat. The
+extension does not perform YouTube moderation, poll voting, gifting or purchases.
+Role badges are descriptive only. The right-click author menu copies a username
+only when you choose Copy, and shows at most six messages already in the current
+feed; it makes no profile or message-history request. The displayed sender name
+is used in memory for mention highlighting, and is cleared on disconnect or
+leaving the channel. The feed visibility choice is also in memory for this visit.
+Event amounts, labels and badge captions are bounded and escaped before display;
+these records are not saved, synced or backed up.
 
 In Firefox, an optional **Enable sending** setup briefly shows the sender frame
 with a Friendly Chat permission button. Clicking that button inside the frame
@@ -88,8 +116,8 @@ It never requests new access automatically when permission is prompt, denied,
 unknown, or unsupported. After a grant, the same sender frame reloads once to
 load YouTube with that browser-approved session. The capture frame keeps running.
 Setup can be cancelled, and failed access leaves reading available. Successful
-setup still requires checking the native account and explicitly selecting YouTube
-before sending; it does not send a message or change Twitch/Kick send choices.
+setup selects YouTube once its signed-in composer is ready. Check the displayed
+account before sending; setup never sends a message or changes Twitch/Kick choices.
 
 Temporary input and captured rows stay in the current tab's memory/feed,
 not extension storage, sync or settings backups. Explicit saved links store only
@@ -110,6 +138,14 @@ or Kick page can access the messages displayed on it. Captured rows are not sent
 by the extension to an analytics service or stored by a Friendly Chat server.
 You can revoke YouTube site access in the browser's extension settings.
 
+### Copying messages
+
+Choosing **Copy message** in a chat row's menu writes only that message's body to
+your system clipboard, with emote names as text. It omits the author, timestamp,
+badges and reply header. This action does not read the clipboard, send or paste
+a message, or add message history to extension storage, sync or backups. Your
+current draft is unchanged. You choose where to paste the copied text.
+
 ### Sent-message recall
 
 The composer keeps up to 50 recently sent message texts in the current tab's
@@ -121,6 +157,17 @@ This history is discarded when the overlay is destroyed, including on channel
 navigation or page reload. It is not written to extension storage, synced,
 included in backups or sent to any service by recalling it. A resend uses the
 currently selected destinations and their existing sending paths.
+
+### Recent emotes
+
+The recent-emote bar remembers up to 12 successfully sent emote names for each of
+Twitch and Kick, separately, in local extension storage on this device
+(`fcm_recent_emotes_v1:twitch` and `fcm_recent_emotes_v1:kick`). It does not store
+message text, image URLs, account identifiers or timestamps with those names.
+The names are not synced, backed up or sent to a service. Images and availability
+come from the current chat's loaded emote sets. The bar's on/off preference syncs
+and is included in settings backups. Hiding the bar retains recent names; removing
+the extension deletes its local records.
 
 ### Existing Twitch/Kick data
 

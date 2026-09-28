@@ -45,8 +45,8 @@ async function run() {
     assert.match(html, /New in 1\.23\.0: YouTube chat/);
     assert.match(html, /Merge YouTube chat into Twitch and Kick/);
     assert.match(html, /Save channel links to load live chat automatically/);
-    assert.match(html, /Sending is optional and starts off/);
-    assert.match(html, /check the displayed account and select the YouTube send target for this visit when available/);
+    assert.match(html, /Sending turns on automatically when the signed-in YouTube chat box is ready/);
+    assert.match(html, /Check the displayed account; click the YouTube send target to turn it off or on/);
     assert.doesNotMatch(html, /read-only YouTube/);
     assert.match(html, /id="youtube-access-status"[^>]*role="status"/);
     assert.match(html, /id="youtube-access-allow"[^>]*type="button"[^>]*disabled/);

@@ -66,7 +66,7 @@ async function run() {
     assert.equal(f.state.closes, 0);
     request.resolve(true); await granting;
     assert.match(f.text(), /YouTube is ready/);
-    assert.match(f.text(), /Sending stays off until you select its available send target/);
+    assert.match(f.text(), /Sending turns on automatically when the signed-in YouTube chat box is ready/);
     assert.doesNotMatch(f.text(), /read only/);
     assert.equal(f.elements.get('allow').disabled, true);
     assert.equal(f.elements.get('continue').textContent, 'Done');
@@ -164,8 +164,8 @@ async function run() {
   const html = fs.readFileSync(path.join(ROOT, 'src/youtube/permission.html'), 'utf8');
   for (const text of ['New in 1.23.0', 'YouTube joins your merged chat.', 'live-video or channel URL',
     'Add YouTube chat', 'Settings → Cross-platform', 'automatically on future visits',
-    'Sending starts off', 'displayed account', 'send target for this visit', '200 characters',
-    'normal chat restrictions', 'especially in Firefox', 'no reply or moderation controls',
+    'Sending turns on automatically', 'displayed account', 'turn its send target off or on', '200 characters',
+    'normal chat restrictions', 'especially in Firefox', 'click a name or select an @mention suggestion', 'no moderation controls',
     'not that delivery was confirmed', 'never retried automatically',
     'Access is optional', 'lookups omit cookies and credentials',
     'may use cookies allowed by your browser', 'not saved to extension storage',
@@ -175,14 +175,14 @@ async function run() {
   assert.doesNotMatch(html, /experimental|local trial|<script[^>]*>\s*[^<\s]/i);
   assert.doesNotMatch(html, /YouTube · read only|YouTube is read only|cannot send/i);
   const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
-  assert.match(readme, /Sending to YouTube is off by default/);
+  assert.match(readme, /Sending to YouTube turns on automatically/);
   assert.match(readme, /200 characters/);
   assert.match(readme, /never retries\s+an uncertain send/);
   assert.match(readme, /no separate YouTube account connection,\s+API key, hosted service, token reading or additional extension permission/);
   assert.match(readme, /Allow YouTube sign-in/);
   assert.match(readme, /keeping Enhanced Tracking Protection enabled/);
   assert.match(readme, /Twitch\s+and Kick have separate access grants/);
-  assert.match(readme, /approval never\s+selects it or sends a message/);
+  assert.match(readme, /approval alone never sends a message/);
   const privacy = fs.readFileSync(path.join(ROOT, 'PRIVACY.md'), 'utf8');
   assert.match(privacy, /choice\s+and account label stay in memory, are not synced or backed up/);
   assert.match(privacy, /does not read or copy YouTube tokens or cookies for sending/);

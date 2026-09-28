@@ -10,6 +10,21 @@
     suggestionBox.className = 'fcm-youtube-suggestions';
     suggestionBox.hidden = true;
     container.appendChild(suggestionBox);
+    const visibility = doc.createElement('button');
+    visibility.type = 'button'; visibility.className = 'fcm-chip-btn';
+    visibility.dataset.platform = 'youtube'; visibility.dataset.on = 'false';
+    visibility.textContent = 'YouTube'; visibility.disabled = true;
+    visibility.setAttribute('aria-label', 'Show or hide YouTube messages');
+    visibility.setAttribute('aria-pressed', 'false');
+    visibility.addEventListener('click', () => {
+      if (visibility.disabled) return;
+      if (filter.has('youtube')) filter.delete('youtube'); else filter.add('youtube');
+      if (!filter.size) filter.add('youtube');
+      visibility.dataset.on = String(filter.has('youtube'));
+      visibility.setAttribute('aria-pressed', visibility.dataset.on);
+      feed.applyFilter(filter); onFilterChange();
+    });
+    container.appendChild(visibility);
     const section = doc.createElement('details');
     section.className = 'fcm-youtube';
     const summary = doc.createElement('summary');
@@ -39,6 +54,10 @@
     access.target = '_blank';
     access.rel = 'noopener noreferrer';
     access.textContent = 'Allow YouTube access';
+    const nativeChat = doc.createElement('a');
+    nativeChat.textContent = 'Open YouTube chat'; nativeChat.target = '_blank';
+    nativeChat.rel = 'noopener noreferrer'; nativeChat.hidden = true;
+    nativeChat.title = 'Open this stream’s native YouTube chat for moderation, polls, emotes and other YouTube controls';
     const status = doc.createElement('p');
     status.setAttribute('role', 'status');
     status.textContent = 'Off. Add a live video or channel URL to merge YouTube messages on this channel.';
@@ -57,7 +76,7 @@
     pairLabel.append(pairCheck, pairText);
     const linkNote = doc.createElement('p');
     linkNote.className = 'fcm-youtube-link-note';
-    form.append(label, add, stop, check, access, status, pairLabel, save, forget, linkNote);
+    form.append(label, add, stop, check, access, nativeChat, status, pairLabel, save, forget, linkNote);
     section.append(summary, form);
     container.appendChild(section);
 
@@ -141,19 +160,32 @@
       },
       onBatch(batch) {
         if (!current() || !active) return;
-        filter.add('youtube');
-        batch.messages.forEach((message) => feed.addMessage({
+        if (visibility.disabled) {
+          visibility.disabled = false; filter.add('youtube'); visibility.dataset.on = 'true';
+          visibility.setAttribute('aria-pressed', 'true');
+        }
+        try {
+          const video = FCM.youtube.videoId(batch.videoId);
+          nativeChat.href = `https://www.youtube.com/live_chat?v=${video}&is_popout=1`; nativeChat.hidden = false;
+        } catch (_) { /* Only a validated current video can open native chat. */ }
+        batch.messages.forEach((message) => {
+          if (FCM.view.settings.showEvents === false && ['membership', 'gift', 'gift-received'].includes(message.youtubeEvent?.kind)) return;
+          feed.addMessage({
           platform: 'youtube', messageId: message.id,
           author: message.displayName, login: message.username,
-          text: message.text, timestamp: message.ts, readOnly: true,
-        }, filter));
+          text: message.text, timestamp: message.ts, readOnly: true, youtubeEmotes: message.youtubeEmotes,
+          youtubeEvent: message.youtubeEvent, youtubeBadges: message.youtubeBadges,
+        }, filter); });
         batch.deleted.forEach((id) => feed.markMessageDeleted('youtube', id));
       },
     });
 
     function drop() {
+      nativeChat.hidden = true; nativeChat.removeAttribute('href'); visibility.disabled = true;
+      visibility.dataset.on = 'false'; visibility.setAttribute('aria-pressed', 'false');
       filter.delete('youtube');
       feed.dropPlatform('youtube');
+      FCM.forgetChatters('youtube');
       if (!filter.size) {
         FCM.PLATFORMS.forEach(platform => filter.add(platform));
         feed.applyFilter(filter);
@@ -323,6 +355,7 @@
         active = false;
         ++epoch;
         source.destroy();
+        FCM.forgetChatters('youtube');
         if (suggestions) suggestions.destroy();
         clearSuggestions();
         suggestionBox.remove();

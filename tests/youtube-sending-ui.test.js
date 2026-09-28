@@ -10,8 +10,8 @@ const READY = { available: true, reason: 'ready', accountLabel: '@Viewer', sourc
 
 function fixture(options = {}) {
   const nodes = new Map(), storage = options.storage || {}, writes = [], commands = [], messages = [], nativeSends = [], youtubeSends = [], accessSetups = [], accessCloses = [];
-  const elements = [], popups = [], nativeCardQueries = [], nativeVisibility = [];
-  const listeners = new Map();
+  const elements = [], popups = [], nativeCardQueries = [], nativeVisibility = [], recentRecords = [], recentHooks = [];
+  const listeners = new Map(), timers = [], youtubeIdentities = [];
   let youtubeHooks, composeHooks, api;
   function element(tag = 'div') {
     const classes = new Set(), events = new Map();
@@ -82,7 +82,7 @@ function fixture(options = {}) {
     local: { get: async () => storage, set: async patch => { writes.push(patch); Object.assign(storage, patch); } },
     sync: { get: async () => ({}) }, onChanged: { addListener() {}, removeListener() {} },
   } };
-  const sandbox = vm.createContext({ document, chrome, console, URL, setTimeout: () => 1, clearTimeout() {}, clearInterval() {},
+  const sandbox = vm.createContext({ document, chrome, console, URL, setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; }, clearTimeout() {}, clearInterval() {},
     setInterval: () => 1, fetch: async () => ({ text: async () => '' }), window });
   sandbox.self = sandbox;
   for (const file of ['src/shared/namespace.js', 'src/shared/constants.js', 'src/shared/util.js']) {
@@ -101,7 +101,10 @@ function fixture(options = {}) {
     createDisplayFont: () => ({ destroy() {}, refresh: async () => {}, size: n => n }), makeEmoteInput() {},
     emoteOnlyPlatform: () => options.emoteHome || null, findCheer: () => options.cheer || null, toKickMessage: text => text,
     loadSettings: async () => ({ ...FCM.DEFAULT_SETTINGS, theme: 'dark', revealHighlights: false, showNativeStats: false, autoClaimBonus: false, showShareReminders: false, autoOpen: false }),
+    setYouTubeIdentity(name) { youtubeIdentities.push(name); },
     setViewSettings() {}, watchSiteTheme: () => ({ current: () => 'dark', stop() {} }),
+    createRecentEmotes: hooks => { recentHooks.push(hooks); return { record(text, platforms) { recentRecords.push({ text, platforms: Array.from(platforms) }); }, refresh() {}, destroy() {} }; },
+    setEmotes() {},
     createCompose: hooks => { composeHooks = hooks; return { closeAll() {}, handleKey: () => !!options.autocomplete }; },
     view: { emotes: { kick: { native: {} } } },
     sendViaNativeComposer: async (site, text) => { nativeSends.push(text); return options.nativeResult || { ok: true }; },
@@ -123,14 +126,14 @@ function fixture(options = {}) {
   api = FCM.createOverlay({ site, channel: 'example', onCommand(command) {
     commands.push(command);
     if (command.cmd === 'send') queueMicrotask(() => api.sendResult(command.id,
-      options.apiMissing ? {} : Object.fromEntries(command.targets.map(platform => [platform, options.apiResult || { ok: true }]))));
+      options.apiMissing ? {} : Object.fromEntries(command.targets.map(platform => [platform, options.apiResults?.[platform] || options.apiResult || { ok: true }]))));
   } });
   api.setStatus('twitch', 'connected', 'example');
   api.setStatus('kick', 'connected', 'counterpart');
   api.setAccounts({ twitch: { connected: true, login: 'TwitchViewer' }, kick: { connected: true, login: 'KickViewer' } });
   const target = platform => nodes.get('.fcm-targets').children.find(child => child.dataset.platform === platform);
-  return { api, FCM, options, nodes, storage, writes, commands, messages, nativeSends, youtubeSends, accessSetups, accessCloses, target,
-    document, window, popups, element, nativeCardQueries, nativeVisibility, host: elements.find(node => node.id === 'friendly-chat-merge-host'),
+  return { api, FCM, options, nodes, timers, youtubeIdentities, storage, writes, commands, messages, nativeSends, youtubeSends, accessSetups, accessCloses, target,
+    document, window, popups, element, nativeCardQueries, nativeVisibility, recentRecords, recentHooks, host: elements.find(node => node.id === 'friendly-chat-merge-host'),
     popout: () => nodes.get('.fcm-actions [data-act="popout"]').fire('click'),
     input: nodes.get('.fcm-input'), button: nodes.get('.fcm-send'), state: value => youtubeHooks.onSendState(value),
     select: platform => target(platform).fire('click'), ready: () => youtubeHooks.onSendState(READY),
@@ -214,7 +217,7 @@ async function historyChecks() {
     { send: async () => { throw Error('uncertain'); } },
   ]) {
     const excluded = fixture(options);
-    if (options.result || options.send) { excluded.ready(); await excluded.select('youtube'); }
+    if (options.result || options.send) { excluded.ready(); }
     if (options.nativeResult) excluded.api.setAccounts({ twitch: { connected: false }, kick: { connected: true } });
     await excluded.send('excluded'); excluded.input.value = 'draft';
     assert.equal(await arrow(excluded), false, 'failed, uncertain and paid sends are not added');
@@ -223,13 +226,13 @@ async function historyChecks() {
   const nativeHistory = fixture(); await nativeHistory.select('kick');
   nativeHistory.api.setAccounts({ twitch: { connected: false }, kick: { connected: false } });
   await nativeHistory.send('native accepted'); await arrow(nativeHistory); assert.equal(nativeHistory.input.value, 'native accepted');
-  const partial = fixture({ result: { outcome: 'not-sent' } }); partial.ready(); await partial.select('youtube');
+  const partial = fixture({ result: { outcome: 'not-sent' } }); partial.ready();
   await partial.send('accepted by Twitch and Kick'); await arrow(partial); assert.equal(partial.input.value, 'accepted by Twitch and Kick');
-  const ytOnly = fixture(); ytOnly.ready(); await ytOnly.select('youtube'); await ytOnly.select('twitch'); await ytOnly.select('kick');
+  const ytOnly = fixture(); ytOnly.ready(); await ytOnly.select('twitch'); await ytOnly.select('kick');
   await ytOnly.send('YouTube only'); await arrow(ytOnly); assert.equal(ytOnly.input.value, 'YouTube only');
   let finishHistorySend;
   const pending = fixture({ send: () => new Promise(resolve => { finishHistorySend = resolve; }) });
-  await pending.send('earlier'); pending.ready(); await pending.select('youtube');
+  await pending.send('earlier'); pending.ready();
   const waiting = pending.send('pending'); await flush(); pending.input.value = 'next draft';
   assert.equal(await arrow(pending), false, 'pending sends do not allow history navigation');
   finishHistorySend({ outcome: 'submitted' }); await waiting;
@@ -239,6 +242,25 @@ async function historyChecks() {
 }
 
 async function run() {
+  const peek = fixture(); await peek.api.mount();
+  let lookups = 0;
+  peek.FCM.findEmote = () => { lookups++; return { url: 'https://wrong.test/twitch.png', source: 'Twitch' }; };
+  peek.FCM.largerEmoteUrl = value => value;
+  for (const platform of ['youtube', 'twitch', 'kick', 'other']) {
+    const img = peek.element('img'); img.className = 'fcm-emote ' + platform + '-emote';
+    img.getAttribute = key => ({ alt: ':same:', src: 'https://yt3.ggpht.com/fixture=s48' })[key];
+    img.closest = () => img;
+    if (platform !== 'youtube') peek.FCM.findEmote = () => { lookups++; return null; };
+    await peek.nodes.get('.fcm-panel').fire('mouseover', { target: img });
+    peek.timers.findLast(item => item.ms === 1000).fn();
+    assert.equal(peek.nodes.get('.fcm-emote-peek-img').src, 'https://yt3.ggpht.com/fixture=s48');
+    assert.equal(peek.nodes.get('.fcm-emote-peek-img').referrerPolicy, platform === 'youtube' ? 'no-referrer' : '');
+    assert.equal(peek.nodes.get('.fcm-emote-peek-from').textContent, platform === 'other' ? '' : platform[0].toUpperCase() + platform.slice(1).replace('outube', 'ouTube'));
+    if (platform === 'youtube') assert.equal(lookups, 0, 'YouTube previews cannot resolve a same-named emote from another platform');
+  }
+  peek.ready(); assert.equal(peek.youtubeIdentities.at(-1), '@Viewer');
+  peek.api.destroy(); assert.equal(peek.youtubeIdentities.at(-1), '');
+
   await historyChecks();
   const noticeElement = { isConnected: true, getBoundingClientRect: () => ({ top: 70, bottom: 122, height: 52 }) };
   const notice = fixture({ nativeCards: { elements: [noticeElement], top: 70, bottom: 122, left: 0, right: 360, height: 52 } });
@@ -309,14 +331,36 @@ async function run() {
       }
     }
   }
+  const recent = fixture(); await recent.api.mount();
+  await recent.send('Kappa');
+  assert.deepEqual(recent.recentRecords, [{ text: 'Kappa', platforms: ['twitch', 'kick'] }]);
+  assert.deepEqual(Array.from(recent.recentHooks[0].getPlatforms()), ['twitch', 'kick']);
+  assert.equal(recent.recentHooks[0].getSettings().showRecentEmotes, true);
+  recent.api.setEmotes('twitch', 'native', {});
+  recent.api.applyStoredSettings({ showRecentEmotes: false });
+  assert.equal(recent.recentHooks[0].getSettings().showRecentEmotes, false);
+  recent.api.destroy();
+  const failedRecent = fixture({ apiResult: { ok: false } }); await failedRecent.api.mount(); await failedRecent.send('Kappa');
+  assert.equal(failedRecent.recentRecords.length, 0);
+  const partialRecent = fixture({ apiResults: { twitch: { ok: true }, kick: { ok: false } } });
+  await partialRecent.api.mount(); await partialRecent.send('Kappa');
+  assert.deepEqual(partialRecent.recentRecords[0].platforms, ['twitch'], 'failed destinations do not update their recents');
+  const narrowedRecent = fixture({ emoteHome: 'kick' }); await narrowedRecent.api.mount();
+  await narrowedRecent.send('KEKW');
+  assert.deepEqual(narrowedRecent.recentRecords[0].platforms, ['kick'], 'emote-only routing also scopes recents');
+  const nativeRecent = fixture({ platform: 'kick' }); await nativeRecent.api.mount();
+  nativeRecent.api.setAccounts({ twitch: { connected: true }, kick: { connected: false } });
+  await nativeRecent.send('KEKW');
+  assert.deepEqual(nativeRecent.recentRecords[0].platforms.sort(), ['kick', 'twitch']);
+  const paidRecent = fixture({ cheer: { total: 100 } }); await paidRecent.api.mount(); await paidRecent.send('Cheer100');
+  assert.equal(paidRecent.recentRecords.length, 0);
   const f = fixture();
   assert.equal(f.target('youtube').disabled, true);
   f.ready();
-  assert.equal(f.target('youtube').dataset.on, 'false', 'a connected YouTube account never selects itself');
+  assert.equal(f.target('youtube').dataset.on, 'true', 'a ready signed-in YouTube composer selects itself');
   assert.equal(f.target('youtube').children[1].textContent, 'as @Viewer');
   await f.target('youtube').fire('click', { isTrusted: false });
-  assert.equal(f.target('youtube').dataset.on, 'false');
-  await f.select('youtube');
+  assert.equal(f.target('youtube').dataset.on, 'true');
   assert.equal(f.target('youtube').dataset.on, 'true');
   await f.send('hello', { isTrusted: false });
   assert.equal(f.youtubeSends.length, 0); assert.equal(f.commands.length, 0);
@@ -328,11 +372,23 @@ async function run() {
   assert.deepEqual(f.writes, [], 'YouTube selection never persists');
   await f.select('youtube');
   assert.equal(f.target('youtube').dataset.on, 'false');
+  f.ready();
+  assert.equal(f.target('youtube').dataset.on, 'false', 'readiness updates preserve manual deselection');
+  f.state({ ...READY, available: false, reason: 'busy' }); f.ready();
+  assert.equal(f.target('youtube').dataset.on, 'false', 'busy recovery preserves manual deselection');
+  f.state({ ...READY, available: false, reason: 'restricted' }); f.ready();
+  assert.equal(f.target('youtube').dataset.on, 'false', 'restriction recovery preserves manual deselection');
+  f.state({ ...READY, sourceId: 'replacement' });
+  assert.equal(f.target('youtube').dataset.on, 'true', 'a new ready connection gets the automatic default');
+  f.state({ ...READY, accountLabel: '' });
+  assert.equal(f.target('youtube').dataset.on, 'false', 'a missing account cannot be selected automatically');
+  f.state({ ...READY, sourceId: '' });
+  assert.equal(f.target('youtube').dataset.on, 'false', 'a missing source cannot be selected automatically');
   const noYouTube = fixture({ noYouTube: true });
   assert.equal(noYouTube.target('youtube'), undefined);
   const synchronous = fixture({ synchronousState: true });
   assert.equal(synchronous.target('youtube').disabled, false, 'an initial state emitted during construction is safe');
-  assert.equal(synchronous.target('youtube').dataset.on, 'false');
+  assert.equal(synchronous.target('youtube').dataset.on, 'true');
   for (const browser of ['chrome', 'firefox']) {
     const access = fixture({ browser });
     access.input.value = 'keep this draft';
@@ -359,8 +415,7 @@ async function run() {
     }
     access.state({ ...READY, access: 'needed' });
     const setups = access.accessSetups.length;
-    await access.select('youtube');
-    assert.equal(access.target('youtube').dataset.on, 'true', 'an already available native composer retains normal explicit selection');
+    assert.equal(access.target('youtube').dataset.on, 'true', 'a ready composer is selected after access setup');
     assert.equal(access.accessSetups.length, setups);
     access.state({ ...READY, available: false, reason: 'composer-unavailable', access: 'needed' });
     assert.equal(access.target('youtube').dataset.on, 'false', 'setup readiness cannot retain an earlier sending choice');
@@ -396,7 +451,7 @@ async function run() {
   assert.match(states.target('youtube').children[1].textContent, /sign in/);
   await states.select('youtube');
   assert.equal(states.target('youtube').dataset.on, 'false');
-  states.ready(); await states.select('youtube');
+  states.ready();
   states.state({ ...READY, available: false, reason: 'busy' });
   assert.equal(states.target('youtube').dataset.on, 'true', 'a busy interval keeps the same authorized account selected');
   assert.equal(states.target('youtube').disabled, true);
@@ -405,8 +460,8 @@ async function run() {
   for (const replacement of [{ ...READY, sourceId: 'other:run:1' }, { ...READY, accountLabel: '@Other' },
     { ...READY, available: false, reason: 'restricted' }]) {
     states.state(replacement);
-    assert.equal(states.target('youtube').dataset.on, 'false', 'reader/account/capability changes revoke selection');
-    states.ready(); await states.select('youtube');
+    assert.equal(states.target('youtube').dataset.on, String(replacement.available), 'only a ready replacement is selected');
+    states.ready();
   }
   states.state({ ...READY, accountLabel: '' });
   assert.equal(states.target('youtube').children[1].textContent, 'unavailable');
@@ -416,7 +471,7 @@ async function run() {
   states.api.destroy(); states.state(READY); await staleButton.fire('click');
   await states.send(); assert.equal(states.youtubeSends.length, 0);
 
-  const length = fixture(); length.ready(); await length.select('youtube');
+  const length = fixture(); length.ready();
   for (const text of ['x'.repeat(201), 'text\u0000suffix', 'text\u0085suffix']) {
     await length.send(text);
     assert.equal(length.youtubeSends.length, 0); assert.equal(length.commands.length, 0);
@@ -430,7 +485,7 @@ async function run() {
   length.button.disabled = true; await length.send('second');
   assert.equal(length.youtubeSends.length, 1, 'in-flight Send is not submitted twice');
 
-  const only = fixture(); only.ready(); await only.select('youtube');
+  const only = fixture(); only.ready();
   await only.select('twitch'); await only.select('kick');
   assert.deepEqual(only.writes.map(patch => Array.from(Object.values(patch)[0]['twitch:example'])), [['kick']]);
   await only.select('youtube'); assert.equal(only.target('youtube').dataset.on, 'true', 'cannot disable the only target');
@@ -442,46 +497,46 @@ async function run() {
   await only.send('do not reroute');
   assert.equal(only.commands.length, 0); assert.equal(only.input.value, 'do not reroute');
 
-  const narrowed = fixture({ emoteHome: 'twitch' }); narrowed.ready(); await narrowed.select('youtube');
+  const narrowed = fixture({ emoteHome: 'twitch' }); narrowed.ready();
   await narrowed.send('Kappa');
   assert.equal(narrowed.youtubeSends.length, 0);
   assert.deepEqual(Array.from(narrowed.commands[0].targets), ['twitch']);
-  const native = fixture(); native.ready(); await native.select('youtube');
+  const native = fixture(); native.ready();
   native.api.setAccounts({ twitch: { connected: false }, kick: { connected: false } });
   await native.send('mixed native');
   assert.deepEqual(native.nativeSends, ['mixed native']); assert.deepEqual(native.youtubeSends, ['mixed native']);
 
   for (const [outcome, restore] of [['submitted', false], ['not-sent', true], ['uncertain', false]]) {
     const result = fixture({ result: { outcome }, apiResult: { ok: false, reason: 'network' } });
-    result.ready(); await result.select('youtube'); await result.send('original');
+    result.ready(); await result.send('original');
     assert.equal(result.input.value, restore ? 'original' : '', `${outcome} restoration follows confirmed handoff state`);
     assert.equal(result.youtubeSends.length, 1, 'no automatic retry');
     if (outcome === 'uncertain') assert.ok(result.messages.some(text => /could not be confirmed/.test(text)));
   }
   const notSent = fixture({ result: { outcome: 'not-sent' } });
-  notSent.ready(); await notSent.select('youtube'); await notSent.select('twitch'); await notSent.select('kick');
+  notSent.ready(); await notSent.select('twitch'); await notSent.select('kick');
   await notSent.send(); assert.match(notSent.nodes.get('.fcm-toast').textContent, /YouTube did not submit/);
   const uncertain = fixture({ send: async () => { throw Error('transport closed'); } });
-  uncertain.ready(); await uncertain.select('youtube'); await uncertain.select('twitch'); await uncertain.select('kick');
+  uncertain.ready(); await uncertain.select('twitch'); await uncertain.select('kick');
   await uncertain.send(); assert.equal(uncertain.input.value, '');
   assert.match(uncertain.nodes.get('.fcm-toast').textContent, /could not be confirmed/);
   const malformed = fixture({ send: async () => null });
-  malformed.ready(); await malformed.select('youtube'); await malformed.send();
+  malformed.ready(); await malformed.send();
   assert.ok(malformed.messages.some(text => /could not be confirmed/.test(text)));
 
   let finish;
   const pending = fixture({ send: () => new Promise(resolve => { finish = resolve; }) });
-  pending.ready(); await pending.select('youtube');
+  pending.ready();
   const submitted = pending.send('first'); await flush();
   pending.input.value = 'new draft'; finish({ outcome: 'not-sent' }); await submitted;
   assert.equal(pending.input.value, 'new draft', 'a result never overwrites a newer draft');
-  const changed = fixture(); changed.ready(); await changed.select('youtube');
+  const changed = fixture(); changed.ready();
   const dispatched = changed.send('old account'); changed.state({ ...READY, sourceId: 'new:run:1' });
   await dispatched; assert.equal(changed.youtubeSends.length, 0, 'a source switch before dispatch cannot send as the new account');
-  const unavailable = fixture(); unavailable.ready(); await unavailable.select('youtube');
+  const unavailable = fixture(); unavailable.ready();
   const unavailableSend = unavailable.send(); unavailable.state({ ...READY, available: false, reason: 'busy' });
   await unavailableSend; assert.equal(unavailable.youtubeSends.length, 0);
-  const replies = fixture(); await replies.api.mount(); replies.ready(); await replies.select('youtube');
+  const replies = fixture(); await replies.api.mount(); replies.ready();
   replies.reply('twitch'); await replies.send('reply only');
   assert.equal(replies.youtubeSends.length, 0, 'a reply never inherits the YouTube selection');
   assert.deepEqual(Array.from(replies.commands.at(-1).targets), ['twitch']);
@@ -493,7 +548,7 @@ async function run() {
   for (const reject of [false, true]) {
     let resolveLate, rejectLate;
     const closing = fixture({ send: () => new Promise((resolve, fail) => { resolveLate = resolve; rejectLate = fail; }) });
-    closing.ready(); await closing.select('youtube');
+    closing.ready();
     const result = closing.send('leaving'); await flush();
     const before = closing.messages.length;
     closing.api.destroy();
@@ -501,6 +556,56 @@ async function run() {
     await result;
     assert.equal(closing.messages.length, before, 'late send results cannot repopulate a destroyed feed');
     assert.equal(closing.input.value, '', 'teardown cannot restore an uncertain draft');
+  }
+  for (const browser of ['chrome', 'firefox']) {
+    const ytReply = fixture({ browser }); await ytReply.api.mount(); ytReply.ready();
+    await ytReply.select('youtube');
+    ytReply.reply('twitch', 'TwitchViewer', 'tw-parent');
+    ytReply.reply('youtube', 'ViewerYT', 'must-not-thread');
+    assert.equal(ytReply.target('twitch').dataset.on, 'false');
+    assert.equal(ytReply.target('youtube').dataset.on, 'true');
+    assert.match(ytReply.nodes.get('.fcm-reply').innerHTML, /ViewerYT.*YouTube/);
+    await ytReply.send('@ViewerYT hello');
+    assert.deepEqual(ytReply.youtubeSends, ['@ViewerYT hello']);
+    assert.equal(ytReply.commands.filter(c => c.cmd === 'send').length, 0, 'YouTube replies never reach Twitch or Kick');
+    ytReply.reply('youtube', 'ViewerYT');
+    await ytReply.send('@ViewerYT synthetic', { isTrusted: false });
+    assert.equal(ytReply.youtubeSends.length, 1);
+    await ytReply.send('@ViewerYT ' + 'x'.repeat(200));
+    assert.equal(ytReply.youtubeSends.length, 1, 'the mention counts toward the native length limit');
+    ytReply.state({ ...READY, available: false, reason: 'restricted' });
+    await ytReply.send('@ViewerYT waiting');
+    assert.equal(ytReply.input.value, '@ViewerYT waiting');
+    assert.equal(ytReply.youtubeSends.length, 1);
+    ytReply.ready(); await ytReply.send('@ViewerYT resumed');
+    assert.equal(ytReply.youtubeSends.at(-1), '@ViewerYT resumed');
+    for (const changedState of [{ ...READY, sourceId: 'new-source' }, { ...READY, accountLabel: '@NewAccount' }]) {
+      ytReply.ready(); ytReply.reply('youtube', 'ViewerYT'); ytReply.state(changedState);
+      const count = ytReply.youtubeSends.length;
+      await ytReply.send('@ViewerYT old reply');
+      assert.equal(ytReply.youtubeSends.length, count);
+      assert.equal(ytReply.input.value, '@ViewerYT old reply');
+      assert.match(ytReply.nodes.get('.fcm-toast').textContent, /Select the recipient again/);
+      ytReply.reply('youtube', 'ViewerYT'); await ytReply.send('@ViewerYT checked');
+      assert.equal(ytReply.youtubeSends.length, count + 1);
+    }
+    ytReply.reply('youtube', 'ViewerYT'); ytReply.reply('kick', 'KickViewer');
+    await ytReply.send('@KickViewer hello');
+    assert.deepEqual(Array.from(ytReply.commands.at(-1).targets), ['kick']);
+    ytReply.reply('youtube', 'ViewerYT');
+    await ytReply.input.fire('keydown', { key: 'Escape' });
+    assert.equal(ytReply.nodes.get('.fcm-reply').classList.contains('fcm-hidden'), true);
+    ytReply.api.destroy();
+    const unavailableReply = fixture({ browser }); await unavailableReply.api.mount();
+    unavailableReply.reply('youtube', 'ViewerYT');
+    assert.match(unavailableReply.nodes.get('.fcm-toast').textContent, /signed-in YouTube chat box/);
+    await unavailableReply.send('@ViewerYT hello');
+    assert.equal(unavailableReply.commands.filter(c => c.cmd === 'send').length, 0);
+    assert.equal(unavailableReply.youtubeSends.length, 0);
+    const absent = fixture({ browser, noYouTube: true }); await absent.api.mount(); absent.reply('youtube', 'ViewerYT');
+    assert.ok(!absent.nodes.get('.fcm-reply').innerHTML);
+    absent.reply('unknown', 'Bad');
+    assert.ok(!absent.nodes.get('.fcm-reply').innerHTML);
   }
   // Older send paths share the dispatcher with YouTube and remain unchanged.
   const lastBinary = fixture(); await lastBinary.select('twitch'); await lastBinary.select('kick');

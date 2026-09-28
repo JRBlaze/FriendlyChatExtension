@@ -470,12 +470,20 @@ async function run() {
     }
     const textNode = text => ({ nodeType: 1, tagName: 'SPAN', childNodes: [{ nodeType: 3, nodeValue: text }] });
     const makeRow = (id, message = 'Hello <script> 🙂') => ({
-      id, message, deleted: false,
+      id, message, deleted: false, tagName: 'yt-live-chat-text-message-renderer',
       getAttribute(name) { return name === 'id' ? this.id : null; },
       hasAttribute(name) { return name === 'is-deleted' && this.deleted; },
-      querySelector(selector) { return textNode(selector === '#author-name' ? 'Test Author' : this.message); },
+      querySelectorAll: () => [{ getAttribute: key => ({ type: 'moderator', 'aria-label': 'Moderator' })[key],
+        querySelector: () => ({ getAttribute: () => 'https://yt3.ggpht.com/fixture-badge=s16' }) }],
+      querySelector(selector) {
+        if (selector === '#purchase-amount') return textNode('$5.00');
+        if (!['#author-name', '#message'].includes(selector)) return null;
+        if (selector === '#author-name' || this.id !== 'test-row-1') return textNode(selector === '#author-name' ? 'Test Author' : this.message);
+        return { nodeType: 1, tagName: 'SPAN', childNodes: [textNode('Hello <script> '),
+          { nodeType: 1, tagName: 'IMG', getAttribute: name => ({ alt: '🙂', class: 'emoji', src: 'https://yt3.ggpht.com/fixture=s48' })[name] || null }] };
+      },
     });
-    const row = makeRow('test-row-1');
+    const row = makeRow('test-row-1'); row.tagName = 'yt-live-chat-paid-message-renderer';
     function loadFrame(frame) {
       const childTime = clock(), pagehide = event();
       const nativeNode = (text = '', tagName = 'DIV', parentElement = null) => ({
@@ -566,6 +574,11 @@ async function run() {
     const message = batches[0].messages[0];
     assert.equal(message.id, `youtube:${VIDEO}:test-row-1`); assert.equal(message.displayName, 'Test Author');
     assert.equal(message.text, 'Hello <script> 🙂'); assert.equal(message.readOnly, true); assert.equal(message.platform, 'youtube');
+    assert.deepEqual(JSON.parse(JSON.stringify(message.youtubeEmotes)), [{ start: 15, end: 17, url: 'https://yt3.ggpht.com/fixture=s48' }],
+      'image metadata survives reader, background relay and host sanitization');
+    assert.equal(message.youtubeEvent.amount, '$5.00');
+    assert.deepEqual(JSON.parse(JSON.stringify(message.youtubeBadges)), [{ type: 'moderator', label: 'Moderator',
+      url: 'https://yt3.ggpht.com/fixture-badge=s16' }], 'badge images survive transport without granting actions');
     assert.equal(control.getSendState().available, true);
     assert.equal(control.getSendState().accountLabel, '@SyntheticViewer', 'selection identity comes exclusively from the actual sender frame');
     assert.equal(frames[0].style.cssText, 'display: none !important;', 'the host frame stays hidden while its own composer can be ready');

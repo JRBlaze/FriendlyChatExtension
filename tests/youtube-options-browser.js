@@ -38,6 +38,14 @@ async function run(output) {
       await page.goto(`${origin}/tests/options-harness.html?browser=${mode}`);
       await page.waitForFunction(() => window.__ready && document.querySelector('#youtube-links').textContent.includes('No saved YouTube links'));
       assert.equal(await page.evaluate(() => FCM.BROWSER), mode);
+      const recentToggle = page.getByRole('checkbox', { name: 'Recent emote bar', exact: true });
+      assert.equal(await recentToggle.isChecked(), true);
+      await recentToggle.uncheck();
+      await page.waitForFunction(async () => (await FCM.loadSettings()).showRecentEmotes === false);
+      await page.evaluate(() => chrome.storage.local.set({
+        [FCM.STORAGE_KEYS.recentEmotes + ':twitch']: ['PrivateRecentTW'],
+        [FCM.STORAGE_KEYS.recentEmotes + ':kick']: ['PrivateRecentKI'],
+      }));
       const channelUrl = 'https://www.youtube.com/@SyntheticChannel';
       const longUrl = 'https://www.youtube.com/@' + 'LongYouTubeChannelNameForWrapping'.repeat(3);
       const links = {
@@ -67,6 +75,9 @@ async function run(output) {
       await page.waitForFunction(() => window.__lastDownload && __lastDownload.text);
       const exported = await page.evaluate(() => JSON.parse(__lastDownload.text));
       assert.deepEqual(exported.youtubeLinks, links);
+      assert.equal(exported.settings.showRecentEmotes, false);
+      assert.equal(Object.keys(exported).some(key => key.includes('recentEmotes')), false);
+      assert.doesNotMatch(JSON.stringify(exported), /PrivateRecentTW|PrivateRecentKI/);
       assert.equal(exported.backupVersion, 1);
       assert.equal(exported.auth, undefined);
       await page.locator('#youtube-links .link-row').filter({ hasText: 'Kick/syntheticstreamer' }).getByRole('button', { name: 'Forget', exact: true }).click();

@@ -82,10 +82,24 @@ async function installFixture(page) {
     fixture.emit = (rows, deleted = [], instance = fixture.instances.at(-1)) => {
       // Exercise the actual parser and sanitizer against real, synthetic DOM.
       const messages = rows.map(item => {
-        const row = document.createElement('yt-live-chat-text-message-renderer'); row.id = item.id;
+        const row = document.createElement(item.tag || 'yt-live-chat-text-message-renderer'); row.id = item.id;
         const author = document.createElement('span'); author.id = 'author-name'; author.textContent = item.author;
         const body = document.createElement('span'); body.id = 'message'; body.textContent = item.text;
         if (item.emoji) { const emoji = document.createElement('img'); emoji.alt = item.emoji; body.appendChild(emoji); }
+        for (const itemImage of item.emotes || []) {
+          const image = document.createElement('img'); image.className = 'emoji';
+          image.alt = itemImage.alt; image.src = itemImage.src; body.appendChild(image);
+        }
+        if (item.suffix) body.appendChild(document.createTextNode(item.suffix));
+        for (const [id, value] of Object.entries({ 'purchase-amount': item.amount, 'header-subtext': item.header })) {
+          if (value) { const field = document.createElement('span'); field.id = id; field.textContent = value; row.appendChild(field); }
+        }
+        for (const [type, label, src] of item.badges || []) {
+          const badge = document.createElement('yt-live-chat-author-badge-renderer');
+          badge.setAttribute('type', type); badge.setAttribute('aria-label', label);
+          if (src) { const image = document.createElement('img'); image.src = src; badge.appendChild(image); }
+          row.appendChild(badge);
+        }
         row.append(author, body);
         return FCM.youtube.parseRow(row, instance.videoId, Date.now());
       });
@@ -253,6 +267,11 @@ async function run() {
       await context.route('**/*', route => {
         const url = new URL(route.request().url());
         if (url.origin === origin) return route.continue();
+        if (['https://yt3.ggpht.com/fixture-emote=s48', 'https://yt3.googleusercontent.com/fixture-emote=s48',
+          'https://www.youtube.com/s/gaming/emoji/fixture/emoji_u1f642.png'].includes(url.href)) {
+          return route.fulfill({ contentType: 'image/png', body: fs.readFileSync(path.join(ROOT, 'icons/icon48.png')) });
+        }
+
         blocked.push(url.origin);
         if (url.hostname.endsWith('youtube.com')) youtubeRequests.push(url.href);
         return route.abort();
@@ -410,30 +429,144 @@ async function run() {
         assert.equal(await rows.first().locator('.fcm-author').getAttribute('data-name'), 'YouTubeViewer <script>');
         assert.equal(await rows.first().locator('.fcm-body').innerText(), 'Hello from YouTube <img src=x onerror=alert(1)> & 😀');
         assert.equal(await rows.first().locator('img,script,a').count(), 0, 'captured markup and URLs never become rich content');
-        assert.equal(await rows.first().locator('.fcm-author').getAttribute('title'), 'YouTube · replies and moderation unavailable');
+        assert.equal(await rows.first().locator('.fcm-author').getAttribute('title'), 'click to reply on YouTube with an @mention');
 
         await page.locator('.fcm-input').fill('Keep my draft');
         const commandCount = await page.evaluate(() => youtubeFixture.commands.length);
         await rows.first().locator('.fcm-author').click();
         await rows.first().locator('.fcm-author').hover();
-        assert.equal(await page.locator('.fcm-input').innerText(), 'Keep my draft');
+        assert.equal(await page.locator('.fcm-input').innerText(), 'Keep my draft @YouTubeViewer <script> ');
         assert.equal(await page.locator('.fcm-um').isVisible(), false);
-        assert.equal(await page.locator('.fcm-reply').isVisible(), false);
+        assert.equal(await page.locator('.fcm-reply').isVisible(), true);
         assert.equal(await rows.first().locator('.fcm-modbar').count(), 0);
-        assert.equal(await page.evaluate(() => youtubeFixture.commands.length), commandCount, 'no profile, reply, or moderation command');
-        assert.equal(await page.evaluate(() => FCM.recentChatters().some(chatter => chatter.platform === 'youtube')), false);
+        assert.equal(await page.evaluate(() => youtubeFixture.commands.length), commandCount, 'preparing a mention sends no profile, send or moderation command');
+        assert.equal(await page.evaluate(() => FCM.recentChatters().some(chatter => chatter.platform === 'youtube')), true);
         const styles = await rows.first().evaluate(row => {
           const author = getComputedStyle(row.querySelector('.fcm-author'));
           return { cursor: author.cursor, decoration: author.textDecorationLine,
             author: author.color,
             dot: getComputedStyle(row.querySelector('.fcm-dot-youtube')).backgroundColor };
         });
-        assert.equal(styles.cursor, 'text'); assert.equal(styles.decoration, 'none');
+        assert.equal(styles.cursor, 'pointer'); assert.equal(styles.decoration, 'underline');
         for (const color of [styles.author, styles.dot]) {
           const [red, green, blue] = color.match(/\d+/g).map(Number);
           assert.ok(red > green && red > blue, 'YouTube author and dot retain their red platform color');
         }
         await page.locator('.fcm-input').fill('');
+        await page.evaluate(() => {
+          FCM.setEmotes('twitch', 'native', { Kappa: { url: 'https://wrong.test/twitch.png', source: 'Twitch' } });
+          youtubeFixture.emit([{ id: 'emote-gallery', author: 'EmoteViewer', text: '😀 before ', emotes: [
+            { alt: ':wave:', src: 'https://yt3.ggpht.com/fixture-emote=s48' },
+            { alt: '🙂', src: 'https://www.youtube.com/s/gaming/emoji/fixture/emoji_u1f642.png' },
+            { alt: ':wave:', src: 'https://yt3.ggpht.com/fixture-emote=s48' },
+            { alt: 'Kappa', src: 'https://yt3.googleusercontent.com/fixture-emote=s48' },
+            { alt: ':missing:', src: 'https://yt3.ggpht.com/missing=s48' },
+            { alt: ':unsafe:', src: 'https://evil.test/image.png' },
+          ], suffix: ' after <script>' }]);
+        });
+        const gallery = page.locator('.fcm-msg').filter({ hasText: 'EmoteViewer' });
+        await gallery.waitFor(); await gallery.scrollIntoViewIfNeeded();
+        await page.waitForFunction(() => {
+          const root = document.querySelector('#friendly-chat-merge-host').shadowRoot;
+          const row = [...root.querySelectorAll('.fcm-msg')].find(el => el.dataset.user === 'emoteviewer');
+          const images = [...row.querySelectorAll('.youtube-emote')];
+          return images.length === 4 && images.every(img => img.complete && img.naturalWidth > 0);
+        });
+        assert.equal(await gallery.locator('img').count(), 4);
+        assert.match(await gallery.locator('.fcm-body').innerText(), /:missing::unsafe: after <script>/);
+        assert.equal(await gallery.locator('script,a').count(), 0);
+        const emoteSizes = await gallery.locator('.youtube-emote').evaluateAll(images => images.map(img => ({
+          width: img.getBoundingClientRect().width, height: img.getBoundingClientRect().height, policy: img.referrerPolicy,
+        })));
+        assert.ok(emoteSizes.every(size => size.width > 0 && size.width <= 26 && size.height > 0 && size.height <= 26));
+        assert.ok(emoteSizes.every(size => size.policy === 'no-referrer'));
+        const collision = gallery.locator('.youtube-emote[alt="Kappa"]'); await collision.hover();
+        await page.waitForFunction(() => !document.querySelector('#friendly-chat-merge-host').shadowRoot.querySelector('.fcm-emote-peek').classList.contains('fcm-hidden'));
+        assert.equal(await page.locator('.fcm-emote-peek-img').getAttribute('src'), 'https://yt3.googleusercontent.com/fixture-emote=s48');
+        assert.equal(await page.locator('.fcm-emote-peek-from').innerText(), 'YouTube');
+        assert.equal(await page.locator('.fcm-emote-peek-img').getAttribute('referrerpolicy'), 'no-referrer');
+        await page.mouse.move(0, 0);
+        for (const theme of ['light', 'dark']) {
+          await page.evaluate(theme => overlay.applyStoredSettings({ ...FCM.view.settings, theme }), theme);
+          await gallery.screenshot({ path: path.join(output, `${mode}-${platform}-emotes-${theme}.png`) });
+        }
+
+
+        await page.evaluate(() => {
+          youtubeFixture.instances.at(-1).callbacks.onSendState({ available: true, reason: 'ready', sourceId: 'parity-fixture', accountLabel: '@Self猫' });
+          youtubeFixture.emit([
+            { id: 'paid', tag: 'yt-live-chat-paid-message-renderer', author: 'Donor', text: 'Hi @Self猫 https://example.com/help', amount: '$5.00',
+              badges: [['moderator', 'Moderator'], ['member', 'Member (6 months)', 'https://yt3.ggpht.com/fixture-emote=s48'],
+                ['verified', 'Verified', 'https://evil.test/badge.png'], ['owner', 'Owner', 'https://yt3.ggpht.com/missing-badge=s16']] },
+            { id: 'text-badge', author: 'TextBadgeViewer', text: 'No image, no badge', badges: [['moderator', 'Moderator']] },
+            { id: 'broken-badge', author: 'BrokenBadgeViewer', text: 'Failed image, no badge', badges: [['member', 'Member', 'https://yt3.ggpht.com/missing-badge=s16']] },
+            { id: 'membership', tag: 'yt-live-chat-membership-item-renderer', author: 'NewMember', text: '', header: 'Member for 6 months' },
+            { id: 'gift', tag: 'yt-live-chat-sponsorships-gift-purchase-announcement-renderer', author: 'Gifter', text: '', header: 'Gifted 5 memberships' },
+            { id: 'sticker', tag: 'yt-live-chat-paid-sticker-renderer', author: 'StickerFan', text: '', amount: '€2.00' },
+          ]);
+          navigator.clipboard.writeText = async value => { window.parityCopied = value; };
+        });
+        const paid = page.locator('.fcm-msg[data-user="donor"]'); await paid.waitFor();
+        assert.equal(await paid.evaluate(row => row.classList.contains('fcm-mentioned')), true);
+        assert.equal(await paid.locator('.fcm-mention').innerText(), '@Self猫');
+        assert.equal(await paid.locator('a.fcm-link').getAttribute('href'), 'https://example.com/help');
+        await page.waitForFunction(() => {
+          const root = document.querySelector('#friendly-chat-merge-host').shadowRoot;
+          const badges = [...root.querySelectorAll('.fcm-msg[data-user="donor"] .youtube-badge')];
+          return badges.length === 1 && badges[0].complete && badges[0].naturalWidth > 0
+            && !root.querySelector('.fcm-msg[data-user="brokenbadgeviewer"] .fcm-badges');
+        });
+        const badgeImage = paid.locator('.youtube-badge');
+        assert.equal(await badgeImage.getAttribute('title'), 'Member (6 months)');
+        assert.equal(await badgeImage.getAttribute('alt'), '');
+        assert.equal(await badgeImage.getAttribute('referrerpolicy'), 'no-referrer');
+        assert.equal(await paid.locator('.fcm-badges').innerText(), '');
+        assert.doesNotMatch(await paid.locator('.fcm-author').innerText(), /MOD|MEMBER|OWNER|VERIFIED/);
+        assert.equal(await page.locator('.fcm-msg[data-user="textbadgeviewer"] .fcm-badges').count(), 0);
+        assert.equal(await page.locator('.fcm-msg[data-user="brokenbadgeviewer"] .fcm-author').innerText(), 'BrokenBadgeViewer');
+        const badgeSize = await badgeImage.boundingBox(); assert.equal(badgeSize.width, 16); assert.equal(badgeSize.height, 16);
+        assert.match(await paid.innerText(), /Super Chat · \$5.00/);
+        assert.match(await page.locator('.fcm-msg[data-user="newmember"]').innerText(), /Membership.*Member for 6 months/s);
+        assert.match(await page.locator('.fcm-msg[data-user="gifter"]').innerText(), /Gifted 5 memberships/);
+        assert.match(await page.locator('.fcm-msg[data-user="stickerfan"]').innerText(), /Super Sticker · €2.00/);
+        await paid.locator('.fcm-author').click({ button: 'right' });
+        assert.equal(await page.locator('.fcm-um-history .fcm-um-hline').count(), 1);
+        assert.equal(await page.locator('.fcm-um').getByRole('button', { name: 'Delete this message' }).count(), 0);
+        await page.locator('.fcm-um').getByRole('button', { name: 'Copy username', exact: true }).click();
+        assert.equal(await page.evaluate(() => parityCopied), 'Donor');
+        await page.locator('.fcm-input').fill('Keep my raid draft');
+        const commandsBeforeCopy = await page.evaluate(() => youtubeFixture.commands.length);
+        for (const [row, expected] of [
+          [paid, 'Hi @Self猫 https://example.com/help'],
+          [gallery, '😀 before :wave:🙂:wave:Kappa:missing::unsafe: after <script>'],
+          [page.locator('.fcm-msg[data-platform="twitch"]'), 'Hello from Twitch'],
+          [page.locator('.fcm-msg[data-platform="kick"]'), 'Hello from Kick'],
+        ]) {
+          await row.locator('.fcm-body').click({ button: 'right' });
+          await page.locator('.fcm-um').getByRole('button', { name: 'Copy message', exact: true }).click();
+          assert.equal(await page.evaluate(() => parityCopied), expected, 'clipboard has the body only, with emote names');
+          assert.equal(await page.locator('.fcm-input').innerText(), 'Keep my raid draft');
+        }
+        assert.equal(await page.evaluate(before => youtubeFixture.commands.slice(before).every(command => command.cmd === 'profile'), commandsBeforeCopy), true, 'copy only permits the existing profile lookup, never send or moderation');
+        await gallery.locator('.fcm-body').click({ button: 'right' });
+        await page.locator('.fcm-panel').screenshot({ path: path.join(output, `${mode}-${platform}-copy-message.png`) });
+        await page.locator('.fcm-um').getByRole('button', { name: 'Copy message', exact: true }).click();
+        await page.locator('.fcm-input').fill('');
+        const filterButton = page.getByRole('button', { name: 'Show or hide YouTube messages', exact: true });
+        await filterButton.click(); assert.equal(await paid.isVisible(), false);
+        await page.evaluate(() => youtubeFixture.emit([{ id: 'hidden-next', author: 'HiddenViewer', text: 'Still hidden' }]));
+        await page.locator('.fcm-msg[data-user="hiddenviewer"]').waitFor({ state: 'attached' });
+        assert.equal(await page.locator('.fcm-msg[data-user="hiddenviewer"]').isVisible(), false);
+        await filterButton.click(); assert.equal(await paid.isVisible(), true);
+        const nativeChat = page.getByRole('link', { name: 'Open YouTube chat', exact: true });
+        assert.equal(await nativeChat.getAttribute('href'), 'https://www.youtube.com/live_chat?v=AbCdEfGhI_1&is_popout=1');
+        await page.evaluate(() => overlay.applyStoredSettings({ ...FCM.view.settings, showBadges: false, showEvents: false }));
+        assert.equal(await paid.locator('.fcm-badges').isVisible(), false);
+        await page.evaluate(() => youtubeFixture.emit([{ id: 'muted-event', tag: 'yt-live-chat-membership-item-renderer', author: 'MutedEvent', text: '', header: 'Welcome' }]));
+        assert.equal(await page.locator('.fcm-msg[data-user="mutedevent"]').count(), 0);
+        await page.evaluate(() => overlay.applyStoredSettings({ ...FCM.view.settings, showBadges: true, showEvents: true }));
+        await paid.scrollIntoViewIfNeeded();
+        await page.locator('.fcm-feed').screenshot({ path: path.join(output, `${mode}-${platform}-parity.png`) });
 
         await page.locator('.fcm-actions [data-act="collapse"]').click();
         assert.equal(await page.locator('.fcm-youtube').isVisible(), false, 'collapse hides the trial controls');

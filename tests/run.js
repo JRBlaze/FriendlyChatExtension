@@ -199,6 +199,10 @@ const SHARED = [
 const FCM_LINKS_KEY = 'fcm_channel_links_v1';
 
 const suites = {};
+suites.recentemotes = async function () {
+  await require('./recent-emotes.test').run();
+  ok(true, 'recent emotes regressions');
+};
 suites.openissues = async function () {
   await require('./issue-62.test')();
   await require('./issue-63.test')();
@@ -4665,6 +4669,7 @@ suites.options = function () {
         contains(section.replace(/\s+/g, ' '),
           "your browser deletes an extension's storage if it is removed and loaded again",
           'options: only that the browser deletes storage with an extension, which is true of both');
+        eq(onChrome.$('showRecentEmotes').checked, true, 'options: recent emotes are enabled by default');
         eq(onChrome.FCM.BROWSER, 'chrome', "options: served from chrome-extension:, the page is Chrome's");
         eq(onChrome.$('backup-firefox').hidden, true,
           "options: where nothing is said about Firefox's temporary add-ons");
@@ -4680,10 +4685,11 @@ suites.options = function () {
       // as one that cannot be picked, shows the one that will really be used,
       // and describes only the two that remain.
       {
-        const onChrome = openOptions({ settings: { kickRedirect: 'extension' } });
+        const onChrome = openOptions({ settings: { kickRedirect: 'extension', showRecentEmotes: false } });
         const onFirefox = openOptions({ browser: 'firefox', settings: { kickRedirect: 'extension' } });
         const proxyOnFirefox = openOptions({ browser: 'firefox', settings: { kickRedirect: 'proxy' } });
         await settle();
+        eq(onChrome.$('showRecentEmotes').checked, false, 'options: recent emote preference is restored');
         eq(onChrome.$('kickRedirect').value, 'extension', "options: Chrome shows a stored 'extension' as it is");
         eq([onChrome.$('kickRedirect-extension').disabled, onChrome.$('kickRedirect-extension').textContent],
           [false, 'Straight back to the extension'], 'options: where it can still be chosen, under its own name');

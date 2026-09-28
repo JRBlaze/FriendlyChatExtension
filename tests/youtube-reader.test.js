@@ -21,7 +21,8 @@ function shared() {
 }
 
 function element(tagName, childNodes = [], attributes = {}) {
-  return { nodeType: 1, tagName, childNodes, getAttribute: key => attributes[key] ?? null };
+  return { nodeType: 1, tagName, childNodes, getAttribute: key => attributes[key] ?? null,
+    querySelector: selector => childNodes.find(node => node.tagName === selector.toUpperCase()) || null };
 }
 const text = value => ({ nodeType: 3, nodeValue: value });
 function row(id, options = {}) {
@@ -171,6 +172,108 @@ async function run() {
   assert.equal(api.parseRow(row('deep', { body: deep }), VIDEO, 1), null, 'deep markup is bounded without recursion');
   const broad = api.parseRow(row('broad', { body: element('SPAN', Array.from({ length: 2000 }, () => text('x'))) }), VIDEO, 1);
   assert.equal(broad.text.length, 999, 'node work is capped independently of characters');
+
+
+  const custom = 'https://yt3.ggpht.com/fixture-emote=w48-h48-c-k-nd';
+  const standard = 'https://www.youtube.com/s/gaming/emoji/7ff574f2/emoji_u1f642.png';
+  const emoji = (alt, src = custom, attributes = {}) => element('IMG', [], { alt, src, class: 'emoji style-scope', ...attributes });
+  for (const src of [custom, 'https://yt3.googleusercontent.com/fixture=s48', standard,
+    '/s/gaming/emoji/7ff574f2/emoji_u1f642.svg']) assert.ok(api.emoteUrl(src));
+  for (const src of [null, {}, '', 'x'.repeat(2049), 'not a URL', 'https://[', 'http://yt3.ggpht.com/a',
+    'https://user@yt3.ggpht.com/a', 'https://:pass@yt3.ggpht.com/a', 'https://yt3.ggpht.com:444/a',
+    'https://yt3.ggpht.com.evil.test/a', 'https://evil.test/a', 'data:image/png;base64,YQ==',
+    'javascript:alert(1)', 'https://yt3.ggpht.com/a?q=1', 'https://yt3.ggpht.com/a#fragment',
+    'https://yt3.ggpht.com/', 'https://www.youtube.com/redirect', 'https://youtube.com/s/gaming/emoji/a.png',
+    'https://www.youtube.com/s/gaming/emoji/a.html']) assert.equal(api.emoteUrl(src), '', String(src));
+  const mixed = copy(api.parseRow(row('emotes', { body: element('SPAN', [text(' \u0000Hi 😀 '),
+    emoji(':wave:'), text(' + '), element('B', [emoji('🙂', standard)]), text(' done  ')]) }), VIDEO, 1));
+  assert.equal(mixed.text, 'Hi 😀 :wave: + 🙂 done');
+  assert.deepEqual(mixed.youtubeEmotes, [{ start: 6, end: 12, url: custom }, { start: 15, end: 17, url: standard }]);
+  const emoteBatch = validBatch(api); emoteBatch.messages = [mixed];
+  const once = copy(api.sanitizeBatch(emoteBatch, VIDEO, RUN));
+  assert.deepEqual(once.messages[0].youtubeEmotes, mixed.youtubeEmotes);
+  assert.deepEqual(copy(api.sanitizeBatch(once, VIDEO, RUN)), once, 'both transport boundaries preserve only sanitized ranges');
+  assert.equal(api.parseRow(row('unsafe-images', { body: element('SPAN', [emoji(':bad:', 'https://evil.test/a'),
+    emoji(':avatar:', custom, { class: 'avatar' }), emoji('', custom)]) }), VIDEO, 1).youtubeEmotes, undefined);
+  const only = api.parseRow(row('only-emote', { body: element('SPAN', [emoji(':wave:')]) }), VIDEO, 1);
+  assert.equal(only.youtubeEmotes.length, 1, 'an emote-only message is retained');
+  const capped = api.parseRow(row('cap', { body: element('SPAN', Array.from({ length: 40 }, () => emoji('🙂'))) }), VIDEO, 1);
+  assert.equal(capped.youtubeEmotes.length, 32);
+  assert.equal(capped.text, '🙂'.repeat(40), 'overflow images retain their text');
+  for (const alt of [' ', ' padded ', 'x'.repeat(101)]) {
+    const message = api.parseRow(row('bad-alt', { body: element('SPAN', [text('before'), emoji(alt), text('after')]) }), VIDEO, 1);
+    assert.equal(message.youtubeEmotes, undefined);
+  }
+  assert.equal(api.parseRow(row('truncated-emote', { body: element('SPAN', [text('x'.repeat(1998)), emoji(':wave:')]) }), VIDEO, 1).youtubeEmotes, undefined);
+  assert.equal(api.parseRow(row('author-image', { author: element('SPAN', [emoji('Author')]) }), VIDEO, 1).youtubeEmotes, undefined);
+  for (const ranges of [null, {}, Array(33).fill({}), [null], [{}], [{ start: 0.5, end: 2, url: custom }],
+    [{ start: 0, end: NaN, url: custom }], [{ start: -1, end: 2, url: custom }],
+    [{ start: 2, end: 1, url: custom }], [{ start: 0, end: 500, url: custom }],
+    [{ start: 0, end: 1, url: 'https://evil.test/a' }]]) {
+    assert.deepEqual(copy(api.sanitizeEmotes(ranges, ':wave:')), []);
+    const candidate = validBatch(api); candidate.messages[0].youtubeEmotes = ranges;
+    assert.ok(api.sanitizeBatch(candidate, VIDEO, RUN), 'invalid images never discard readable messages');
+  }
+  assert.deepEqual(copy(api.sanitizeEmotes([{ start: 0, end: 6, url: custom, html: '<script>' },
+    { start: 2, end: 6, url: custom }], ':wave:')), [{ start: 0, end: 6, url: custom }]);
+  assert.deepEqual(copy(api.sanitizeEmotes([{ start: 0, end: 1, url: custom }], ' ')), []);
+  assert.deepEqual(copy(api.sanitizeEmotes([{ start: 0, end: 101, url: custom }], 'x'.repeat(101))), []);
+
+
+  const eventTags = { superchat: 'YT-LIVE-CHAT-PAID-MESSAGE-RENDERER', sticker: 'YT-LIVE-CHAT-PAID-STICKER-RENDERER',
+    membership: 'YT-LIVE-CHAT-MEMBERSHIP-ITEM-RENDERER', gift: 'YT-LIVE-CHAT-SPONSORSHIPS-GIFT-PURCHASE-ANNOUNCEMENT-RENDERER',
+    'gift-received': 'YT-LIVE-CHAT-SPONSORSHIPS-GIFT-REDEMPTION-ANNOUNCEMENT-RENDERER' };
+  for (const [kind, tag] of Object.entries(eventTags)) {
+    const special = row('event-' + kind); special.tagName = tag;
+    special.querySelector = selector => ({ '#author-name': element('SPAN', [text('Member')]),
+      '#purchase-amount': element('SPAN', [text('$5.00')]), '#header-subtext': element('SPAN', [text('Member for 6 months')]),
+      '#sticker img': emoji('Happy sticker') })[selector] || null;
+    special.querySelectorAll = () => [element('BADGE', [], { type: 'moderator', 'aria-label': 'Moderator' }),
+      element('BADGE', [emoji('Member badge')], { type: 'member', 'aria-label': 'Member (6 months)' }), element('BADGE', [], { type: 'admin' })];
+    const message = copy(api.parseRow(special, VIDEO, 1));
+    assert.equal(message.youtubeEvent.kind, kind);
+    assert.equal(message.youtubeEvent.amount, '$5.00');
+    assert.deepEqual(message.youtubeBadges, [{ type: 'member', label: 'Member (6 months)', url: custom }], 'text-only moderator badge is omitted');
+    assert.ok(message.text, 'event-only rows survive without a chat body');
+    if (kind === 'sticker') assert.equal(message.youtubeEmotes[0].url, custom);
+    const candidate = validBatch(api); candidate.messages = [message];
+    assert.deepEqual(copy(api.sanitizeBatch(candidate, VIDEO, RUN)).messages[0], message);
+    special.querySelector = selector => selector === '#author-name' ? element('SPAN', [text('Member')]) : null;
+    const sparse = api.parseRow(special, VIDEO, 1);
+    assert.equal(sparse.text, api.EVENT_LABELS[kind]);
+    assert.equal(sparse.youtubeEvent.kind, kind);
+  }
+  const noTag = row('no-tag'); delete noTag.tagName;
+  assert.equal(api.parseRow(noTag, VIDEO, 1).youtubeEvent, undefined);
+  for (const [alt, url] of [['', custom], ['Happy', 'https://evil.test/a']]) {
+    const sticker = row('sticker-fallback'); sticker.tagName = eventTags.sticker;
+    sticker.querySelector = selector => selector === '#author-name' ? element('SPAN', [text('Fan')])
+      : selector === '#sticker img' ? emoji(alt, url) : null;
+    sticker.querySelectorAll = () => [element('BADGE', [], { type: 'member' })];
+    const parsed = api.parseRow(sticker, VIDEO, 1);
+    assert.equal(parsed.youtubeEmotes, undefined); assert.ok(parsed.text);
+  }
+  assert.equal(api.sanitizeEvent({ kind: 'unknown' }), null);
+  assert.equal(api.sanitizeEvent(null), null);
+  assert.deepEqual(copy(api.sanitizeEvent({ kind: 'superchat', amount: '<b>$5</b>', header: 'Notice', action: 'ban' })),
+    { kind: 'superchat', amount: '<b>$5</b>', header: 'Notice' });
+  assert.deepEqual(copy(api.sanitizeEvent({ kind: 'membership', amount: 42, header: 'x'.repeat(301) })),
+    { kind: 'membership', amount: '', header: '' });
+  assert.deepEqual(copy(api.sanitizeBadges(null)), []);
+  assert.deepEqual(copy(api.sanitizeBadges(Array(5).fill({ type: 'owner', label: 'Owner' }))), []);
+  assert.deepEqual(copy(api.sanitizeBadges([null, { type: 'admin', label: 'Admin' }, { type: 'member', label: 'x'.repeat(101) }])), []);
+  assert.deepEqual(copy(api.sanitizeBadges([{ type: 'owner', label: 'Owner', url: custom },
+    { type: 'owner', label: 'duplicate', url: custom }, { type: 'verified', label: 'Verified', url: custom } ])),
+    [{ type: 'owner', label: 'Owner', url: custom }, { type: 'verified', label: 'Verified', url: custom }]);
+  for (const url of [undefined, '', 'javascript:bad()', 'https://evil.test/badge.png']) {
+    assert.deepEqual(copy(api.sanitizeBadges([{ type: 'member', label: 'Member', url }])), []);
+  }
+  const textOnly = row('text-badge');
+  textOnly.querySelectorAll = () => [element('BADGE', [], { type: 'moderator', 'aria-label': 'Moderator' })];
+  assert.equal(api.parseRow(textOnly, VIDEO, 1).youtubeBadges, undefined);
+  const brokenImage = row('missing-badge-src');
+  brokenImage.querySelectorAll = () => [element('BADGE', [element('IMG')], { type: 'member', 'aria-label': 'Member' })];
+  assert.equal(api.parseRow(brokenImage, VIDEO, 1).youtubeBadges, undefined);
 
   const batch = validBatch(api);
   batch.messages[0].platform = 'twitch'; batch.messages[0].readOnly = false;

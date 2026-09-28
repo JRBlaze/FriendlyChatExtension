@@ -206,6 +206,8 @@
     // a backup has to know what it is copying.
     geometry: 'fcm_geometry_v1',
     sendTargets: 'fcm_send_targets_v1',
+    // Local-only recent emote names, with separate :twitch and :kick suffixes.
+    recentEmotes: 'fcm_recent_emotes_v1',
   };
 
   // How many channel pairings are kept. Shared with the importer, which has to
@@ -248,6 +250,7 @@
     // Emote names kept to hand, newest first. Names rather than urls, because
     // the same emote can arrive from a different provider tomorrow.
     favouriteEmotes: [],
+    showRecentEmotes: true,
     hideNativeChat: false,      // collapse the site's own chat while merged
     // Press Kick's own "Watch now" when it opens a channel's profile over a
     // stream that is running. Kick does that to the streamer on their own
@@ -305,6 +308,8 @@
 
   // Platforms a typed message can be sent to.
   FCM.SEND_PLATFORMS = ['twitch', 'kick'];
+  // Mention replies also use the separately managed native YouTube sender.
+  FCM.REPLY_PLATFORMS = ['twitch', 'kick', 'youtube'];
 
   // Twitch URL segments that are pages, not channels.
   //
