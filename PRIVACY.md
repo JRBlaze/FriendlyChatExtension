@@ -1,6 +1,6 @@
 # Privacy Policy — Friendly Chat Extension
 
-_Last updated: September 28, 2026_
+_Last updated: October 2, 2026_
 
 Friendly Chat Extension shows merged Twitch and Kick chat on the stream you
 are watching, with optional YouTube chat and native sending when signed in and ready. This page explains what
@@ -164,7 +164,11 @@ The recent-emote bar remembers up to 12 successfully sent emote names for each o
 Twitch and Kick, separately, in local extension storage on this device
 (`fcm_recent_emotes_v1:twitch` and `fcm_recent_emotes_v1:kick`). It does not store
 message text, image URLs, account identifiers or timestamps with those names.
-The names are not synced, backed up or sent to a service. Images and availability
+An additional local list (`fcm_recent_emotes_v1:order`) remembers the order of up
+to 24 platform/name pairs so the bar can show up to eight newest available emotes
+across Twitch and Kick. Existing platform lists keep their names; combined ordering
+is remembered starting with this update, without adding timestamps.
+The names and their ordering are not synced, backed up or sent to a service. Images and availability
 come from the current chat's loaded emote sets. The bar's on/off preference syncs
 and is included in settings backups. Hiding the bar retains recent names; removing
 the extension deletes its local records.

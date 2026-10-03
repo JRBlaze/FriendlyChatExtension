@@ -1055,7 +1055,7 @@
   flex-shrink: 0;
 }
 .fcm-composer-row { display: flex; align-items: center; gap: 6px; }
-.fcm-recent-emotes { display: flex; gap: 4px; overflow-x: auto; max-width: 100%; padding: 2px 0 6px; }
+.fcm-recent-emotes { display: flex; gap: 4px; min-width: 0; max-width: 100%; padding: 2px 0 6px; }
 .fcm-recent-emotes[hidden] { display: none; }
 .fcm-recent-emote { flex: 0 0 32px; height: 32px; padding: 3px; border: 1px solid var(--border); border-radius: 5px; background: transparent; cursor: pointer; }
 .fcm-recent-emote[data-platform="twitch"] { border-bottom-color: #9146ff; }

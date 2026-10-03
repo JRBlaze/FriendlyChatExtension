@@ -18,6 +18,11 @@ dashboard and other dashboard pages shows or removes it automatically.
 ![Firefox](https://img.shields.io/badge/Firefox-140%2B-orange)
 [![Version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FJRBlaze%2FFriendlyChatExtension%2Fmain%2Fmanifest.json&query=%24.version&label=version&color=green)](../../releases/latest)
 
+## New in 1.23.2
+
+- **Recent emote bar:** shows up to eight newest Twitch/Kick emotes combined,
+  reducing to as few as one in narrow windows without wrapping or horizontal scrolling.
+
 ## New in 1.23.1
 
 - **Recent emote bar:** quickly reuse sent Twitch/Kick emotes, remembered separately
@@ -253,7 +258,7 @@ has signed. Chrome is first below; Firefox is [further down](#install-in-firefox
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.23.1.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.23.2.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and an extra folder named `FriendlyChatExtension-main`
@@ -285,7 +290,7 @@ Firefox ESR 140. Firefox for Android is not supported: the sign-in API the exten
 accounts with does not exist there.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.23.1-firefox.xpi` from the Assets list. That file is the add-on, signed
+`FriendlyChatExtension-v1.23.2-firefox.xpi` from the Assets list. That file is the add-on, signed
 by Mozilla, and there is nothing to unzip.
 
 1. **Open the file with Firefox.** Click it in Firefox's downloads list, or drag the file from
@@ -312,7 +317,7 @@ The add-on is not on addons.mozilla.org, and will not be: Mozilla signs it witho
 and this repository's releases are the only place it is published.
 
 **Trying an unsigned build.** Each release also carries
-`FriendlyChatExtension-v1.23.1-firefox-unsigned.xpi`, the same package before Mozilla signed it.
+`FriendlyChatExtension-v1.23.2-firefox-unsigned.xpi`, the same package before Mozilla signed it.
 Opened the ordinary way, release Firefox refuses it as unverified; it loads only as a temporary
 add-on: open `about:debugging`, choose *This Firefox*, press *Load Temporary Add-on…* and pick the
 file itself, without unpacking it. A temporary add-on is removed when Firefox restarts, and its
@@ -427,8 +432,12 @@ inside, because Chrome builds up to v1.20.1 take the first `.zip` on a release a
 - **Recent emote bar:** recently sent Twitch and Kick emotes appear above the message
   box. Click or keyboard-activate an emote to insert it at the caret without sending.
   Up to 12 names per platform are remembered on this device, separately for Twitch
-  and Kick. Only emotes available in the current chat's loaded sets are shown; a
-  long bar scrolls horizontally. **Recent emote bar** in overlay settings or the
+  and Kick. The bar shows at most eight emotes, newest first across both platforms.
+  Only emotes available in the current chat's loaded sets are shown; narrowing the
+  window reduces the visible count down to one, keeping a single row without
+  wrapping or horizontal scrolling. Widening restores up to eight. Existing saved lists remain
+  available when switching platforms; their combined order starts being remembered
+  with this update. **Recent emote bar** in overlay settings or the
   options page turns the bar off or on. Hiding it retains your recent names.
   The names are local only and excluded from sync and settings backups; the
   visibility preference syncs and is included in backups like other settings.
