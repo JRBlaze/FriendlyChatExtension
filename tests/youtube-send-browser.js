@@ -312,6 +312,7 @@ async function replyChecks(page, mode, platform) {
 }
 
 async function recentChecks(page, mode, platform) {
+  await page.locator(platform === 'twitch' ? '.chatcol' : '.kickcol').evaluate(el => { el.style.width = '340px'; });
   await page.evaluate(() => {
     sendFixture.outcome = 'submitted';
     const store = prefix => Object.fromEntries(Array.from({ length: 14 }, (_, i) =>
@@ -347,10 +348,27 @@ async function recentChecks(page, mode, platform) {
     await chrome.storage.local.set({
       [key + ':twitch']: Array.from({ length: 12 }, (_, i) => 'RecentTW' + i),
       [key + ':kick']: Array.from({ length: 12 }, (_, i) => 'RecentKI' + i),
+      [key + ':order']: Array.from({ length: 12 }, (_, i) => ['twitch:RecentTW' + i, 'kick:RecentKI' + i]).flat(),
     });
   });
-  assert.equal(await bar.getByRole('button').count(), 24);
-  assert.equal(await bar.evaluate(el => el.scrollWidth > el.clientWidth), true, 'long bar scrolls in a narrow panel');
+  await page.waitForFunction(() => document.querySelector('#friendly-chat-merge-host').shadowRoot.querySelector('.fcm-recent-emotes').children.length === 8);
+  assert.equal(await bar.getByRole('button').count(), 8);
+  assert.deepEqual(await bar.getByRole('button').evaluateAll(buttons => buttons.map(b => b.title)),
+    ['RecentTW0 (Twitch)', 'RecentKI0 (Kick)', 'RecentTW1 (Twitch)', 'RecentKI1 (Kick)',
+      'RecentTW2 (Twitch)', 'RecentKI2 (Kick)', 'RecentTW3 (Twitch)', 'RecentKI3 (Kick)']);
+  assert.equal(await bar.evaluate(el => el.scrollWidth <= el.clientWidth), true, 'eight emotes fit without horizontal scrolling');
+  await bar.evaluate(el => { el.style.width = '160px'; });
+  await page.waitForFunction(() => document.querySelector('#friendly-chat-merge-host').shadowRoot.querySelector('.fcm-recent-emotes').children.length === 4);
+  assert.equal(await bar.evaluate(el => el.scrollWidth <= el.clientWidth), true, 'narrow bars reduce the count without horizontal scrolling');
+  assert.ok(await bar.evaluate(el => el.lastElementChild.offsetTop === el.firstElementChild.offsetTop), 'controls stay on one row');
+  await bar.getByRole('button').last().click();
+  assert.equal(await input.evaluate(el => el.value), 'gg RecentTW0 RecentKI1 ', 'the last fitting control remains clickable');
+  await bar.evaluate(el => { el.style.width = '32px'; });
+  await page.waitForFunction(() => document.querySelector('#friendly-chat-merge-host').shadowRoot.querySelector('.fcm-recent-emotes').children.length === 1);
+  assert.equal(await bar.evaluate(el => el.scrollWidth <= el.clientWidth), true, 'a very narrow bar displays one emote without scrolling');
+  await input.fill('gg RecentTW0 '); await input.press('End');
+  await bar.evaluate(el => { el.style.width = ''; });
+  await page.waitForFunction(() => document.querySelector('#friendly-chat-merge-host').shadowRoot.querySelector('.fcm-recent-emotes').children.length === 8);
   const bounds = await bar.boundingBox(), inputBounds = await input.boundingBox();
   assert.ok(bounds.y + bounds.height <= inputBounds.y, 'bar sits above the message box');
   assert.equal(await page.locator('.fcm-composer').evaluate(el => el.scrollWidth <= el.clientWidth + 1), true);
@@ -365,7 +383,8 @@ async function recentChecks(page, mode, platform) {
   assert.equal(await input.evaluate(el => el.value), 'gg RecentTW0 RecentTW0 ', 'keyboard activation inserts at the saved caret');
   assert.equal(await page.evaluate(() => commands.filter(c => c.cmd === 'send').length), before);
   await page.evaluate(() => overlay.setStatus('kick', 'idle', null));
-  assert.equal(await bar.getByRole('button').count(), 12, 'leaving a platform removes its bar buttons');
+  assert.equal(await bar.getByRole('button').count(), 8, 'leaving a platform refills the eight slots from the remaining history');
+  assert.deepEqual(await bar.getByRole('button').evaluateAll(buttons => [...new Set(buttons.map(b => b.dataset.platform))]), ['twitch']);
 }
 
 async function main() {

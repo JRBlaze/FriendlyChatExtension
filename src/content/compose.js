@@ -172,10 +172,18 @@
   FCM.createRecentEmotes = function ({ container, inputEl, getSettings, getPlatforms, toast }) {
     const platforms = ['twitch', 'kick'];
     const keys = Object.fromEntries(platforms.map(p => [p, `${FCM.STORAGE_KEYS.recentEmotes}:${p}`]));
+    const orderKey = `${FCM.STORAGE_KEYS.recentEmotes}:order`;
+    const storageKeys = [...Object.values(keys), orderKey];
     const recent = { twitch: [], kick: [] };
+    let order = [];
     let destroyed = false;
     const clean = list => [...new Set((Array.isArray(list) ? list : [])
       .filter(name => typeof name === 'string' && name.length > 0 && name.length <= 100))].slice(0, 12);
+    // Keep the legacy platform lists intact. This bounded list adds only the
+    // order of platform/name pairs, so cross-platform recency needs no timestamps.
+    const cleanOrder = list => [...new Set((Array.isArray(list) ? list : [])
+      .filter(id => typeof id === 'string' && platforms.some(platform => id.startsWith(`${platform}:`)
+        && id.length > platform.length + 1 && id.length <= platform.length + 101)))].slice(0, 24);
     function emote(platform, name) {
       const sets = FCM.view.emotes[platform];
       if (!sets) return null;
@@ -188,50 +196,63 @@
       container.replaceChildren();
       container.hidden = true;
       if (destroyed || getSettings().showRecentEmotes === false) return;
-      for (const platform of getPlatforms().filter(p => platforms.includes(p))) {
-        for (const name of recent[platform]) {
-          const item = emote(platform, name);
-          if (!item) continue;
-          const button = document.createElement('button');
-          button.type = 'button';
-          button.className = 'fcm-recent-emote';
-          button.dataset.platform = platform;
-          button.title = `${name} (${FCM.PLATFORM_META[platform].name})`;
-          button.setAttribute('aria-label', `Insert ${button.title}`);
-          const image = document.createElement('img');
-          image.src = item.url; image.alt = name;
-          button.appendChild(image);
-          button.addEventListener('mousedown', event => event.preventDefault());
-          button.addEventListener('click', () => {
-            if (destroyed || getSettings().showRecentEmotes === false
-              || !getPlatforms().includes(platform) || !emote(platform, name)) return;
-            const before = inputEl.value.slice(0, inputEl.selectionStart);
-            const after = inputEl.value.slice(inputEl.selectionEnd);
-            const insert = `${before && !/\s$/.test(before) ? ' ' : ''}${name} `;
-            const next = before + insert + after;
-            if (next.length > 480) { toast('This emote would exceed the message length limit'); return; }
-            inputEl.value = next;
-            inputEl.setSelectionRange(before.length + insert.length, before.length + insert.length);
-            inputEl.focus();
-            inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-          });
-          container.appendChild(button);
-        }
+      // Measure after revealing the bar: a hidden element reports zero width.
+      // Buttons are 32px with a 4px gap; keep one row and never exceed eight.
+      container.hidden = false;
+      const limit = Math.max(1, Math.min(8, Math.floor((container.clientWidth + 4) / 36)));
+      const rank = ({ platform, name }) => {
+        const index = order.indexOf(`${platform}:${name}`);
+        return index < 0 ? order.length : index;
+      };
+      const visible = getPlatforms().filter(p => platforms.includes(p))
+        .flatMap(platform => recent[platform].map(name => ({ platform, name })))
+        .filter(({ platform, name }) => emote(platform, name))
+        .sort((a, b) => rank(a) - rank(b)).slice(0, limit);
+      for (const { platform, name } of visible) {
+        const item = emote(platform, name);
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'fcm-recent-emote';
+        button.dataset.platform = platform;
+        button.title = `${name} (${FCM.PLATFORM_META[platform].name})`;
+        button.setAttribute('aria-label', `Insert ${button.title}`);
+        const image = document.createElement('img');
+        image.src = item.url; image.alt = name;
+        button.appendChild(image);
+        button.addEventListener('mousedown', event => event.preventDefault());
+        button.addEventListener('click', () => {
+          if (destroyed || getSettings().showRecentEmotes === false
+            || !getPlatforms().includes(platform) || !emote(platform, name)) return;
+          const before = inputEl.value.slice(0, inputEl.selectionStart);
+          const after = inputEl.value.slice(inputEl.selectionEnd);
+          const insert = `${before && !/\s$/.test(before) ? ' ' : ''}${name} `;
+          const next = before + insert + after;
+          if (next.length > 480) { toast('This emote would exceed the message length limit'); return; }
+          inputEl.value = next;
+          inputEl.setSelectionRange(before.length + insert.length, before.length + insert.length);
+          inputEl.focus();
+          inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+        container.appendChild(button);
       }
       container.hidden = container.children.length === 0;
     }
+    const resizeObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(refresh) : null;
+    if (resizeObserver) resizeObserver.observe(container);
     function changed(changes, area) {
       if (area !== 'local') return;
       for (const platform of platforms) {
         if (changes[keys[platform]]) recent[platform] = clean(changes[keys[platform]].newValue);
       }
+      if (changes[orderKey]) order = cleanOrder(changes[orderKey].newValue);
       refresh();
     }
     chrome.storage.onChanged.addListener(changed);
     container.hidden = true;
-    const ready = chrome.storage.local.get(Object.values(keys)).then(data => {
+    const ready = chrome.storage.local.get(storageKeys).then(data => {
       if (destroyed) return;
       for (const platform of platforms) recent[platform] = clean(data[keys[platform]]);
+      order = cleanOrder(data[orderKey]);
       refresh();
     }).catch(() => {});
     let pending = ready;
@@ -240,23 +261,28 @@
       record(text, sentPlatforms) {
         // Capture eligibility now, before a delayed storage read or account change.
         const used = platforms.filter(p => sentPlatforms.includes(p)).map(platform => ({ platform,
-          names: clean(text.split(/\s+/).filter(name => emote(platform, name))) }));
+          names: clean(text.split(/\s+/).filter(name => emote(platform, name))) })).filter(item => item.names.length);
         pending = pending.then(async () => {
+          if (destroyed || !used.length) return;
+          let stored = {};
+          try { stored = await chrome.storage.local.get(storageKeys); } catch (e) { /* keep the session lists */ }
           if (destroyed) return;
+          const patch = {};
           for (const { platform, names } of used) {
-            if (!names.length) continue;
-            let stored = [];
-            try { stored = clean((await chrome.storage.local.get(keys[platform]))[keys[platform]]); } catch (e) { /* keep the session list */ }
-            if (destroyed) return;
-            recent[platform] = clean([...names, ...recent[platform], ...stored]);
-            refresh();
-            try { await chrome.storage.local.set({ [keys[platform]]: recent[platform] }); } catch (e) { /* keep the session list */ }
+            recent[platform] = clean([...names, ...recent[platform], ...clean(stored[keys[platform]])]);
+            patch[keys[platform]] = recent[platform];
           }
+          order = cleanOrder([...used.flatMap(({ platform, names }) => names.map(name => `${platform}:${name}`)),
+            ...cleanOrder(stored[orderKey]), ...order]);
+          patch[orderKey] = order;
+          refresh();
+          try { await chrome.storage.local.set(patch); } catch (e) { /* keep the session lists */ }
         });
         return pending;
       },
       destroy() {
         destroyed = true;
+        if (resizeObserver) resizeObserver.disconnect();
         chrome.storage.onChanged.removeListener(changed);
         refresh();
       },
