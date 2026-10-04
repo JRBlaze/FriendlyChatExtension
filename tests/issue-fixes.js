@@ -139,7 +139,7 @@ async function run() {
 
   // #58: ordinary popups are independent and do not consume the global PiP window.
   const make = () => {
-    const windows = [], errors = [], listeners = new Map();
+    const windows = [], errors = [], listeners = new Map(), mediaDocuments = [];
     const document = { documentElement: { appendChild(host) { host.parentNode = this; } } };
     const host = { parentNode: document.documentElement }, button = { setAttribute() {} };
     const context = overlayScope('    let pipWindow = null;', '    // ── Where a typed message goes', {
@@ -151,21 +151,26 @@ async function run() {
         },
         addEventListener: (type, fn) => listeners.set(type, fn), removeEventListener: type => listeners.delete(type),
       }, document, host, pageParent: () => document.documentElement,
+      feed: { resettle() { mediaDocuments.push(host.parentNode); } },
       root: { dataset: {} }, destroyed: false, collapsed: false,
       panel: { getBoundingClientRect: () => ({ width: 380, height: 640 }) },
       FCM: { PLATFORM_META: { twitch: { name: 'Twitch' } } }, hostPlatform: 'twitch', channel: 'test',
       $: () => button, ICONS: { popin: '', popout: '' },
       syncPlacement() {}, setPeek() {}, setCollapsed() {}, toast: text => errors.push(text),
     }, 'popOut, popIn, poppedOut, refreshPopButton');
-    return { context, windows, errors, host, document, listeners };
+    return { context, windows, errors, host, document, listeners, mediaDocuments };
   };
   const a = make(), b = make();
   await a.context.popOut(); await b.context.popOut();
+  assert.equal(a.mediaDocuments[0], a.windows[0].win.document.body,
+    'feed media rebinds immediately after moving to a quiet pop-out');
   assert.equal(a.windows.length, 1); assert.equal(b.windows.length, 1);
   assert.equal(a.windows[0].name, '_blank');
   assert.equal(a.windows[0].win.closed, false);
   a.windows[0].win.onhide();
   assert.equal(a.host.parentNode, a.document.documentElement);
+  assert.equal(a.mediaDocuments[1], a.document.documentElement,
+    'feed media rebinds immediately after returning to the page');
   assert.equal(b.context.poppedOut(), true, 'other channel stays open');
   b.context.popIn();
   const blocked = make(); blocked.context.window.open = () => null;

@@ -184,7 +184,10 @@ async function run() {
   assert.match(readme, /Twitch\s+and Kick have separate access grants/);
   assert.match(readme, /approval alone never sends a message/);
   const privacy = fs.readFileSync(path.join(ROOT, 'PRIVACY.md'), 'utf8');
-  assert.match(privacy, /choice\s+and account label stay in memory, are not synced or backed up/);
+  assert.match(privacy, /Explicit off\/on choices are saved in\s+local extension storage, keyed by the Twitch\/Kick host platform and channel/);
+  assert.match(privacy, /not synced or included in portable backups/);
+  assert.match(privacy, /No YouTube\s+account labels or source identifiers are saved with these choices/);
+  assert.match(privacy, /account labels\s+remain in memory/);
   assert.match(privacy, /does not read or copy YouTube tokens or cookies for sending/);
   assert.match(privacy, /cleared editor as submitted, without claiming server delivery/);
   const css = fs.readFileSync(path.join(ROOT, 'src/youtube/permission.css'), 'utf8');

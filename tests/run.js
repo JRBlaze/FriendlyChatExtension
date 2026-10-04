@@ -199,6 +199,12 @@ const SHARED = [
 const FCM_LINKS_KEY = 'fcm_channel_links_v1';
 
 const suites = {};
+suites.performance = async function () {
+  await require('./feed-performance.test').run();
+  await require('./native-performance.test').run();
+  await require('./recent-emotes.test').run();
+  ok(true, 'chat resource and image lifecycle regressions');
+};
 suites.recentemotes = async function () {
   await require('./recent-emotes.test').run();
   ok(true, 'recent emotes regressions');

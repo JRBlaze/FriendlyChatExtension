@@ -18,6 +18,15 @@ dashboard and other dashboard pages shows or removes it automatically.
 ![Firefox](https://img.shields.io/badge/Firefox-140%2B-orange)
 [![Version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FJRBlaze%2FFriendlyChatExtension%2Fmain%2Fmanifest.json&query=%24.version&label=version&color=green)](../../releases/latest)
 
+## New in 1.23.3
+
+- **Chat resource usage:** suspend offscreen feed images while retaining scrollback,
+  and avoid unnecessary native-chat layout reads and recent-emote redraws.
+- **YouTube send choices:** remember explicit on/off choices on this device per
+  Twitch/Kick host channel, including after reloads and source/account changes.
+- **Twitch live notifications:** leave the full popup and its buttons accessible,
+  including stacked notifications inside Twitch's toast manager.
+
 ## New in 1.23.2
 
 - **Recent emote bar:** shows up to eight newest Twitch/Kick emotes combined,
@@ -83,7 +92,8 @@ successful copy; if the browser blocks it, select the text and copy it manually.
 ## Add YouTube chat
 
 YouTube is an optional source in the merged feed on Twitch and Kick. Sending through
-YouTube's own chat box turns on automatically when its signed-in composer is ready.
+YouTube's own chat box turns on automatically when its signed-in composer is ready,
+unless you previously turned that target off for this Twitch/Kick host channel.
 On installation, a one-time setup page introduces YouTube and offers **Allow
 YouTube access**. Existing users receive the same introduction in a background
 tab when this update arrives. Click the button and approve your browser's request,
@@ -203,9 +213,10 @@ unavailable. Names have no extra YT badge; their color identifies the platform.
 **Sending to YouTube turns on automatically** when the attached chat exposes an
 editable, signed-in composer. Its send target shows the account that will post.
 Check that account before sending; click the YouTube target to turn it off or on.
-A manual deselection survives readiness updates for that connection. A new source
-or account uses the automatic default again. This choice stays in memory for the
-current visit. Adding chat, allowing access or saving a link alone cannot send a
+Your explicit off/on choice is remembered on this device for the current
+Twitch/Kick host channel, including after reloads, reconnects and YouTube source
+or account changes. Other host channels keep their own choices. With no saved
+choice, the automatic default applies. Adding chat, allowing access or saving a link alone cannot send a
 message: the native composer must be ready, and you must press Send or Enter.
 
 YouTube accepts plain text up to **200 characters** here; longer messages and control
@@ -229,7 +240,8 @@ profile and interact with its page before trying setup if Firefox refuses access
 The setup briefly shows the sending frame, reloads that same frame after approval,
 and hides it once its account is ready. The capture frame keeps reading throughout.
 Check the displayed YouTube account before sending. Once its composer is ready,
-the target turns on automatically; approval alone never sends a message. Cancel, denial, or a timeout leaves reading available.
+the target turns on automatically unless an off choice was saved for this host
+channel; approval alone never sends a message. Cancel, denial, or a timeout leaves reading available.
 Use **Cancel setup** on the YouTube target to stop a pending setup or reload.
 If sending setup fails after reloading, remove and add YouTube chat to try again.
 On later visits, a browser permission already marked granted can be reactivated
@@ -258,7 +270,7 @@ has signed. Chrome is first below; Firefox is [further down](#install-in-firefox
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.23.2.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.23.3.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and an extra folder named `FriendlyChatExtension-main`
@@ -290,7 +302,7 @@ Firefox ESR 140. Firefox for Android is not supported: the sign-in API the exten
 accounts with does not exist there.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.23.2-firefox.xpi` from the Assets list. That file is the add-on, signed
+`FriendlyChatExtension-v1.23.3-firefox.xpi` from the Assets list. That file is the add-on, signed
 by Mozilla, and there is nothing to unzip.
 
 1. **Open the file with Firefox.** Click it in Firefox's downloads list, or drag the file from
@@ -317,7 +329,7 @@ The add-on is not on addons.mozilla.org, and will not be: Mozilla signs it witho
 and this repository's releases are the only place it is published.
 
 **Trying an unsigned build.** Each release also carries
-`FriendlyChatExtension-v1.23.2-firefox-unsigned.xpi`, the same package before Mozilla signed it.
+`FriendlyChatExtension-v1.23.3-firefox-unsigned.xpi`, the same package before Mozilla signed it.
 Opened the ordinary way, release Firefox refuses it as unverified; it loads only as a temporary
 add-on: open `about:debugging`, choose *This Firefox*, press *Load Temporary Add-on…* and pick the
 file itself, without unpacking it. A temporary add-on is removed when Firefox restarts, and its
@@ -428,7 +440,8 @@ inside, because Chrome builds up to v1.20.1 take the first `.zip` on a release a
   first in `:` autocomplete.
 - **Choose your send destinations.** Send to Twitch, Kick, or both with their target
   chips. YouTube becomes a selected destination automatically when its signed-in native
-  composer is ready; its chip can turn sending off or on.
+  composer is ready unless turned off; its chip remembers an explicit off/on choice
+  on this device for that Twitch/Kick host channel.
 - **Recent emote bar:** recently sent Twitch and Kick emotes appear above the message
   box. Click or keyboard-activate an emote to insert it at the caret without sending.
   Up to 12 names per platform are remembered on this device, separately for Twitch
@@ -821,6 +834,10 @@ remain clickable, and a manually moved panel also makes room when it overlaps th
 Notification clearance takes priority over the minimum chat height on a short or resized
 panel. The panel returns when a notice disappears. Optional highlight cards still follow the
 setting. The extension never clicks or redeems these notices automatically.
+Twitch's dedicated live-notification toast manager is recognized even when its
+outer animation wrappers measure zero size. The full visible popup, including
+stacked notices and their action buttons, receives clearance; its height is not
+limited to half the message list like generic alert/status surfaces.
 
 This control takes named matches only — `data-a-target="drops-button"`, then the accessible name
 “Drops” — with none of the “whichever button is spare” fallback the points summary gets. Cheer,
@@ -1607,8 +1624,14 @@ name down the panel, 300px tall for a name that fits comfortably on one line.
 ### Which chats a message goes to
 
 The Twitch/Kick *Send to* chips are remembered per channel, in `storage.local`,
-under their own key. YouTube's send selection is separate: it stays only for the
-current visit and resets when its source or account changes.
+under their own key. YouTube's explicit off/on choice is also remembered per host
+platform/channel, separately under `fcm_youtube_send_targets_v1`. Reloading,
+reconnecting, or selecting a different YouTube source/account does not reset it.
+With no saved choice, YouTube is selected when its signed-in composer becomes
+ready. Up to 200 host-channel choices are retained, with the oldest dropped when
+another is saved. These YouTube choices do not sync or enter portable backups;
+account labels remain in memory only. A saved on choice never bypasses readiness
+or the requirement to press Send or Enter.
 
 Both halves of that are deliberate. Settings live in one blob that is broadcast to every open tab
 the moment any part of it changes, and every overlay re-reads the whole thing when it arrives —
@@ -2411,7 +2434,8 @@ was never going to see in a friendly test:
   only go to the site you are on, through its own chat box. The target chips say which case you
   are in, and connecting an account is what unlocks sending to both at once. YouTube instead
   uses its attached native composer and requires an available signed-in session. Its
-  target is selected automatically and can be toggled for the current visit.
+  target is selected automatically when ready unless an off choice was saved;
+  explicit off/on choices are remembered on this device per Twitch/Kick host channel.
 - **Sign-in needs a one-off registration step.** Both platforms reject the OAuth redirect until
   the extension's redirect URL is registered with them. The overlay's *Settings -> Accounts*
   panel shows the URL when a redirect-related sign-in failure needs attention, alongside what
@@ -2498,6 +2522,28 @@ was never going to see in a friendly test:
   the overlay's settings.
 
 ## Performance
+
+Feed images are active only near the visible rows. New message-body images keep
+their URLs deferred from construction, avoiding unnecessary source assignment
+and removal for each emote in a burst. Scrolling back restores the
+emotes, badges, GIFs and clip thumbnails from their retained URLs; hidden tabs,
+collapsed feeds and filtered sources suspend their feed images. The existing
+message limit and scrollback text remain intact. Browsers without
+`IntersectionObserver` retain the lazy-loading behavior.
+
+Twitch's native-chat observer checks for an actual Share control before reading
+layout-dependent prompt text. Ordinary messages therefore avoid that extra
+layout read. The recent-emote bar also ignores storage changes outside its own
+records, avoiding redraws caused by other open streams updating their caches.
+
+Resource regressions: `node tests/run.js performance`. The changed-source gate is
+`node tests/release-coverage.js --changed-only <node-output.json>`; it measures
+changed executable lines, functions and V8 ranges, separately from the full suite.
+The optional isolated browser check is
+`node tests/feed-performance-browser.js <artifact-directory>` with an existing
+Playwright installation available through `FCM_PLAYWRIGHT_PATH`.
+
+The measurements below describe the earlier tuning baseline.
 
 The feed is the part that has to survive a busy channel, so it is measured rather than assumed.
 Numbers below are from `tests/harness.html` driving the real render path with 3,000 emotes

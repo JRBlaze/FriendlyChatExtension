@@ -79,7 +79,8 @@ function fixture(options = {}) {
     },
   };
   const chrome = { runtime: { getURL: p => p, getManifest: () => ({ version: '1.23.0' }), sendMessage() {} }, storage: {
-    local: { get: async () => storage, set: async patch => { writes.push(patch); Object.assign(storage, patch); } },
+    local: { get: async key => options.get ? options.get(key, storage) : storage,
+      set: async patch => { if (options.set) await options.set(patch); writes.push(patch); Object.assign(storage, patch); } },
     sync: { get: async () => ({}) }, onChanged: { addListener() {}, removeListener() {} },
   } };
   const sandbox = vm.createContext({ document, chrome, console, URL, setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; }, clearTimeout() {}, clearInterval() {},
@@ -121,9 +122,9 @@ function fixture(options = {}) {
   });
   const file = path.join(ROOT, 'src/content/overlay.js');
   vm.runInContext(fs.readFileSync(file, 'utf8'), sandbox, { filename: file });
-  const site = { id: options.platform || 'twitch', channelFromUrl: () => 'example',
+  const site = { id: options.platform || 'twitch', channelFromUrl: () => options.channel || 'example',
     chatContainer: () => options.chatRect ? { getBoundingClientRect: () => options.chatRect } : null };
-  api = FCM.createOverlay({ site, channel: 'example', onCommand(command) {
+  api = FCM.createOverlay({ site, channel: options.channel || 'example', onCommand(command) {
     commands.push(command);
     if (command.cmd === 'send') queueMicrotask(() => api.sendResult(command.id,
       options.apiMissing ? {} : Object.fromEntries(command.targets.map(platform => [platform, options.apiResults?.[platform] || options.apiResult || { ok: true }]))));
@@ -140,6 +141,94 @@ function fixture(options = {}) {
     reply: (platform, name = 'OtherViewer', id = '') => composeHooks.onReplyTo(platform, name, id),
     send: async (text = 'hello', event = {}) => { nodes.get('.fcm-input').value = text; await nodes.get('.fcm-send').fire('click', event); },
   };
+}
+
+async function youtubePreferenceChecks() {
+  const key = 'fcm_youtube_send_targets_v1';
+  for (const browser of ['chrome', 'firefox']) for (const platform of ['twitch', 'kick']) {
+    const host = `${platform}:example`;
+    const storage = { fcm_send_targets_v1: { [host]: ['kick'] } };
+    const first = fixture({ browser, platform, storage }); await first.api.mount(); first.ready();
+    assert.equal(first.FCM.STORAGE_KEYS.youtubeSendTargets, key);
+    assert.equal(first.target('youtube').dataset.on, 'true', 'no saved choice keeps the automatic default');
+    assert.equal(storage[key], undefined, 'automatic readiness does not save a manual preference');
+    await first.select('youtube');
+    assert.equal(storage[key][host], false, 'an explicit off choice is saved per host channel');
+    assert.deepEqual(storage.fcm_send_targets_v1, { [host]: ['kick'] }, 'existing Twitch/Kick choices are untouched');
+    first.api.destroy();
+    const next = fixture({ browser, platform, storage }); await next.api.mount(); next.ready();
+    assert.equal(next.target('youtube').dataset.on, 'false', 'reloads restore the saved off choice');
+    next.state({ ...READY, sourceId: 'replacement', accountLabel: '@OtherViewer' });
+    assert.equal(next.target('youtube').dataset.on, 'false', 'source and account changes cannot undo off');
+    next.state({ ...READY, available: false, reason: 'signed-out', accountLabel: '', sourceId: '' }); next.ready();
+    assert.equal(next.target('youtube').dataset.on, 'false', 'sign-out and reconnection preserve off');
+    await next.select('youtube'); assert.equal(storage[key][host], true);
+    const enabled = fixture({ browser, platform, storage }); await enabled.api.mount();
+    assert.equal(enabled.target('youtube').dataset.on, 'false', 'a saved on choice cannot grant sending capability');
+    enabled.ready(); assert.equal(enabled.target('youtube').dataset.on, 'true');
+    const elsewhere = fixture({ browser, platform, channel: 'elsewhere', storage }); await elsewhere.api.mount(); elsewhere.ready();
+    assert.equal(elsewhere.target('youtube').dataset.on, 'true'); await elsewhere.select('youtube');
+    assert.equal(storage[key][`${platform}:elsewhere`], false);
+    assert.equal(enabled.target('youtube').dataset.on, 'true', 'another channel does not change this open panel');
+    const otherHost = fixture({ browser, platform: platform === 'kick' ? 'twitch' : 'kick', channel: 'elsewhere', storage });
+    await otherHost.api.mount(); otherHost.ready(); assert.equal(otherHost.target('youtube').dataset.on, 'true');
+    assert.ok(!next.FCM.BACKUP_STORES.includes('youtubeSendTargets'), 'device-local consent stays outside portable backups');
+    for (const f of [next, enabled, elsewhere, otherHost]) f.api.destroy();
+  }
+  for (const saved of [undefined, null, true, 'bad', [], {}, { 'twitch:example': 'false' }, { 'twitch:example': 0 },
+    Object.create({ 'twitch:example': false })]) {
+    const f = fixture({ storage: { [key]: saved } }); await f.api.mount(); f.ready();
+    assert.equal(f.target('youtube').dataset.on, 'true', 'only an own boolean record is a saved choice');
+    await f.select('youtube'); assert.equal(f.storage[key]['twitch:example'], false); f.api.destroy();
+  }
+  const failed = fixture({ get: async name => { if (name === key) throw Error('read unavailable'); return {}; },
+    set: async () => { throw Error('write unavailable'); } });
+  await failed.api.mount(); failed.ready(); await failed.select('youtube');
+  failed.state({ ...READY, sourceId: 'new-run' });
+  assert.equal(failed.target('youtube').dataset.on, 'false', 'storage failure retains the current manual choice');
+  failed.api.destroy();
+  let attempts = 0;
+  const writeFailure = fixture({ set: async () => { if (++attempts === 1) throw Error('write unavailable'); } });
+  await writeFailure.api.mount(); writeFailure.ready(); await writeFailure.select('youtube');
+  writeFailure.state({ ...READY, sourceId: 'new-run' });
+  assert.equal(writeFailure.target('youtube').dataset.on, 'false', 'a failed write keeps the in-memory off choice');
+  await writeFailure.select('youtube');
+  assert.equal(writeFailure.storage[key]['twitch:example'], true, 'a failed write does not poison later saves');
+  writeFailure.api.destroy();
+
+  let releaseRead, reads = 0;
+  const pending = new Promise(resolve => { releaseRead = resolve; });
+  const raced = fixture({ synchronousState: true, get: (name, storage) => name === key && ++reads === 1 ? pending : storage });
+  const mounting = raced.api.mount();
+  assert.equal(raced.target('youtube').dataset.on, 'false', 'startup clears an early ready target before showing the panel');
+  await flush(); raced.ready();
+  assert.equal(raced.target('youtube').dataset.on, 'false', 'mount waits for the saved choice before automatic selection');
+  await raced.select('youtube');
+  releaseRead({ [key]: { 'twitch:example': false } }); await mounting;
+  assert.equal(raced.target('youtube').dataset.on, 'true', 'a delayed read cannot overwrite a newer explicit click');
+  assert.equal(raced.storage[key]['twitch:example'], true); raced.api.destroy();
+
+  let releaseClosed;
+  const closedRead = new Promise(resolve => { releaseClosed = resolve; });
+  const closed = fixture({ get: (name, storage) => name === key ? closedRead : storage });
+  const closedMount = closed.api.mount(); await flush(); closed.ready(); closed.api.destroy();
+  releaseClosed({ [key]: { 'twitch:example': true } }); await closedMount;
+  assert.equal(closed.target('youtube').dataset.on, 'false', 'a late storage read cannot revive a destroyed overlay');
+  assert.equal(closed.writes.length, 0);
+
+  let releaseWrite, sets = 0;
+  const delayedWrite = new Promise(resolve => { releaseWrite = resolve; });
+  const rapid = fixture({ set: () => ++sets === 1 ? delayedWrite : Promise.resolve() });
+  await rapid.api.mount(); rapid.ready(); await rapid.select('youtube'); await rapid.select('youtube');
+  assert.equal(sets, 1, 'preference writes are serialized');
+  releaseWrite(); await flush(); assert.equal(rapid.storage[key]['twitch:example'], true);
+  assert.equal(sets, 2); rapid.api.destroy();
+
+  const choices = Object.fromEntries(Array.from({ length: 201 }, (_, i) => [`twitch:old${i}`, false]));
+  const capped = fixture({ storage: { [key]: choices } }); await capped.api.mount(); capped.ready(); await capped.select('youtube');
+  assert.equal(Object.keys(capped.storage[key]).length, 200);
+  assert.equal(capped.storage[key]['twitch:old0'], undefined);
+  assert.equal(capped.storage[key]['twitch:example'], false); capped.api.destroy();
 }
 
 async function historyChecks() {
@@ -242,6 +331,7 @@ async function historyChecks() {
 }
 
 async function run() {
+  await youtubePreferenceChecks();
   const peek = fixture(); await peek.api.mount();
   let lookups = 0;
   peek.FCM.findEmote = () => { lookups++; return { url: 'https://wrong.test/twitch.png', source: 'Twitch' }; };
@@ -369,7 +459,7 @@ async function run() {
   assert.deepEqual(Array.from(f.commands.at(-1).targets), ['twitch', 'kick']);
   assert.equal(f.input.value, '');
   assert.equal(f.messages.length, 0, 'successful mixed sends do not add a system status row');
-  assert.deepEqual(f.writes, [], 'YouTube selection never persists');
+  assert.deepEqual(f.writes, [], 'automatic YouTube selection does not persist a preference');
   await f.select('youtube');
   assert.equal(f.target('youtube').dataset.on, 'false');
   f.ready();
@@ -379,7 +469,7 @@ async function run() {
   f.state({ ...READY, available: false, reason: 'restricted' }); f.ready();
   assert.equal(f.target('youtube').dataset.on, 'false', 'restriction recovery preserves manual deselection');
   f.state({ ...READY, sourceId: 'replacement' });
-  assert.equal(f.target('youtube').dataset.on, 'true', 'a new ready connection gets the automatic default');
+  assert.equal(f.target('youtube').dataset.on, 'false', 'a new connection retains this channel\'s explicit off choice');
   f.state({ ...READY, accountLabel: '' });
   assert.equal(f.target('youtube').dataset.on, 'false', 'a missing account cannot be selected automatically');
   f.state({ ...READY, sourceId: '' });

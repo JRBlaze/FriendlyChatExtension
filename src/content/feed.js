@@ -13,6 +13,7 @@
 
   FCM.createFeed = function (feedEl, getSettings) {
     const pending = [];
+    let destroyed = false;
     let scheduled = false;
     let frameId = null;
     let timerId = null;
@@ -57,6 +58,139 @@
     // reading taken across a change the feed made itself cannot be compared
     // with the one before it.
     let contentDirty = false;
+
+    // Lazy loading delays the first fetch; it does not release animated images
+    // after they leave the viewport. Keep their URLs with the scrollback rows,
+    // but only attach image sources around the visible part of the feed.
+    const mediaRows = new Map();
+    let mediaObserver = null;
+    let mediaDocument = null;
+    let mediaWindow = null;
+    let mediaGeneration = 0;
+
+    function restoreImage(img) {
+      const src = img.getAttribute('data-fcm-src');
+      if (!src || img.getAttribute('src') === src) return;
+      // The observer already gates loading. Browser lazy-loading can strand
+      // images after the feed is adopted into a pop-out document.
+      img.setAttribute('loading', 'eager');
+      img.setAttribute('src', src);
+      if (img.hasAttribute('data-fcm-width')) {
+        img.style.width = img.getAttribute('data-fcm-width');
+        img.style.height = img.getAttribute('data-fcm-height');
+        img.removeAttribute('data-fcm-width');
+        img.removeAttribute('data-fcm-height');
+      }
+    }
+
+    function imageBox(img) {
+      // Never-drawn and discarded rows have no visible geometry to preserve.
+      if (!img.getAttribute('src') || !img.isConnected || !img.complete || !img.naturalWidth) return null;
+      const width = img.width;
+      const height = img.height;
+      return width && height ? { width, height } : null;
+    }
+
+    function suspendImage(img, box = imageBox(img)) {
+      const src = img.getAttribute('src');
+      if (!src) return;
+      img.setAttribute('data-fcm-src', src);
+      // Preserve the loaded image's box while its source is absent, so removing
+      // it cannot move text or the viewer's place in the retained scrollback.
+      if (box) {
+        img.setAttribute('data-fcm-width', img.style.width);
+        img.setAttribute('data-fcm-height', img.style.height);
+        img.style.width = `${box.width}px`;
+        img.style.height = `${box.height}px`;
+      }
+      img.removeAttribute('src');
+    }
+
+    function suspendImages(images, preserve = true) {
+      // Read every box before changing any source or style: interleaving the
+      // two forces a fresh layout for each emote in a dense message.
+      const boxes = preserve ? Array.from(images, imageBox) : null;
+      images.forEach((img, index) => suspendImage(img, boxes ? boxes[index] : null));
+    }
+
+    function mediaAvailable() {
+      return !mediaDocument.hidden && feedEl.clientHeight > 0;
+    }
+
+    function mediaActive(row, entry, available) {
+      return entry.visible && (available === undefined ? mediaAvailable() : available)
+        && !row.classList.contains('fcm-hide');
+    }
+
+    function updateMedia(row, entry, available) {
+      const active = mediaActive(row, entry, available);
+      const images = row.querySelectorAll('img');
+      if (active) images.forEach(restoreImage);
+      else suspendImages(images);
+    }
+
+    function refreshMedia() {
+      if (destroyed) return;
+      bindMediaDocument();
+      if (!mediaObserver) return;
+      const available = mediaAvailable();
+      mediaRows.forEach((entry, row) => updateMedia(row, entry, available));
+    }
+
+    function bindMediaDocument() {
+      const doc = feedEl.ownerDocument || document;
+      const win = doc.defaultView || window;
+      if (doc === mediaDocument && win === mediaWindow) return;
+      if (mediaObserver) mediaObserver.disconnect();
+      if (mediaDocument) mediaDocument.removeEventListener('visibilitychange', refreshMedia);
+      mediaDocument = doc;
+      mediaWindow = win;
+      const generation = ++mediaGeneration;
+      mediaObserver = null;
+      if (typeof win.IntersectionObserver !== 'function') {
+        mediaRows.forEach((entry, row) => row.querySelectorAll('img').forEach(restoreImage));
+        mediaRows.clear();
+        return;
+      }
+      mediaObserver = new win.IntersectionObserver((entries) => {
+        if (destroyed || generation !== mediaGeneration) return;
+        const available = mediaAvailable();
+        entries.forEach((result) => {
+          const entry = mediaRows.get(result.target);
+          if (!entry) return;
+          entry.visible = result.isIntersecting;
+          updateMedia(result.target, entry, available);
+        });
+      }, { root: feedEl, rootMargin: '128px 0px' });
+      doc.addEventListener('visibilitychange', refreshMedia);
+      mediaRows.forEach((entry, row) => {
+        entry.visible = false;
+        updateMedia(row, entry);
+        mediaObserver.observe(row);
+      });
+    }
+
+    function watchMedia(row) {
+      bindMediaDocument();
+      const images = row.querySelectorAll('img');
+      if (!mediaObserver) {
+        // A deferred row may have been built before adoption into a document
+        // without observer support. Its images still need the legacy fallback.
+        images.forEach(restoreImage);
+        return;
+      }
+      if (!images.length) return;
+      const entry = { visible: false };
+      mediaRows.set(row, entry);
+      updateMedia(row, entry);
+      mediaObserver.observe(row);
+    }
+
+    function forgetMedia(row) {
+      if (!mediaRows.delete(row)) return;
+      suspendImages(row.querySelectorAll('img'), false);
+      if (mediaObserver) mediaObserver.unobserve(row);
+    }
 
     function limit() {
       const s = getSettings();
@@ -149,6 +283,7 @@
     function trim() {
       let excess = feedEl.childElementCount - limit();
       while (excess > 0 && feedEl.firstElementChild) {
+        forgetMedia(feedEl.firstElementChild);
         feedEl.removeChild(feedEl.firstElementChild);
         excess--;
       }
@@ -334,7 +469,10 @@
       }
 
       const fragment = document.createDocumentFragment();
-      pending.forEach((node) => fragment.appendChild(node));
+      pending.forEach((node) => {
+        watchMedia(node);
+        fragment.appendChild(node);
+      });
       pending.length = 0;
       feedEl.appendChild(fragment);
 
@@ -387,6 +525,7 @@
     let settleFrame = null;
     let settleUntil = 0;
     function keepSettling(ms) {
+      if (destroyed) return;
       settleUntil = Math.max(settleUntil, Date.now() + ms);
       if (settleFrame !== null || !window.requestAnimationFrame) return;
       // Through the same reading every scroll gets, rather than by scrolling on
@@ -398,7 +537,7 @@
       // else still ends up on the live end, which is the point of looking.
       const step = () => {
         settleFrame = null;
-        if (!following) return;
+        if (destroyed || !following) return;
         // A collapsed or hidden panel has no box, so there is nothing here to
         // measure and nothing that could be done about it. The observer below
         // starts this again the moment it gets one back.
@@ -446,13 +585,23 @@
      * page there is no scroller here at all and nothing to scroll to the end
      * of. Every one of those moves where the end is.
      */
-    feedEl.addEventListener('load', () => {
+    feedEl.addEventListener('load', (event = { target: {} }) => {
+      // Clip previews can arrive after their message row was already flushed.
+      const row = event.target.closest && event.target.closest('.fcm-msg,.fcm-sys');
+      if (!destroyed && row) {
+        const entry = mediaRows.get(row);
+        if (entry) {
+          if (!mediaActive(row, entry)) suspendImage(event.target);
+        }
+        else watchMedia(row);
+      }
       if (following) keepSettling(SETTLE_MS);
     }, true);
 
     let resizeObserver = null;
     if (typeof window.ResizeObserver === 'function') {
       resizeObserver = new window.ResizeObserver(() => {
+        refreshMedia();
         if (following) keepSettling(SETTLE_MS);
       });
       resizeObserver.observe(feedEl);
@@ -486,10 +635,12 @@
       if (timerId !== null) clearTimeout(timerId);
       frameId = null;
       timerId = null;
+      if (destroyed) return;
       flush();
     }
 
     function queue(el) {
+      if (destroyed) return;
       // The "nothing here yet" placeholder, cleared by the first row to arrive.
       // Looked up through a held reference rather than by searching the feed:
       // the search ran on every message and had to walk the whole feed to fail,
@@ -566,7 +717,9 @@
 
       addMessage(msg, activeFilter) {
         if (msg.messageId && !rememberSeen(msg.platform, msg.messageId)) return null;
-        const el = FCM.buildMessageEl(msg, activeFilter);
+        const ownerWindow = (feedEl.ownerDocument || document).defaultView || window;
+        const deferImages = typeof ownerWindow.IntersectionObserver === 'function';
+        const el = FCM.buildMessageEl(msg, activeFilter, deferImages);
         queue(el);
         msgCount++;
         if (onCount) onCount(msgCount);
@@ -612,6 +765,7 @@
         eachRow('[data-platform]', (el) => {
           el.classList.toggle('fcm-hide', !activeFilter.has(el.dataset.platform));
         });
+        refreshMedia();
         if (following) settleToBottom();
       },
 
@@ -619,6 +773,7 @@
       // the text size, timestamps and badges being switched on or off. They
       // move the live end without touching a row's contents or the feed's box.
       resettle() {
+        refreshMedia();
         if (following) settleToBottom();
       },
 
@@ -630,7 +785,10 @@
           const el = pending[i];
           if (el.matches && el.matches(`[data-platform="${platform}"]`)) pending.splice(i, 1);
         }
-        feedEl.querySelectorAll(`[data-platform="${platform}"]`).forEach((el) => el.remove());
+        feedEl.querySelectorAll(`[data-platform="${platform}"]`).forEach((el) => {
+          forgetMedia(el);
+          el.remove();
+        });
         // The dedupe set has to forget them too, or rejoining the channel would
         // silently discard the replayed history as "already seen".
         const prefix = `${platform}:`;
@@ -641,6 +799,7 @@
 
       clear() {
         pending.length = 0;
+        mediaRows.forEach((entry, row) => forgetMedia(row));
         feedEl.replaceChildren();
         placeholderEl = null;
         seen.clear();
@@ -662,6 +821,7 @@
       // to the live end and stopping four rows short of it is the whole of the
       // complaint this exists to answer.
       scrollToBottom() {
+        refreshMedia();
         missed = 0;
         following = true;
         // Asked for outright, so it goes, whatever the viewer's hands have been
@@ -682,6 +842,18 @@
       // still arrive — and this is torn down and rebuilt on every channel
       // switch, which on these sites is a link click.
       destroy() {
+        destroyed = true;
+        if (frameId !== null && window.cancelAnimationFrame) window.cancelAnimationFrame(frameId);
+        if (timerId !== null) clearTimeout(timerId);
+        frameId = null;
+        timerId = null;
+        scheduled = false;
+        pending.length = 0;
+        mediaRows.forEach((entry, row) => forgetMedia(row));
+        if (mediaObserver) mediaObserver.disconnect();
+        mediaObserver = null;
+        mediaRows.clear();
+        if (mediaDocument) mediaDocument.removeEventListener('visibilitychange', refreshMedia);
         if (settleFrame !== null && window.cancelAnimationFrame) {
           window.cancelAnimationFrame(settleFrame);
         }

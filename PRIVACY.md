@@ -1,6 +1,6 @@
 # Privacy Policy — Friendly Chat Extension
 
-_Last updated: October 2, 2026_
+_Last updated: October 3, 2026_
 
 Friendly Chat Extension shows merged Twitch and Kick chat on the stream you
 are watching, with optional YouTube chat and native sending when signed in and ready. This page explains what
@@ -69,10 +69,14 @@ unsupported or failed badge images are omitted, with no visible text replacement
 
 When the sending frame exposes a signed-in editable composer, the extension reads
 its displayed account label, shows it beside the YouTube send target and selects
-that target automatically. Check the account before sending; you can turn the
-target off or on. A manual deselection is retained for that connection. This choice
-and account label stay in memory, are not synced or backed up, and a new source or
-account uses the automatic default again. Granting access, adding chat or saving a
+that target automatically unless you saved an off choice. Check the account before
+sending; you can turn the target off or on. Explicit off/on choices are saved in
+local extension storage, keyed by the Twitch/Kick host platform and channel, with
+up to 200 entries. They survive reloads and YouTube source/account changes, stay
+on this device, and are not synced or included in portable backups. No YouTube
+account labels or source identifiers are saved with these choices; account labels
+remain in memory. With no saved choice, the automatic default applies.
+Granting access, adding chat or saving a
 link alone never sends a message. You must still press Send or Enter.
 
 An explicit send passes the typed text through the extension's local message bridge
@@ -116,7 +120,8 @@ It never requests new access automatically when permission is prompt, denied,
 unknown, or unsupported. After a grant, the same sender frame reloads once to
 load YouTube with that browser-approved session. The capture frame keeps running.
 Setup can be cancelled, and failed access leaves reading available. Successful
-setup selects YouTube once its signed-in composer is ready. Check the displayed
+setup selects YouTube once its signed-in composer is ready unless an off choice
+was saved for this host channel. Check the displayed
 account before sending; setup never sends a message or changes Twitch/Kick choices.
 
 Temporary input and captured rows stay in the current tab's memory/feed,

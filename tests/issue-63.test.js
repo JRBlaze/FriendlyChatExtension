@@ -17,6 +17,8 @@ function element(attrs = {}, rect = {}) {
         const role = /^\[role="([^"]+)"\]$/.exec(part);
         if (role) return attrs.role === role[1];
         if (part === '.tw-toast') return String(attrs.class || '').split(/\s+/).includes('tw-toast');
+        if (part === '.onsite-notifications-toast-manager') return String(attrs.class || '').split(/\s+/).includes('onsite-notifications-toast-manager');
+        if (part === '[data-test-selector="onsite-notifications-toast-manager"]') return attrs['data-test-selector'] === 'onsite-notifications-toast-manager';
         if (part === '[data-a-target*="toast" i]') return /toast/i.test(attrs['data-a-target'] || '');
         if (part === '[data-sonner-toast]') return 'data-sonner-toast' in attrs;
         const drop = /^\[(data-testid|aria-label|title)\*="drop" i\]$/.exec(part);
@@ -57,6 +59,39 @@ function toast(attrs = { role: 'alert' }, rect = {}) {
 }
 
 async function run() {
+  for (const attrs of [{ class: 'onsite-notifications-toast-manager' },
+    { 'data-test-selector': 'onsite-notifications-toast-manager' }]) {
+    const manager = element(attrs, { top: 49, left: 1240, width: 0, height: 0 });
+    const f = fixture('twitch', [manager]);
+    f.messages.getBoundingClientRect = () => ({ top: 90, bottom: 390, left: 900, right: 1240, width: 340, height: 300 });
+    assert.equal(f.bridge.cards(false), null, 'an empty manager reserves nothing');
+    const wrapper = manager.appendChild(element({}, { top: 49, width: 0, height: 0 }));
+    const hidden = wrapper.appendChild(toast({}, { top: 55, height: 180 })); hidden.style.visibility = 'hidden';
+    const closed = wrapper.appendChild(toast({ 'data-state': 'closed' }));
+    const absent = wrapper.appendChild(toast()); absent.style.display = 'none';
+    const card = wrapper.appendChild(toast({}, { top: 55, height: 180 }));
+    const lower = manager.appendChild(toast({}, { top: 245, height: 140 }));
+    const found = f.bridge.cards(false);
+    assert.deepEqual(Array.from(found.elements), [card, lower], 'painted popups inside zero-sized wrappers are found without roles');
+    assert.equal(found.noticeBottom, 385, 'reserve every button even beyond half the chat height');
+    assert.equal(found.top, 55, 'a toast can start above the native message list');
+    assert.equal(found.height, 330);
+    assert.equal(fixture('kick', [manager]).bridge.cards(false), null, 'Twitch manager hooks remain Twitch-only');
+    card.attrs['data-state'] = 'closed'; lower.style.visibility = 'hidden';
+    assert.equal(f.bridge.cards(false), null, 'closed/hidden popups restore the space');
+    manager.children.length = 0;
+    let deep = manager;
+    for (let i = 0; i < 7; i++) deep = deep.appendChild(element({}, { width: 0, height: 0 }));
+    deep.appendChild(toast());
+    assert.equal(f.bridge.cards(false), null, 'manager traversal has a bounded depth');
+    manager.children.length = 0;
+    manager.appendChild(element({}, { width: 0, height: 0 }));
+    assert.equal(f.bridge.cards(false), null, 'empty wrappers do not reserve space');
+    for (const [rect, text] of [[{ top: 400 }, 'live'], [{ left: 100 }, 'live'], [{ top: 0, height: 40 }, 'live'], [{}, '']]) {
+      manager.children.length = 0; const decoy = manager.appendChild(toast({}, rect)); decoy.textContent = text;
+      assert.equal(f.bridge.cards(false), null, 'off-column, off-chat or empty manager content is ignored');
+    }
+  }
   for (const platform of ['twitch', 'kick']) {
     const f = fixture(platform), card = element({}, { top: 60, height: 40 });
     // A structural highlight is optional; a portal notification is not.

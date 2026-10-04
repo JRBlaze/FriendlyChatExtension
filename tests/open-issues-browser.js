@@ -52,6 +52,62 @@ async function notificationChecks(page, mode, output) {
   }
 }
 
+async function managedToastChecks(page, mode, output) {
+  await page.evaluate(() => switchSite('twitch'));
+  const panel = page.locator('.fcm-panel');
+  for (const revealHighlights of [true, false]) for (const moved of [false, true]) {
+    await page.evaluate(revealHighlights => overlay.applyStoredSettings({ ...FCM.view.settings,
+      autoClaimBonus: false, animations: false, hideNativeChat: true, revealHighlights }), revealHighlights);
+    if (moved) {
+      const header = await page.locator('.fcm-brand').boundingBox();
+      await page.mouse.move(header.x + 20, header.y + 10); await page.mouse.down();
+      await page.mouse.move(header.x + 8, header.y + 5); await page.mouse.up();
+      const rect = await panel.boundingBox(), grip = await page.locator('.fcm-resize').boundingBox();
+      await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2); await page.mouse.down();
+      await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2 - rect.height + 180); await page.mouse.up();
+      assert.ok((await panel.boundingBox()).height <= 181, 'tall notices also clear a short manually resized panel');
+    }
+    const before = await panel.boundingBox();
+    const bottom = await page.evaluate(top => {
+      const manager = document.createElement('div');
+      manager.className = 'onsite-notifications-toast-manager';
+      manager.setAttribute('data-test-selector', 'onsite-notifications-toast-manager');
+      manager.style.cssText = 'position:fixed;top:49px;right:16px;width:0;height:0;z-index:4000';
+      window.fixtureToastActions = [];
+      for (let i = 0; i < 2; i++) {
+        const wrapper = document.createElement('div'); wrapper.style.cssText = 'width:0;height:0';
+        const toast = document.createElement('div');
+        toast.style.cssText = `position:fixed;right:0;top:${top + i * 170}px;width:340px;height:160px;background:#303030;color:white;padding:12px;box-sizing:border-box`;
+        const title = document.createElement('p'); title.textContent = 'A followed channel is live'; toast.append(title);
+        for (const action of ['Watch', 'Options', 'Dismiss']) {
+          const button = document.createElement('button'); button.textContent = `${action} managed toast ${i}`;
+          button.onclick = () => { fixtureToastActions.push(`${action}:${i}`); if (action === 'Dismiss') wrapper.remove(); };
+          toast.append(button);
+        }
+        wrapper.append(toast); manager.append(wrapper);
+      }
+      document.body.append(manager);
+      return top + 330;
+    }, before.y + 8);
+    await page.waitForFunction(bottom => document.querySelector('#friendly-chat-merge-host').shadowRoot.querySelector('.fcm-panel').getBoundingClientRect().top >= bottom, bottom);
+    for (let i = 0; i < 2; i++) for (const action of ['Watch', 'Options', 'Dismiss']) {
+      const button = page.getByRole('button', { name: `${action} managed toast ${i}`, exact: true });
+      assert.equal(await button.evaluate(el => {
+        const r = el.getBoundingClientRect(); return el.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2));
+      }), true, 'every managed-toast action receives pointer hits');
+      if (action !== 'Dismiss') await button.click();
+    }
+    assert.deepEqual(await page.evaluate(() => fixtureToastActions), ['Watch:0', 'Options:0', 'Watch:1', 'Options:1']);
+    await page.screenshot({ path: path.join(output, `${mode}-managed-toasts-${revealHighlights ? 'highlights' : 'no-highlights'}-${moved ? 'moved' : 'auto'}.png`) });
+    await page.getByRole('button', { name: 'Dismiss managed toast 0', exact: true }).click();
+    await page.getByRole('button', { name: 'Dismiss managed toast 1', exact: true }).click();
+    await page.waitForFunction(top => Math.abs(document.querySelector('#friendly-chat-merge-host').shadowRoot.querySelector('.fcm-panel').getBoundingClientRect().top - top) < 2, before.y);
+    assert.ok(Math.abs((await panel.boundingBox()).height - before.height) < 2, 'dismissal restores the original height');
+    await page.locator('.onsite-notifications-toast-manager').evaluate(el => el.remove());
+    if (moved) await page.locator('[data-act="reset-placement"]').click();
+  }
+}
+
 async function run(output) {
   fs.mkdirSync(output, { recursive: true });
   const server = http.createServer((req, res) => {
@@ -167,6 +223,7 @@ async function run(output) {
       assert.equal(await giantRow.evaluate(row => row.scrollWidth <= row.clientWidth), true, 'gigantified emote fits the row');
       await page.screenshot({ path: path.join(output, `${mode}-gigantified-emote.png`) });
       await notificationChecks(page, mode, output);
+      await managedToastChecks(page, mode, output);
       assert.deepEqual(errors, []);
       coverage.push(...await page.coverage.stopJSCoverage());
       results.push({ browserEngine: 'installed Chrome', simulatedBrowserMode: mode, passed: true,
