@@ -187,10 +187,10 @@
    */
   function readPrompt(el) {
     if (!el || el.nodeType !== 1) return null;
-    const raw = String(el.innerText || el.textContent || '');
-    if (!raw || raw.length > MAX_PROMPT_CHARS) return null;
     const share = shareButtonIn(el);
     if (!share) return null;
+    const raw = String(el.innerText || el.textContent || '');
+    if (!raw || raw.length > MAX_PROMPT_CHARS) return null;
 
     // The buttons' own labels are not part of what is being asked.
     const text = wordsOutsideButtons(el);

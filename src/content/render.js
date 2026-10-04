@@ -800,7 +800,8 @@
     return { tokens: out, mentioned };
   }
 
-  function serializeTokens(tokens) {
+  function serializeTokens(tokens, deferImages = false) {
+    const sourceAttribute = deferImages ? 'data-fcm-src' : 'src';
     return tokens.map((token) => {
       if (token.type === 'emote') {
         // No `title`: the overlay draws its own preview on hover, and the
@@ -808,7 +809,7 @@
         // less in it. Two tooltips for one emote is worse than either alone.
         // `alt` still carries the name, for a screen reader and for the preview
         // to look the emote up by.
-        return `<img class="fcm-emote ${token.cls}" src="${FCM.escapeHtml(token.url)}"`
+        return `<img class="fcm-emote ${token.cls}" ${sourceAttribute}="${FCM.escapeHtml(token.url)}"`
           + ` alt="${FCM.escapeHtml(token.name)}" loading="lazy"${token.cls === 'youtube-emote' ? ' referrerpolicy="no-referrer"' : ''}>`;
       }
       if (token.type === 'gif') {
@@ -823,7 +824,7 @@
         // escaped here the way every other attribute is.
         return `<a class="fcm-gif" href="${FCM.escapeHtml(token.url)}" target="_blank"`
           + ' rel="noopener noreferrer">'
-          + `<img class="fcm-gif-img" src="${FCM.escapeHtml(token.url)}" alt="GIF" loading="lazy">`
+          + `<img class="fcm-gif-img" ${sourceAttribute}="${FCM.escapeHtml(token.url)}" alt="GIF" loading="lazy">`
           + '<span class="fcm-gif-label">GIF</span></a>';
       }
       if (token.type === 'cheer') {
@@ -840,7 +841,7 @@
         // light stays readable without redrawing rows already on screen.
         const style = FCM.authorColorStyle(token.color);
         return '<span class="fcm-cheer">'
-          + `<img class="fcm-emote twitch-emote fcm-cheer-emote" src="${FCM.escapeHtml(token.url)}"`
+          + `<img class="fcm-emote twitch-emote fcm-cheer-emote" ${sourceAttribute}="${FCM.escapeHtml(token.url)}"`
           + ` alt="${FCM.escapeHtml(token.name)}" loading="lazy">`
           + `<span class="fcm-cheer-amount"${style}>${FCM.escapeHtml(token.amount)}</span></span>`;
       }
@@ -875,7 +876,7 @@
     return serializeTokens(expandTextRun(String(text === null || text === undefined ? '' : text), null));
   };
 
-  FCM.renderMessageBody = function (platform, text, opts = {}) {
+  FCM.renderMessageBody = function (platform, text, opts = {}, deferImages = false) {
     // YouTube images come only from validated positions in captured text.
     // Never reinterpret ordinary words as another provider's emotes or markup.
     if (platform === 'youtube') {
@@ -889,7 +890,7 @@
       }
       tokens.push(...expandTextRun(content.slice(end), 'youtube'));
       const result = highlightMentionTokens(tokens, view.youtubeMentionPattern, true);
-      return { html: serializeTokens(result.tokens), mentioned: result.mentioned };
+      return { html: serializeTokens(result.tokens, deferImages), mentioned: result.mentioned };
     }
     let tokens;
     if (platform === 'twitch') tokens = tokenizeTwitch(text, opts.emoteMap, opts.gifs);
@@ -920,7 +921,7 @@
     });
 
     const result = highlightMentionTokens(expanded);
-    return { html: serializeTokens(result.tokens), mentioned: result.mentioned };
+    return { html: serializeTokens(result.tokens, deferImages), mentioned: result.mentioned };
   };
 
   // ── Badges ──────────────────────────────────────────────────────────────────
@@ -1178,13 +1179,13 @@
     return el;
   };
 
-  FCM.buildMessageEl = function (msg, activeFilter) {
+  FCM.buildMessageEl = function (msg, activeFilter, deferImages = false) {
     const platform = msg.platform;
     const el = document.createElement('div');
     const classes = ['fcm-msg'];
     if (activeFilter && !activeFilter.has(platform)) classes.push('fcm-hide');
 
-    const body = FCM.renderMessageBody(platform, msg.text, msg);
+    const body = FCM.renderMessageBody(platform, msg.text, msg, deferImages);
     const authorLower = String(msg.author || '').toLowerCase();
     const isSelf = view.selfNames.includes(authorLower) || (platform === 'youtube' && authorLower.replace(/^@+/, '') === view.youtubeSelfName);
     if (body.mentioned && !isSelf) classes.push('fcm-mentioned');

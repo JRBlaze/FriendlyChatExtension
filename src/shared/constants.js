@@ -206,6 +206,8 @@
     // a backup has to know what it is copying.
     geometry: 'fcm_geometry_v1',
     sendTargets: 'fcm_send_targets_v1',
+    // Device-local YouTube on/off choices, keyed by Twitch/Kick host channel.
+    youtubeSendTargets: 'fcm_youtube_send_targets_v1',
     // Local-only recent emote names, with separate :twitch and :kick suffixes.
     recentEmotes: 'fcm_recent_emotes_v1',
   };

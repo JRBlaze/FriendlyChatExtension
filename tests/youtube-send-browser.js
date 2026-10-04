@@ -387,6 +387,36 @@ async function recentChecks(page, mode, platform) {
   assert.deepEqual(await bar.getByRole('button').evaluateAll(buttons => [...new Set(buttons.map(b => b.dataset.platform))]), ['twitch']);
 }
 
+async function preferenceChecks(page, platform) {
+  await fixture(page, platform);
+  const yt = page.locator('.fcm-target[data-platform="youtube"]');
+  if (await yt.getAttribute('data-on') === 'false') await yt.click();
+  const before = await page.evaluate(() => sendFixture.sends.length);
+  await yt.click();
+  const host = `${platform}:${platform === 'twitch' ? 'examplestreamer' : 'examplestreamer-kick'}`;
+  await page.waitForFunction(async host => {
+    const key = FCM.STORAGE_KEYS.youtubeSendTargets;
+    return (await chrome.storage.local.get(key))[key]?.[host] === false;
+  }, host);
+  await page.evaluate(() => sendFixture.emit({ sourceId: 'another-source', accountLabel: '@AnotherSyntheticAccount' }));
+  assert.equal(await yt.getAttribute('data-on'), 'false', 'source/account changes preserve the saved off choice');
+  assert.equal(await page.evaluate(() => sendFixture.sends.length), before, 'saving and reconnecting never sends');
+  await fixture(page, platform);
+  assert.equal(await yt.getAttribute('data-on'), 'false', 'a rebuilt host overlay restores the off choice');
+  await fixture(page, platform === 'twitch' ? 'kick' : 'twitch');
+  assert.equal(await yt.getAttribute('data-on'), 'true', 'another host keeps the automatic default');
+  await fixture(page, platform);
+  assert.equal(await yt.getAttribute('data-on'), 'false', 'returning to the host still restores off');
+  await yt.click();
+  await page.waitForFunction(async host => {
+    const key = FCM.STORAGE_KEYS.youtubeSendTargets;
+    return (await chrome.storage.local.get(key))[key]?.[host] === true;
+  }, host);
+  await fixture(page, platform);
+  assert.equal(await yt.getAttribute('data-on'), 'true', 'a rebuilt host overlay restores an explicit on choice');
+  assert.equal(await page.evaluate(() => sendFixture.sends.length), 0, 'restoring a choice never sends');
+}
+
 async function main() {
   fs.mkdirSync(output, { recursive: true });
   const server = http.createServer((req, res) => {
@@ -418,6 +448,7 @@ async function main() {
       await checks(page, mode, platform);
       await recentChecks(page, mode, platform);
       await replyChecks(page, mode, platform);
+      await preferenceChecks(page, platform);
       assert.deepEqual(errors, []);
       coverage.push(...await page.coverage.stopJSCoverage());
       results.push({ engine: 'installed Chrome', simulatedBrowserMode: mode, platform, passed: true, externalRequestsServed: 0, blocked: blocked.length });

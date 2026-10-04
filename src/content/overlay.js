@@ -14,6 +14,7 @@
   // And a choice made on one channel is about that channel, not something to
   // carry to another device.
   const SEND_TARGETS_KEY = FCM.STORAGE_KEYS.sendTargets;
+  const YOUTUBE_SEND_TARGETS_KEY = FCM.STORAGE_KEYS.youtubeSendTargets;
   // Channels remembered before the oldest is dropped. High enough that nobody
   // reaches it by watching, low enough that the entry stays a small one.
   const SEND_TARGETS_LIMIT = 200;
@@ -100,10 +101,12 @@
     // Which platforms a typed message goes to, and which have a connected
     // account to send it with.
     let sendTargets = new Set(FCM.SEND_PLATFORMS);
-    // YouTube uses the embedded page's account. Selection lasts only while
-    // that exact reader/account capability is current and is never stored.
+    // YouTube uses the embedded page's account, but its explicit on/off choice
+    // belongs to this host channel, just like the Twitch/Kick destinations.
     let youtubeSelected = false;
     let youtubeChoice = null;
+    let youtubeChoiceLoading = false;
+    let youtubeSaveChain = Promise.resolve();
     let youtubeSendState = { available: false, reason: 'composer-unavailable', accountLabel: '', sourceId: '' };
     let youtubeReady = false;
     // Who the current message is addressed to, as platform -> display name.
@@ -337,9 +340,8 @@
       ? FCM.attachYouTubeControls({ site, channel, container: chipsEl.parentNode.insertBefore(document.createElement('div'), promptEl), feed, filter, onFilterChange: renderChips,
         onSendState(state) {
           if (destroyed) return;
-          if (state.sourceId !== youtubeSendState.sourceId || state.accountLabel !== youtubeSendState.accountLabel) youtubeChoice = null;
           if (state.available) {
-            youtubeSelected = !!state.sourceId && !!state.accountLabel && youtubeChoice !== false;
+            youtubeSelected = !youtubeChoiceLoading && !!state.sourceId && !!state.accountLabel && youtubeChoice !== false;
           } else if (state.reason !== 'busy' || state.sourceId !== youtubeSendState.sourceId
             || state.accountLabel !== youtubeSendState.accountLabel) youtubeSelected = false;
           youtubeSendState = state;
@@ -1438,6 +1440,7 @@
       if (host.parentNode !== parent) {
         parent.appendChild(host);
       }
+      feed.resettle();
       refreshPopButton();
       // The panel has been sitting with the page's geometry overridden, so it
       // is put back where the placement code thinks it should be rather than
@@ -1483,6 +1486,7 @@
       // aside for stops applying.
       setPeek(false);
       win.document.body.appendChild(host);
+      feed.resettle();
       // Covers every way the window can go: the viewer closing it, this tab
       // navigating, the browser taking it back.
       win.addEventListener('pagehide', () => { if (pipWindow === win) popIn(); }, { once: true });
@@ -1499,6 +1503,42 @@
     let sendTargetsPinned = false;
 
     const sendTargetsKey = () => `${hostPlatform}:${channel}`;
+
+    async function loadYouTubeChoice() {
+      try {
+        const stored = await chrome.storage.local.get(YOUTUBE_SEND_TARGETS_KEY);
+        const all = stored[YOUTUBE_SEND_TARGETS_KEY];
+        const key = sendTargetsKey();
+        if (!destroyed && youtubeChoice === null && all && typeof all === 'object' && !Array.isArray(all)
+          && Object.prototype.hasOwnProperty.call(all, key) && typeof all[key] === 'boolean') youtubeChoice = all[key];
+      } catch (e) { /* keep the automatic default if storage is unavailable */ }
+      finally {
+        youtubeChoiceLoading = false;
+        if (!destroyed) {
+          youtubeSelected = youtubeSendState.available && !!youtubeSendState.sourceId
+            && !!youtubeSendState.accountLabel && youtubeChoice !== false;
+          renderTargets();
+          refreshSendNote();
+        }
+      }
+    }
+
+    function saveYouTubeChoice() {
+      const choice = youtubeChoice;
+      // Capture each click and serialize writes so a slow older write cannot
+      // win over the viewer's most recent choice.
+      youtubeSaveChain = youtubeSaveChain.then(async () => {
+        const stored = await chrome.storage.local.get(YOUTUBE_SEND_TARGETS_KEY);
+        const previous = stored[YOUTUBE_SEND_TARGETS_KEY];
+        const all = previous && typeof previous === 'object' && !Array.isArray(previous) ? { ...previous } : {};
+        const key = sendTargetsKey();
+        delete all[key];
+        all[key] = choice;
+        const keys = Object.keys(all);
+        keys.slice(0, Math.max(0, keys.length - SEND_TARGETS_LIMIT)).forEach(k => delete all[k]);
+        await chrome.storage.local.set({ [YOUTUBE_SEND_TARGETS_KEY]: all });
+      }).catch(() => { /* the in-memory choice still applies */ });
+    }
 
     function readTargets(list) {
       if (!Array.isArray(list)) return null;
@@ -1525,8 +1565,8 @@
     }
 
     async function saveSendTargets() {
-      // A YouTube-only choice is local to this visit. An empty binary record
-      // would erase the user's established Twitch/Kick preference.
+      // YouTube's choice is saved separately. An empty binary record would
+      // erase the user's established Twitch/Kick preference.
       if (!sendTargets.size) return;
       try {
         const stored = await chrome.storage.local.get(SEND_TARGETS_KEY);
@@ -2755,6 +2795,7 @@
         }
         youtubeSelected = !youtubeSelected;
         youtubeChoice = youtubeSelected;
+        saveYouTubeChoice();
         renderTargets();
         refreshSendNote();
       });
@@ -3122,6 +3163,11 @@
 
     const api = {
       async mount() {
+        // Do not expose an automatic selection before a saved off choice loads.
+        youtubeChoiceLoading = true;
+        youtubeSelected = false;
+        renderTargets();
+        refreshSendNote();
         settings = await FCM.loadSettings();
         // destroy() can land while either of these reads is outstanding, which
         // is exactly what a channel switch does. Carrying on would put a host
@@ -3130,7 +3176,7 @@
         if (destroyed) return api;
         FCM.setViewSettings(settings);
         pageParent().appendChild(host);
-        await Promise.all([loadGeometry(), loadSendTargets(), displayFont.refresh()]);
+        await Promise.all([loadGeometry(), loadSendTargets(), loadYouTubeChoice(), displayFont.refresh()]);
         if (destroyed) { host.remove(); return api; }
         applySettings(settings);
         renderChips();

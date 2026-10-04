@@ -49,7 +49,9 @@
   // Notifications can be portalled outside the chat column and too short to
   // count as dialogs. Reserve their actual space, including Twitch's followed-
   // channel live toast. Keep Kick's drop hooks local to Kick; never click either.
-  const TWITCH_NOTICE_SELECTOR = '[role="alert"],[role="status"],.tw-toast,[data-a-target*="toast" i]';
+  const TWITCH_TOAST_MANAGER_SELECTOR = '.onsite-notifications-toast-manager,[data-test-selector="onsite-notifications-toast-manager"]';
+  const TWITCH_NOTICE_SELECTOR = '[role="alert"],[role="status"],.tw-toast,[data-a-target*="toast" i],'
+    + TWITCH_TOAST_MANAGER_SELECTOR;
   const KICK_NOTICE_SELECTOR = '[role="alert"],[role="status"],[data-sonner-toast],'
     + '[data-testid*="drop" i],[aria-label*="drop" i],[title*="drop" i]';
   // How far under a named-but-sizeless panel to look for the box it is drawing.
@@ -72,6 +74,21 @@
   // either site draws needs more than this, and the bound is what keeps the
   // search cheap enough to run on the tick.
   const CARD_DESCENT = 5;
+
+  // Twitch's toast manager and animation wrappers can measure zero while the
+  // notification inside them is painted. Keep the search inside that named tree.
+  function paintedToast(el, depth) {
+    const cs = getComputedStyle(el);
+    if (cs.display === 'none' || cs.visibility === 'hidden' || el.getAttribute('data-state') === 'closed') return null;
+    const r = el.getBoundingClientRect();
+    if (r.width >= MIN_CARD_WIDTH && r.height >= MIN_BANNER_HEIGHT) return el;
+    if (depth <= 0) return null;
+    for (const child of el.children) {
+      const found = paintedToast(child, depth - 1);
+      if (found) return found;
+    }
+    return null;
+  }
 
   /**
    * The element next to the message list that is actually drawing something,
@@ -417,19 +434,24 @@
         if (site.id === 'kick' || site.id === 'twitch') {
           const box = list.getBoundingClientRect();
           const notices = site.id === 'kick' ? KICK_NOTICE_SELECTOR : TWITCH_NOTICE_SELECTOR;
-          document.querySelectorAll(notices).forEach((el) => {
-            // Chat announcements may also use alert/status roles. They are
-            // ordinary feed content, not a followed-channel notification.
-            if (site.id === 'twitch' && list.contains(el)) return;
-            const r = el.getBoundingClientRect();
-            if (r.width < MIN_CARD_WIDTH || r.height < MIN_BANNER_HEIGHT || !hasContent(el)) return;
-            if (r.right <= box.left || r.left >= box.right || r.bottom <= box.top) return;
-            if (r.top > box.top + box.height / 2 || r.height > box.height / 2) return;
-            const cs = getComputedStyle(el);
-            if (cs.display === 'none' || el.getAttribute('data-state') === 'closed'
-              || (cs.visibility === 'hidden' && !(hiddenBody && hiddenBody.contains(el)))) return;
-            if (!above.includes(el)) above.push(el);
-            noticeBottom = Math.max(noticeBottom, r.bottom);
+          document.querySelectorAll(notices).forEach((root) => {
+            const managed = site.id === 'twitch' && root.matches(TWITCH_TOAST_MANAGER_SELECTOR);
+            const candidates = managed
+              ? Array.from(root.children, el => paintedToast(el, CARD_DESCENT)).filter(Boolean) : [root];
+            candidates.forEach((el) => {
+              // Chat announcements may also use alert/status roles. They are
+              // ordinary feed content, not a followed-channel notification.
+              if (site.id === 'twitch' && list.contains(el)) return;
+              const r = el.getBoundingClientRect();
+              if (r.width < MIN_CARD_WIDTH || r.height < MIN_BANNER_HEIGHT || !hasContent(el)) return;
+              if (r.right <= box.left || r.left >= box.right || r.bottom <= box.top || r.top >= box.bottom) return;
+              if (!managed && (r.top > box.top + box.height / 2 || r.height > box.height / 2)) return;
+              const cs = getComputedStyle(el);
+              if (cs.display === 'none' || el.getAttribute('data-state') === 'closed'
+                || (cs.visibility === 'hidden' && !(hiddenBody && hiddenBody.contains(el)))) return;
+              if (!above.includes(el)) above.push(el);
+              noticeBottom = Math.max(noticeBottom, r.bottom);
+            });
           });
         }
         if (!above.length) return null;

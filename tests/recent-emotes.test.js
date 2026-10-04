@@ -91,7 +91,20 @@ async function run() {
   assert.deepEqual(f.container.children.map(b => b.title), ['Kappa (Kick)']);
   f.changed({ [key('kick')]: { newValue: [] } }, 'sync');
   assert.equal(f.container.children.length, 1);
-  f.changed({ unrelated: { newValue: [] } }); assert.equal(f.container.children.length, 1);
+  const unchangedButton = f.container.children[0];
+  let unrelatedLayoutReads = 0;
+  Object.defineProperty(f.container, 'clientWidth', {
+    configurable: true, get() { unrelatedLayoutReads++; return 340; },
+  });
+  for (let i = 0; i < 1000; i++) {
+    f.changed({ [f.FCM.STORAGE_KEYS.emoteCache]: { newValue: { channel: i } } });
+  }
+  f.changed({ unrelated: { newValue: [] } });
+  f.changed({});
+  assert.equal(f.container.children[0], unchangedButton,
+    'unrelated local changes preserve the existing emote image and handlers');
+  assert.equal(unrelatedLayoutReads, 0, 'cache writes never force recent-bar layout');
+  Object.defineProperty(f.container, 'clientWidth', { configurable: true, writable: true, value: 340 });
   f.changed({ [key('kick')]: {} }); assert.equal(f.container.hidden, true);
   f.changed({ [key('kick')]: { newValue: {} } }); assert.equal(f.container.hidden, true);
   for (let i = 0; i < 16; i++) f.FCM.view.emotes.kick.thirdparty['E' + i] = { url: 'https://example.test/e.png' };

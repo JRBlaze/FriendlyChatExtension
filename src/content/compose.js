@@ -240,7 +240,7 @@
     const resizeObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(refresh) : null;
     if (resizeObserver) resizeObserver.observe(container);
     function changed(changes, area) {
-      if (area !== 'local') return;
+      if (area !== 'local' || !storageKeys.some(key => Object.prototype.hasOwnProperty.call(changes, key))) return;
       for (const platform of platforms) {
         if (changes[keys[platform]]) recent[platform] = clean(changes[keys[platform]].newValue);
       }
@@ -1018,6 +1018,18 @@
         const body = row.querySelector('.fcm-body');
         const said = body ? body.cloneNode(true) : document.createElement('span');
         said.classList.add('fcm-um-htext');
+        // Offscreen feed images are suspended; this visible copy needs their
+        // original URL and sizing without waking the row it was copied from.
+        said.querySelectorAll('img[data-fcm-src]').forEach((img) => {
+          img.setAttribute('src', img.getAttribute('data-fcm-src'));
+          if (img.hasAttribute('data-fcm-width')) {
+            img.style.width = img.getAttribute('data-fcm-width');
+            img.style.height = img.getAttribute('data-fcm-height');
+            img.removeAttribute('data-fcm-width');
+            img.removeAttribute('data-fcm-height');
+          }
+          img.removeAttribute('data-fcm-src');
+        });
 
         line.appendChild(when);
         line.appendChild(said);
