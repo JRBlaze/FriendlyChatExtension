@@ -190,6 +190,8 @@
     youtubeLinks: 'fcm_youtube_links_v1',
     // This installation's one-time YouTube introduction; never synced or backed up.
     youtubeOnboarding: 'fcm_youtube_onboarding_v1',
+    // Last version whose update notes were offered on this installation.
+    releaseNotes: 'fcm_release_notes_v1',
     choices:  'fcm_connect_choices_v1',
     // Tokens live in storage.local, never storage.sync: they are per-device
     // credentials and must not be replicated across a user's browsers.
@@ -222,6 +224,8 @@
     autoConnectHost: true,      // join the chat of the site you are on
     crossPromptMode: 'ask',     // 'ask' | 'always' | 'never'
     startCollapsed: false,
+    platformsCollapsed: false,
+    sendToCollapsed: false,
     opacity: 96,
     fontSize: 14,
     theme: 'auto',              // 'auto' follows the site | 'dark' | 'light'

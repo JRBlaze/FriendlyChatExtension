@@ -1,6 +1,6 @@
 # Privacy Policy — Friendly Chat Extension
 
-_Last updated: October 3, 2026_
+_Last updated: October 5, 2026_
 
 Friendly Chat Extension shows merged Twitch and Kick chat on the stream you
 are watching, with optional YouTube chat and native sending when signed in and ready. This page explains what
@@ -177,6 +177,15 @@ The names and their ordering are not synced, backed up or sent to a service. Ima
 come from the current chat's loaded emote sets. The bar's on/off preference syncs
 and is included in settings backups. Hiding the bar retains recent names; removing
 the extension deletes its local records.
+
+### Layout and update notes
+
+The Platforms and Send to sections start expanded. Your independent collapse
+choices use the existing preference storage, sync with browser settings, and
+are included in settings backups. The extension also stores the last installed
+version whose release notes it offered in a device-local installation marker.
+That marker is not synced or exported. Update notes are bundled with the
+extension, open once after a version update, and make no network requests.
 
 ### Existing Twitch/Kick data
 

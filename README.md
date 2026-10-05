@@ -18,6 +18,15 @@ dashboard and other dashboard pages shows or removes it automatically.
 ![Firefox](https://img.shields.io/badge/Firefox-140%2B-orange)
 [![Version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FJRBlaze%2FFriendlyChatExtension%2Fmain%2Fmanifest.json&query=%24.version&label=version&color=green)](../../releases/latest)
 
+## New in 1.23.4
+
+- **Compact chat controls:** collapse Platforms and Send to independently, with
+  found-channel notices and active send destinations still visible.
+- **Remembered layout:** both sections start expanded; your choices are saved
+  across visits and browser restarts, synced with preferences and included in backups.
+- **Update notes:** a local release-notes page opens once after a version update,
+  with highlights from 1.23.0 through 1.23.4. Reopen it from the popup or Settings.
+
 ## New in 1.23.3
 
 - **Chat resource usage:** suspend offscreen feed images while retaining scrollback,
@@ -75,6 +84,26 @@ and the [privacy policy](PRIVACY.md).
 
 Actual extension UI with sample chat and accounts. [More screenshots](store-screenshots/2026-09-27/README.md)
 show YouTube sending, saved links, Kick, and access setup.
+
+## Compact chat controls
+
+Click **Platforms** above the feed to collapse or expand the Twitch, Kick and
+YouTube selectors and setup prompts. The compact header still shows a notice
+when another Twitch/Kick channel is found but not added, or an unadded live
+YouTube suggestion is available. Expand it to review and add the chat.
+
+Click **Send to** above the message box to hide or show its destination buttons.
+The compact header lists the currently selected available destinations,
+including the destination of a reply. Collapsing either section keeps chat
+connections, feed filters, drafts and send choices intact. Both sections start
+expanded by default. Your independent expand/collapse choices are saved in your
+settings, so later channel visits and browser restarts restore your layout.
+Opening YouTube links from Settings also expands Platforms.
+
+After each version update, a local **Release notes** page opens once in a
+background tab. It describes changes from 1.23.0 onward and is also linked from
+the popup and Settings. Reloading the same version or restarting the browser
+does not open it again. It works offline and requests no extra permissions.
 
 ## Copy a chat message
 
@@ -270,7 +299,7 @@ has signed. Chrome is first below; Firefox is [further down](#install-in-firefox
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.23.3.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.23.4.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and an extra folder named `FriendlyChatExtension-main`
@@ -302,7 +331,7 @@ Firefox ESR 140. Firefox for Android is not supported: the sign-in API the exten
 accounts with does not exist there.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.23.3-firefox.xpi` from the Assets list. That file is the add-on, signed
+`FriendlyChatExtension-v1.23.4-firefox.xpi` from the Assets list. That file is the add-on, signed
 by Mozilla, and there is nothing to unzip.
 
 1. **Open the file with Firefox.** Click it in Firefox's downloads list, or drag the file from
@@ -329,7 +358,7 @@ The add-on is not on addons.mozilla.org, and will not be: Mozilla signs it witho
 and this repository's releases are the only place it is published.
 
 **Trying an unsigned build.** Each release also carries
-`FriendlyChatExtension-v1.23.3-firefox-unsigned.xpi`, the same package before Mozilla signed it.
+`FriendlyChatExtension-v1.23.4-firefox-unsigned.xpi`, the same package before Mozilla signed it.
 Opened the ordinary way, release Firefox refuses it as unverified; it loads only as a temporary
 add-on: open `about:debugging`, choose *This Firefox*, press *Load Temporary Add-on…* and pick the
 file itself, without unpacking it. A temporary add-on is removed when Firefox restarts, and its

@@ -199,6 +199,10 @@ const SHARED = [
 const FCM_LINKS_KEY = 'fcm_channel_links_v1';
 
 const suites = {};
+suites.releasenotes = async function () {
+  await require('./release-notes.test')();
+  ok(true, 'installed update-notes notification and page');
+};
 suites.performance = async function () {
   await require('./feed-performance.test').run();
   await require('./native-performance.test').run();

@@ -3,7 +3,7 @@
 (function (FCM) {
   'use strict';
 
-  FCM.attachYouTubeControls = function ({ site, channel, container, feed, filter, onFilterChange, onSendState }) {
+  FCM.attachYouTubeControls = function ({ site, channel, container, feed, filter, onFilterChange, onSendState, onSuggestionsChange }) {
     const doc = container.ownerDocument;
     container.className = 'fcm-youtube-wrap';
     const suggestionBox = doc.createElement('div');
@@ -108,6 +108,7 @@
       suggestionVersion++;
       suggestionBox.replaceChildren();
       suggestionBox.hidden = true;
+      if (onSuggestionsChange) onSuggestionsChange(0);
     }
     const suggestions = FCM.createYouTubeSuggestions ? FCM.createYouTubeSuggestions({
       site, channel, document: doc,
@@ -147,6 +148,7 @@
           });
           suggestionBox.appendChild(dismiss);
           suggestionBox.hidden = false;
+          if (onSuggestionsChange) onSuggestionsChange(items.length);
         }
       },
     }) : null;
