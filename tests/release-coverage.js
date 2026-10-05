@@ -42,7 +42,7 @@ async function main(args) {
   await post('Debugger.enable'); await post('Profiler.enable');
   await post('Profiler.startPreciseCoverage', { callCount: true, detailed: true });
   try {
-    for (const name of ['feed-performance', 'native-performance', 'recent-emotes', 'youtube-reader', 'youtube-transport', 'youtube-send', 'youtube-storage-access', 'youtube-send-transport', 'youtube-sending-ui', 'youtube-resolve-route', 'youtube-lookup',
+    for (const name of ['release-notes', 'feed-performance', 'native-performance', 'recent-emotes', 'youtube-reader', 'youtube-transport', 'youtube-send', 'youtube-storage-access', 'youtube-send-transport', 'youtube-sending-ui', 'youtube-resolve-route', 'youtube-lookup',
       'youtube-suggestions', 'youtube-hints', 'youtube-view', 'youtube-controls', 'youtube-links', 'youtube-links-backup', 'youtube-permission',
       'youtube-access-card', 'youtube-onboarding', 'youtube-trial', 'youtube-integration', 'issue-62', 'issue-63', 'issue-64']) {
       const suite = require(`./${name}.test`);

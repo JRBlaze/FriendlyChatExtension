@@ -1679,3 +1679,18 @@
   font-family: var(--fcm-mono); font-size: 10px; color: var(--text-muted);
   word-break: break-all; user-select: all;
 }
+
+/* Native disclosures retain chat connections and target choices while closed. */
+.fcm-platform-section { flex-shrink: 0; background: var(--surface); border-bottom: 1px solid var(--border); }
+.fcm-section-toggle {
+  cursor: pointer; padding: 3px 9px; color: var(--text-muted);
+  font-family: var(--fcm-mono); font-size: 10px; line-height: 17px;
+}
+.fcm-section-toggle:focus-visible { outline: 2px solid var(--link); outline-offset: -2px; }
+.fcm-platform-section > .fcm-section-toggle { display: list-item; }
+.fcm-platform-notice { color: var(--link); font-weight: 600; overflow-wrap: anywhere; }
+.fcm-platform-notice[hidden] { display: none; }
+.fcm-platform-section .fcm-chips { border-bottom: 0; padding-top: 3px; }
+.fcm-send-section > .fcm-section-toggle { padding: 0; }
+.fcm-send-section .fcm-targets { padding-top: 3px; }
+.fcm-target-summary { color: var(--text); overflow-wrap: anywhere; }

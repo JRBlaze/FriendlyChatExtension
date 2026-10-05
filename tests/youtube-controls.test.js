@@ -53,6 +53,7 @@ async function fixture(withSuggestions = true, options = {}) {
   const rows = [], deletions = [], drops = [];
   const site = { id: options.platform || 'twitch', channelFromUrl: () => 'example' };
   const api = context.FCM.attachYouTubeControls({ site, channel: "example", container, filter, onFilterChange() { calls.push('filter'); },
+    ...(options.suggestionsChanged ? { onSuggestionsChange: options.suggestionsChanged } : {}),
     ...(options.sendState ? { onSendState: options.sendState } : {}),
     feed: { addMessage(row, f) { assert.equal(f, filter); rows.push(row); },
       applyFilter(f) { assert.equal(f, filter); calls.push('applyFilter'); },
@@ -77,6 +78,18 @@ async function fixture(withSuggestions = true, options = {}) {
 async function flush() { for (let i = 0; i < 12; i++) await Promise.resolve(); }
 
 async function run() {
+  const notices = [];
+  const notified = await fixture(true, { suggestionsChanged: count => notices.push(count) });
+  const candidate = { match: 'page-link', label: 'Synthetic', channelUrl: 'https://www.youtube.com/@Synthetic' };
+  notified.suggestionOptions.onSuggestions([candidate]);
+  assert.equal(notices.at(-1), 1, 'discovery publishes an unadded YouTube notice');
+  notified.elements.find(el => el.textContent === 'Dismiss').listeners.click(notified.event);
+  assert.equal(notices.at(-1), 0, 'dismissing discovery clears the compact notice');
+  notified.suggestionOptions.onSuggestions([candidate, candidate]);
+  assert.equal(notices.at(-1), 2);
+  await notified.elements.filter(el => el.textContent === 'Add YouTube chat').at(-1).listeners.click(notified.event);
+  assert.equal(notices.at(-1), 0, 'adding YouTube clears the notice');
+  notified.api.destroy();
   const f = await fixture();
   assert.equal(f.elements.find(e => e.tag === 'summary').textContent, 'YouTube', 'YouTube is a normal chat source');
   assert.equal(f.api.getSendState().accountLabel, '@Viewer');

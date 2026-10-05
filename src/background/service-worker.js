@@ -43,7 +43,8 @@ if (typeof importScripts === 'function') {
     '/src/background/emote-cache.js',
     '/src/background/clips.js',
     '/src/background/updates.js',
-    '/src/background/youtube-onboarding.js'
+    '/src/background/youtube-onboarding.js',
+    '/src/background/release-notes.js'
   );
 }
 

@@ -101,7 +101,7 @@ function fixture(options = {}) {
     createNativeEventWatcher: () => ({ start() {}, stop() {} }), createFeed: () => feed,
     createDisplayFont: () => ({ destroy() {}, refresh: async () => {}, size: n => n }), makeEmoteInput() {},
     emoteOnlyPlatform: () => options.emoteHome || null, findCheer: () => options.cheer || null, toKickMessage: text => text,
-    loadSettings: async () => ({ ...FCM.DEFAULT_SETTINGS, theme: 'dark', revealHighlights: false, showNativeStats: false, autoClaimBonus: false, showShareReminders: false, autoOpen: false }),
+    loadSettings: async () => ({ ...FCM.DEFAULT_SETTINGS, ...storage.fcm_settings_v1, theme: 'dark', revealHighlights: false, showNativeStats: false, autoClaimBonus: false, showShareReminders: false, autoOpen: false }),
     setYouTubeIdentity(name) { youtubeIdentities.push(name); },
     setViewSettings() {}, watchSiteTheme: () => ({ current: () => 'dark', stop() {} }),
     createRecentEmotes: hooks => { recentHooks.push(hooks); return { record(text, platforms) { recentRecords.push({ text, platforms: Array.from(platforms) }); }, refresh() {}, destroy() {} }; },
@@ -138,9 +138,82 @@ function fixture(options = {}) {
     popout: () => nodes.get('.fcm-actions [data-act="popout"]').fire('click'),
     input: nodes.get('.fcm-input'), button: nodes.get('.fcm-send'), state: value => youtubeHooks.onSendState(value),
     select: platform => target(platform).fire('click'), ready: () => youtubeHooks.onSendState(READY),
+    suggestions: count => youtubeHooks.onSuggestionsChange(count),
     reply: (platform, name = 'OtherViewer', id = '') => composeHooks.onReplyTo(platform, name, id),
     send: async (text = 'hello', event = {}) => { nodes.get('.fcm-input').value = text; await nodes.get('.fcm-send').fire('click', event); },
   };
+}
+
+async function collapsePersistenceChecks() {
+  for (const browser of ['chrome', 'firefox']) {
+    const storage = {};
+    const first = fixture({ browser, storage }); await first.api.mount();
+    const platforms = first.nodes.get('.fcm-platform-section');
+    const sending = first.nodes.get('.fcm-send-section');
+    assert.equal(first.FCM.DEFAULT_SETTINGS.platformsCollapsed, false);
+    assert.equal(first.FCM.DEFAULT_SETTINGS.sendToCollapsed, false);
+    assert.equal(platforms.open, true); assert.equal(sending.open, true);
+    await platforms.fire('toggle');
+    assert.equal(first.writes.length, 0, 'initial programmatic toggle never saves');
+    platforms.open = false; await platforms.fire('toggle');
+    sending.open = false; await sending.fire('toggle');
+    first.api.destroy(); await flush();
+    assert.equal(storage.fcm_settings_v1.platformsCollapsed, true);
+    assert.equal(storage.fcm_settings_v1.sendToCollapsed, true);
+    const next = fixture({ browser, storage, platform: 'kick', channel: 'elsewhere' }); await next.api.mount();
+    assert.equal(next.nodes.get('.fcm-platform-section').open, false);
+    assert.equal(next.nodes.get('.fcm-send-section').open, false, 'both preferences survive channel/platform changes');
+    const section = next.nodes.get('.fcm-send-section');
+    section.open = true; await section.fire('toggle');
+    const timers = next.timers.filter(timer => timer.ms === 300);
+    assert.ok(timers.length);
+    timers.at(-1).fn(); await flush();
+    assert.equal(storage.fcm_settings_v1.sendToCollapsed, false);
+    assert.equal(storage.fcm_settings_v1.platformsCollapsed, true, 'independent choices retain the other section');
+    next.api.applyStoredSettings({ ...next.FCM.DEFAULT_SETTINGS });
+    assert.equal(next.nodes.get('.fcm-platform-section').open, true);
+    next.api.destroy();
+    section.open = false; await section.fire('toggle');
+    const invalid = fixture({ browser, storage: { fcm_settings_v1: { platformsCollapsed: 'true', sendToCollapsed: 1 } } });
+    await invalid.api.mount();
+    assert.equal(invalid.nodes.get('.fcm-platform-section').open, true);
+    assert.equal(invalid.nodes.get('.fcm-send-section').open, true, 'only an explicit boolean true collapses');
+    invalid.api.destroy();
+  }
+}
+
+async function collapseChecks() {
+  for (const browser of ['chrome', 'firefox']) for (const platform of ['twitch', 'kick']) {
+    const f = fixture({ browser, platform }); await f.api.mount();
+    f.api.authError('twitch', { message: 'Synthetic sign-in error' });
+    await f.nodes.get('[data-act="youtube-link"]').fire('click');
+    assert.equal(f.nodes.get('.fcm-platform-section').open, true, 'settings reveal hidden YouTube controls');
+    const other = platform === 'twitch' ? 'kick' : 'twitch';
+    const notice = f.nodes.get('.fcm-platform-notice');
+    assert.equal(notice.hidden, true);
+    f.api.setStatus(other, 'idle', '');
+    f.api.setCounterpart({ exists: true, live: false, channel: 'found', displayName: 'Found' });
+    assert.match(notice.textContent, new RegExp(f.FCM.PLATFORM_META[other].name + ' found'));
+    f.suggestions(2);
+    assert.match(notice.textContent, /YouTube/);
+    f.api.setStatus(other, 'connected', 'found');
+    assert.equal(notice.textContent, 'YouTube found - not added');
+    f.suggestions(0);
+    assert.equal(notice.hidden, true);
+    f.api.setCounterpart(null);
+    f.api.setCounterpart({ exists: false });
+    assert.equal(notice.textContent, '');
+    f.ready();
+    assert.match(f.nodes.get('.fcm-target-summary').textContent, /YouTube/);
+    f.reply('youtube');
+    assert.equal(f.nodes.get('.fcm-target-summary').textContent, 'YouTube', 'reply destination is still visible');
+    await f.send();
+    assert.deepEqual(f.youtubeSends, ['hello']);
+    assert.equal(f.commands.filter(command => command.cmd === 'send').length, 0);
+  }
+  const source = fs.readFileSync(path.join(ROOT, 'src/content/overlay.js'), 'utf8');
+  assert.match(source, /<details class="fcm-platform-section" open>[\s\S]*?<summary[\s\S]*?fcm-chips[\s\S]*?fcm-prompt[\s\S]*?<\/details>/);
+  assert.match(source, /<details class="fcm-send-section" open>[\s\S]*?<summary[\s\S]*?fcm-targets[\s\S]*?<\/details>/);
 }
 
 async function youtubePreferenceChecks() {
@@ -331,6 +404,8 @@ async function historyChecks() {
 }
 
 async function run() {
+  await collapseChecks();
+  await collapsePersistenceChecks();
   await youtubePreferenceChecks();
   const peek = fixture(); await peek.api.mount();
   let lookups = 0;

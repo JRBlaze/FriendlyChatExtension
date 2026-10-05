@@ -260,9 +260,11 @@
 
         <div class="fcm-update fcm-hidden" role="status"></div>
 
-        <div class="fcm-chips"></div>
-
-        <div class="fcm-prompt fcm-hidden"></div>
+        <details class="fcm-platform-section" open>
+          <summary class="fcm-section-toggle">Platforms <span class="fcm-platform-notice" role="status" aria-live="polite"></span></summary>
+          <div class="fcm-chips"></div>
+          <div class="fcm-prompt fcm-hidden"></div>
+        </details>
 
         <div class="fcm-feed-wrap">
           <div class="fcm-feed"></div>
@@ -276,7 +278,10 @@
 
         <div class="fcm-composer">
           <div class="fcm-reply fcm-hidden"></div>
-          <div class="fcm-targets"><span class="fcm-targets-label">Send to</span></div>
+          <details class="fcm-send-section" open>
+            <summary class="fcm-section-toggle">Send to <span class="fcm-target-summary"></span></summary>
+            <div class="fcm-targets"></div>
+          </details>
           <div class="fcm-recent-emotes" role="group" aria-label="Recently used emotes" hidden></div>
           <div class="fcm-composer-row">
             <button class="fcm-emote-btn" title="Emotes (or type : in the box)">&#9786;</button>
@@ -308,6 +313,20 @@
     const launcher = $('.fcm-launcher');
     const chipsEl = $('.fcm-chips');
     const promptEl = $('.fcm-prompt');
+    const platformNotice = $('.fcm-platform-notice');
+    const targetSummary = $('.fcm-target-summary');
+    const platformSection = $('.fcm-platform-section');
+    const sendSection = $('.fcm-send-section');
+    function rememberSection(section, key) {
+      section.addEventListener('toggle', () => {
+        if (destroyed || (settings[key] === true) === !section.open) return;
+        settings = { ...settings, [key]: !section.open };
+        persistSettingSoon({ [key]: !section.open });
+      });
+    }
+    rememberSection(platformSection, 'platformsCollapsed');
+    rememberSection(sendSection, 'sendToCollapsed');
+    let youtubeSuggestions = 0;
     const updateEl = $('.fcm-update');
     const feedEl = $('.fcm-feed');
     const inputEl = $('.fcm-input');
@@ -338,6 +357,10 @@
     // connection or changes the Twitch/Kick counterpart for this channel.
     const youtube = FCM.attachYouTubeControls
       ? FCM.attachYouTubeControls({ site, channel, container: chipsEl.parentNode.insertBefore(document.createElement('div'), promptEl), feed, filter, onFilterChange: renderChips,
+        onSuggestionsChange(count) {
+          youtubeSuggestions = count;
+          renderPlatformNotice();
+        },
         onSendState(state) {
           if (destroyed) return;
           if (state.available) {
@@ -1760,7 +1783,18 @@
       return meta.name;
     }
 
+    function renderPlatformNotice() {
+      const found = [];
+      if (counterpart && counterpart.exists && !status[otherPlatform].channel) {
+        found.push(FCM.PLATFORM_META[otherPlatform].name);
+      }
+      if (youtubeSuggestions) found.push('YouTube');
+      platformNotice.textContent = found.length ? `${found.join(' / ')} found - not added` : '';
+      platformNotice.hidden = !found.length;
+    }
+
     function renderChips() {
+      renderPlatformNotice();
       chipsEl.replaceChildren();
       FCM.PLATFORMS.forEach((platform) => {
         const conn = status[platform];
@@ -2303,6 +2337,7 @@
       if (youtube) sheet.querySelector('[data-act="youtube-link"]').addEventListener('click', () => {
         closeSheet();
         setCollapsed(false);
+        $('.fcm-platform-section').open = true;
         youtube.openLinks();
       });
     }
@@ -2312,6 +2347,8 @@
     function applySettings(next) {
       settings = { ...FCM.DEFAULT_SETTINGS, ...(next || {}) };
       FCM.setViewSettings(settings);
+      platformSection.open = settings.platformsCollapsed !== true;
+      sendSection.open = settings.sendToCollapsed !== true;
       if (recentEmotes) recentEmotes.refresh();
       // Only the starting point. A channel that has been given targets of its
       // own keeps them: this runs again every time any setting changes in any
@@ -2737,6 +2774,9 @@
         targetsEl.appendChild(btn);
       });
       if (youtube) renderYouTubeTarget(active);
+      targetSummary.textContent = Array.from(targetsEl.querySelectorAll('.fcm-target'))
+        .filter(button => button.dataset.on === 'true')
+        .map(button => FCM.PLATFORM_META[button.dataset.platform].name).join(' / ') || 'None';
     }
 
     function youtubeNeedsAccessSetup() {
