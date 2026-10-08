@@ -1144,7 +1144,7 @@ suites.firefox = function () {
     // Ordinary popups work without Document PiP; every tab opens a new window.
     const built = code.indexOf('FCM.createOverlay = function');
     const act = 'popout';
-    contains(code, "window.open('', '_blank',", 'firefox: channels do not reuse a named popup');
+    contains(code, "'_blank', `popup,width=${size.width},height=${size.height}`)", 'firefox: channels do not reuse a named popup');
     missing(code, 'if (!window.documentPictureInPicture)', 'firefox: no PiP does not hide the ordinary popup');
     const markupEnd = code.indexOf('const $ = (sel) => root.querySelector(sel);', built);
     const titleBar = (/<div class="fcm-actions">([\s\S]*?)<\/div>/.exec(code.slice(built, markupEnd)) || [])[1] || '';

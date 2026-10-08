@@ -146,7 +146,8 @@ async function run() {
       window: {
         open(url, name, features) {
           const win = { closed: false, document: { body: { style: {}, appendChild(el) { el.parentNode = this; } } },
-            addEventListener(type, fn) { this.onhide = fn; }, close() { this.closed = true; } };
+            addEventListener(type, fn) { if (type === 'load') queueMicrotask(fn); else this.onhide = fn; },
+            removeEventListener() {}, close() { this.closed = true; } };
           windows.push({ url, name, features, win }); return win;
         },
         addEventListener: (type, fn) => listeners.set(type, fn), removeEventListener: type => listeners.delete(type),
@@ -157,6 +158,7 @@ async function run() {
       FCM: { PLATFORM_META: { twitch: { name: 'Twitch' } } }, hostPlatform: 'twitch', channel: 'test',
       $: () => button, ICONS: { popin: '', popout: '' },
       syncPlacement() {}, setPeek() {}, setCollapsed() {}, toast: text => errors.push(text),
+      Blob, URL: { createObjectURL: () => 'blob:https://fixture.test/chat', revokeObjectURL() {} }, setTimeout, clearTimeout,
     }, 'popOut, popIn, poppedOut, refreshPopButton');
     return { context, windows, errors, host, document, listeners, mediaDocuments };
   };

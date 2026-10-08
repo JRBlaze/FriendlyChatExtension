@@ -18,6 +18,13 @@ dashboard and other dashboard pages shows or removes it automatically.
 ![Firefox](https://img.shields.io/badge/Firefox-140%2B-orange)
 [![Version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FJRBlaze%2FFriendlyChatExtension%2Fmain%2Fmanifest.json&query=%24.version&label=version&color=green)](../../releases/latest)
 
+## New in 1.23.5
+
+- **Paid message isolation:** Cheers and their messages go only to Twitch;
+  Kicks stay in Kick's native gift controls. Paid events remain in the merged feed.
+- **Identifiable pop-outs:** ordinary chat windows show a temporary local address
+  containing the source site and Friendly Chat channel label instead of `about:blank`.
+
 ## New in 1.23.4
 
 - **Compact chat controls:** collapse Platforms and Send to independently, with
@@ -299,7 +306,7 @@ has signed. Chrome is first below; Firefox is [further down](#install-in-firefox
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.23.4.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.23.5.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and an extra folder named `FriendlyChatExtension-main`
@@ -331,7 +338,7 @@ Firefox ESR 140. Firefox for Android is not supported: the sign-in API the exten
 accounts with does not exist there.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.23.4-firefox.xpi` from the Assets list. That file is the add-on, signed
+`FriendlyChatExtension-v1.23.5-firefox.xpi` from the Assets list. That file is the add-on, signed
 by Mozilla, and there is nothing to unzip.
 
 1. **Open the file with Firefox.** Click it in Firefox's downloads list, or drag the file from
@@ -358,7 +365,7 @@ The add-on is not on addons.mozilla.org, and will not be: Mozilla signs it witho
 and this repository's releases are the only place it is published.
 
 **Trying an unsigned build.** Each release also carries
-`FriendlyChatExtension-v1.23.4-firefox-unsigned.xpi`, the same package before Mozilla signed it.
+`FriendlyChatExtension-v1.23.5-firefox-unsigned.xpi`, the same package before Mozilla signed it.
 Opened the ordinary way, release Firefox refuses it as unverified; it loads only as a temporary
 add-on: open `about:debugging`, choose *This Firefox*, press *Load Temporary Add-on…* and pick the
 file itself, without unpacking it. A temporary add-on is removed when Firefox restarts, and its
@@ -784,6 +791,12 @@ would actually be delivered:
 
 The name on a chip is who the message is sent **as**, never who it is sent **to** — the platform
 word next to it is the destination.
+
+Paid Cheers and their accompanying message go only to Twitch, even when Kick or
+YouTube is also selected. Twitch must be selected and the source page must be
+Twitch so its native composer can spend the Bits. Kicks use Kick's native gift
+controls and are never copied to another platform. Paid events still appear in
+the merged feed. Your selected destinations remain available for ordinary messages.
 
 At least one target always stays selected. If a send only partly succeeds, the toast names the
 platform that refused and the reason lands in the feed as a system row.
@@ -1615,7 +1628,10 @@ another stream in another tab and pop that chat out too: ordinary windows do not
 another. This works on supported Chrome and desktop Firefox versions without Document PiP.
 If the browser blocks the window, allow pop-ups for the source site and try again.
 
-The popup is a blank same-origin document. Only the existing overlay element moves into it;
+The popup uses a local same-origin Blob document. Its address starts with `blob:`
+and includes the source site and `#friendly-chat/<platform>/<channel>` instead of
+`about:blank`. It is temporary and cannot be bookmarked or shared as a chat page.
+Only the existing overlay element moves into it;
 the content script, connections, draft and native-composer handlers remain owned by the source
 tab. No second chat session or account connection is created. Keep that tab open. Closing the
 popup, hiding the overlay, navigating the source tab or switching channels returns or tears
