@@ -55,7 +55,10 @@ async function run() {
   const files = pack.collect(ROOT);
   for (const file of [FILE, 'src/releases/notes.html', 'src/releases/notes.css']) assert.ok(files.includes(file));
   const markup = fs.readFileSync(path.join(ROOT, 'src/releases/notes.html'), 'utf8');
-  for (const version of ['1.23.0','1.23.1','1.23.2','1.23.3','1.23.4']) assert.ok(markup.includes('Version ' + version));
+  for (const version of ['1.23.0','1.23.1','1.23.2','1.23.3','1.23.4','1.23.5']) assert.ok(markup.includes('Version ' + version));
+  assert.match(markup, /aria-labelledby="v1235"/);
+  assert.match(markup, /Paid messages stay on their platform/);
+  assert.match(markup, /about:blank/);
   assert.ok(!markup.includes('<script'), 'release history works offline without scripts');
   for (const file of ['src/popup/popup.html','src/options/options.html']) {
     assert.match(fs.readFileSync(path.join(ROOT, file), 'utf8'), /href="\.\.\/releases\/notes.html"/);

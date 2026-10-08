@@ -11,6 +11,8 @@ const READY = { available: true, reason: 'ready', accountLabel: '@Viewer', sourc
 function fixture(options = {}) {
   const nodes = new Map(), storage = options.storage || {}, writes = [], commands = [], messages = [], nativeSends = [], youtubeSends = [], accessSetups = [], accessCloses = [];
   const elements = [], popups = [], nativeCardQueries = [], nativeVisibility = [], recentRecords = [], recentHooks = [];
+  const nativeActions = [];
+  const blobUrls = [], revokedUrls = [];
   const listeners = new Map(), timers = [], youtubeIdentities = [];
   let youtubeHooks, composeHooks, api;
   function element(tag = 'div') {
@@ -71,19 +73,29 @@ function fixture(options = {}) {
   const document = { createElement: element, documentElement: element('html'), body: options.noBody ? null : element('body'), activeElement: null,
     removeEventListener() {}, addEventListener(type, fn) { listeners.set(type, fn); }, querySelector: () => null };
   const window = { ...eventTarget(), innerWidth: 1280, innerHeight: 720,
-    open() {
+    open(url) {
+      if (options.popupThrow) throw new Error('Popup refused');
+      if (options.popupBlocked) return null;
       const popup = { ...eventTarget(), document: { body: element('body') }, closed: false,
-        close() { if (!this.closed) { this.closed = true; this.fire('pagehide'); } },
+        url,
+        close() { if (options.closeThrows) throw new Error('Window gone'); if (!this.closed) { this.closed = true; this.fire('pagehide'); } },
       };
-      popups.push(popup); return popup;
+      popups.push(popup);
+      if (!options.noLoad) queueMicrotask(() => { if (options.closedOnLoad) popup.closed = true; popup.fire('load'); });
+      return popup;
     },
   };
+  if (options.pip) window.documentPictureInPicture = { requestWindow: async () => window.open('pip') };
   const chrome = { runtime: { getURL: p => p, getManifest: () => ({ version: '1.23.0' }), sendMessage() {} }, storage: {
     local: { get: async key => options.get ? options.get(key, storage) : storage,
       set: async patch => { if (options.set) await options.set(patch); writes.push(patch); Object.assign(storage, patch); } },
     sync: { get: async () => ({}) }, onChanged: { addListener() {}, removeListener() {} },
   } };
-  const sandbox = vm.createContext({ document, chrome, console, URL, setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; }, clearTimeout() {}, clearInterval() {},
+  class LocalURL extends URL {
+    static createObjectURL(blob) { blobUrls.push(blob); return `blob:https://fixture.test/${blobUrls.length}`; }
+    static revokeObjectURL(url) { revokedUrls.push(url); }
+  }
+  const sandbox = vm.createContext({ document, chrome, console, URL: LocalURL, Blob, setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; }, clearTimeout() {}, clearInterval() {},
     setInterval: () => 1, fetch: async () => ({ text: async () => '' }), window });
   sandbox.self = sandbox;
   for (const file of ['src/shared/namespace.js', 'src/shared/constants.js', 'src/shared/util.js']) {
@@ -97,11 +109,12 @@ function fixture(options = {}) {
     createNativeBridge: () => ({ release() {},
       cards(includeHighlights) { nativeCardQueries.push(includeHighlights); return options.nativeCards || null; },
       setNativeHidden(hide, exemptions) { nativeVisibility.push({ hide, exemptions }); },
-      dialogOver() {}, coveringChat() {}, stats: () => ({}) }),
+      dialogOver() {}, coveringChat() {}, expectMenu() {}, activate(kind) { nativeActions.push(kind); return true; },
+      stats: () => options.nativeStats || {} }),
     createNativeEventWatcher: () => ({ start() {}, stop() {} }), createFeed: () => feed,
     createDisplayFont: () => ({ destroy() {}, refresh: async () => {}, size: n => n }), makeEmoteInput() {},
     emoteOnlyPlatform: () => options.emoteHome || null, findCheer: () => options.cheer || null, toKickMessage: text => text,
-    loadSettings: async () => ({ ...FCM.DEFAULT_SETTINGS, ...storage.fcm_settings_v1, theme: 'dark', revealHighlights: false, showNativeStats: false, autoClaimBonus: false, showShareReminders: false, autoOpen: false }),
+    loadSettings: async () => ({ ...FCM.DEFAULT_SETTINGS, ...storage.fcm_settings_v1, theme: 'dark', revealHighlights: false, showNativeStats: !!options.nativeStats, autoClaimBonus: false, showShareReminders: false, autoOpen: false }),
     setYouTubeIdentity(name) { youtubeIdentities.push(name); },
     setViewSettings() {}, watchSiteTheme: () => ({ current: () => 'dark', stop() {} }),
     createRecentEmotes: hooks => { recentHooks.push(hooks); return { record(text, platforms) { recentRecords.push({ text, platforms: Array.from(platforms) }); }, refresh() {}, destroy() {} }; },
@@ -133,9 +146,9 @@ function fixture(options = {}) {
   api.setStatus('kick', 'connected', 'counterpart');
   api.setAccounts({ twitch: { connected: true, login: 'TwitchViewer' }, kick: { connected: true, login: 'KickViewer' } });
   const target = platform => nodes.get('.fcm-targets').children.find(child => child.dataset.platform === platform);
-  return { api, FCM, options, nodes, timers, youtubeIdentities, storage, writes, commands, messages, nativeSends, youtubeSends, accessSetups, accessCloses, target,
-    document, window, popups, element, nativeCardQueries, nativeVisibility, recentRecords, recentHooks, host: elements.find(node => node.id === 'friendly-chat-merge-host'),
-    popout: () => nodes.get('.fcm-actions [data-act="popout"]').fire('click'),
+  return { api, FCM, options, nodes, timers, youtubeIdentities, storage, writes, commands, messages, nativeSends, youtubeSends, nativeActions, accessSetups, accessCloses, target,
+    document, window, popups, blobUrls, revokedUrls, element, nativeCardQueries, nativeVisibility, recentRecords, recentHooks, host: elements.find(node => node.id === 'friendly-chat-merge-host'),
+    popout: (shiftKey = false) => nodes.get('.fcm-actions [data-act="popout"]').fire('click', { shiftKey }),
     input: nodes.get('.fcm-input'), button: nodes.get('.fcm-send'), state: value => youtubeHooks.onSendState(value),
     select: platform => target(platform).fire('click'), ready: () => youtubeHooks.onSendState(READY),
     suggestions: count => youtubeHooks.onSuggestionsChange(count),
@@ -404,6 +417,79 @@ async function historyChecks() {
 }
 
 async function run() {
+  for (const browser of ['chrome', 'firefox']) for (const platform of ['twitch', 'kick']) for (const pip of [false, true]) {
+    const f = fixture({ browser, platform, pip }); await f.api.mount();
+    await f.popout(pip);
+    const popup = f.popups[0];
+    const title = `${f.FCM.PLATFORM_META[platform].name}/example — merged chat`;
+    assert.equal(popup.document.title, title);
+    assert.equal(popup.url, pip ? 'pip' : `blob:https://fixture.test/1#friendly-chat/${platform}/example`);
+    assert.equal(f.blobUrls.length, pip ? 0 : 1);
+    assert.equal(f.revokedUrls.length, pip ? 0 : 1, 'temporary document resources are released after load');
+    if (!pip) assert.doesNotMatch(await f.blobUrls[0].text(), /<script|src=/i, 'pop-out document contains no script or external resources');
+    await f.popout();
+    f.api.destroy();
+  }
+  for (const options of [{ popupBlocked: true }, { popupThrow: true }, { noLoad: true }, { noLoad: true, closeThrows: true }]) {
+    const f = fixture(options); await f.api.mount();
+    const parent = f.host.parentNode;
+    await f.popout();
+    if (options.noLoad) {
+      await f.popout(); assert.equal(f.popups.length, 1, 'opening twice cannot create competing windows');
+      f.timers.find(timer => timer.ms === 5000).fn(); await flush();
+    }
+    assert.equal(f.host.parentNode, parent, 'failed pop-outs leave the existing panel on its page');
+    assert.equal(f.revokedUrls.length, 1, 'blocked and failed windows release their blob URL');
+    assert.match(f.nodes.get('.fcm-toast').textContent, options.popupBlocked ? /Allow pop-ups/ : /would not open/);
+  }
+  for (const closeThrows of [false, true]) {
+    const f = fixture({ noLoad: true, closeThrows }); await f.api.mount();
+    await f.popout(); f.api.destroy(); f.popups[0].fire('load'); await flush();
+    assert.equal(f.host.isConnected, false, 'teardown during loading never revives the panel');
+  }
+  const closed = fixture({ closedOnLoad: true }); await closed.api.mount();
+  const parent = closed.host.parentNode; await closed.popout();
+  assert.equal(closed.host.parentNode, parent, 'closing during loading never moves the panel');
+  const collapsedPopup = fixture({ storage: { fcm_settings_v1: { startCollapsed: true } } });
+  await collapsedPopup.api.mount(); await collapsedPopup.popout();
+  assert.equal(collapsedPopup.nodes.get('.fcm-panel').classList.contains('fcm-collapsed'), false,
+    'a loaded popup expands a previously collapsed panel');
+  for (const browser of ['chrome', 'firefox']) {
+    const paid = fixture({ browser, cheer: { total: 100 } });
+    await paid.api.mount(); paid.ready();
+    await paid.send('Cheer100 hello');
+    assert.deepEqual(paid.nativeSends, ['Cheer100 hello']);
+    assert.equal(paid.commands.filter(command => command.cmd === 'send').length, 0, 'a Cheer never fans out through an API');
+    assert.deepEqual(paid.youtubeSends, [], 'a Cheer never goes to YouTube');
+    assert.equal(paid.target('kick').dataset.on, 'true', 'paid routing leaves ordinary destinations selected');
+    paid.options.cheer = null;
+    await paid.send('ordinary message');
+    assert.deepEqual(Array.from(paid.commands.at(-1).targets), ['twitch', 'kick']);
+    assert.deepEqual(paid.youtubeSends, ['ordinary message'], 'the next ordinary message uses the selected destinations');
+    const unavailable = fixture({ browser, cheer: { total: 100 }, emoteHome: 'kick' });
+    unavailable.ready(); unavailable.state({ ...READY, available: false });
+    await unavailable.send('Cheer100');
+    assert.deepEqual(unavailable.nativeSends, ['Cheer100'], 'YouTube availability and emote routing cannot divert a Cheer');
+    assert.deepEqual(unavailable.youtubeSends, []);
+    const wrongHost = fixture({ browser, platform: 'kick', cheer: { total: 100 } });
+    wrongHost.ready(); await wrongHost.send('Cheer100');
+    assert.deepEqual(wrongHost.nativeSends, []);
+    assert.deepEqual(wrongHost.youtubeSends, []);
+    assert.equal(wrongHost.commands.filter(command => command.cmd === 'send').length, 0);
+    const uncertain = fixture({ browser, cheer: { total: 100 }, nativeResult: { ok: false, reason: 'cheer-unconfirmed' } });
+    uncertain.ready(); await uncertain.send('Cheer100');
+    assert.equal(uncertain.input.value, '', 'an uncertain paid submission is never restored for retry');
+    assert.equal(uncertain.commands.filter(command => command.cmd === 'send').length, 0);
+    assert.deepEqual(uncertain.youtubeSends, []);
+    const kicks = fixture({ browser, platform: 'kick', nativeStats: { hasBits: true, bits: '500' } });
+    await kicks.api.mount(); kicks.ready();
+    const chip = kicks.nodes.get('.fcm-native').children.find(node => node.dataset.kind === 'bits');
+    assert.ok(chip, 'the Kicks control is available');
+    await chip.fire('click');
+    assert.deepEqual(kicks.nativeActions, ['bits'], 'Kicks opens only the host native gift control');
+    assert.equal(kicks.commands.filter(command => command.cmd === 'send').length, 0);
+    assert.deepEqual(kicks.nativeSends, []); assert.deepEqual(kicks.youtubeSends, []);
+  }
   await collapseChecks();
   await collapsePersistenceChecks();
   await youtubePreferenceChecks();

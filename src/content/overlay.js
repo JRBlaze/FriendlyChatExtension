@@ -1422,11 +1422,12 @@
      * not a second copy that has to be kept in step with the first: it is the
      * same panel, drawn somewhere else.
      *
-     * The popup loads no other page or script. The original content script
+     * The popup loads only a local static document, without scripts. The original content script
      * still owns every handler, including native sends in the source tab.
      * Document PiP remains an explicit alternative for one always-on-top chat.
      */
     let pipWindow = null;
+    let popoutOpening = false;
     const poppedOut = () => !!pipWindow;
 
     function refreshPopButton() {
@@ -1475,26 +1476,48 @@
     }
 
     async function popOut(alwaysOnTop = false) {
+      if (popoutOpening) return;
       if (poppedOut()) { popIn(); return; }
       const rect = panel.getBoundingClientRect();
-      let win;
+      let win, documentUrl;
+      popoutOpening = true;
       try {
         const size = {
           width: Math.round(rect.width) || 400,
           height: Math.round(rect.height) || 640,
         };
-        win = alwaysOnTop && window.documentPictureInPicture
-          ? await window.documentPictureInPicture.requestWindow(size)
-          : window.open('', '_blank', `popup,width=${size.width},height=${size.height}`);
+        if (alwaysOnTop && window.documentPictureInPicture) {
+          win = await window.documentPictureInPicture.requestWindow(size);
+        } else {
+          // A local same-origin document gives the URL bar a source and chat
+          // label without fetching a page or creating another chat session.
+          documentUrl = URL.createObjectURL(new Blob([
+            '<!doctype html><html><head><meta charset="utf-8"><title>Friendly Chat</title></head><body></body></html>',
+          ], { type: 'text/html' }));
+          win = window.open(`${documentUrl}#friendly-chat/${hostPlatform}/${encodeURIComponent(channel)}`,
+            '_blank', `popup,width=${size.width},height=${size.height}`);
+        }
         if (!win) {
           toast('Allow pop-ups for this site to open a chat window');
           return;
         }
+        if (documentUrl) await new Promise((resolve, reject) => {
+          const loaded = () => { clearTimeout(timer); resolve(); };
+          const timer = setTimeout(() => {
+            win.removeEventListener('load', loaded);
+            reject(new Error('Pop-out document did not load'));
+          }, 5000);
+          win.addEventListener('load', loaded, { once: true });
+        });
       } catch (e) {
+        if (win) { try { win.close(); } catch (e) { /* already gone */ } }
         toast('The browser would not open a pop-out window');
         return;
+      } finally {
+        popoutOpening = false;
+        if (documentUrl) URL.revokeObjectURL(documentUrl);
       }
-      if (destroyed) { try { win.close(); } catch (e) { /* nothing to undo */ } return; }
+      if (destroyed || win.closed) { try { win.close(); } catch (e) { /* nothing to undo */ } return; }
 
       pipWindow = win;
       win.document.title = `${FCM.PLATFORM_META[hostPlatform].name}/${channel} — merged chat`;
@@ -2968,7 +2991,11 @@
       // and never past what the viewer asked for: somebody who has picked one
       // chat gets that chat, bare word and all, because they said so.
       const emoteHome = FCM.emoteOnlyPlatform(text);
-      const chosen = emoteHome && wanted.includes(emoteHome) ? [emoteHome] : wanted;
+      const cheer = FCM.findCheer(text, cheermotes);
+      // A paid Cheer and its message belong only to Twitch, even with other
+      // destinations selected. Narrow before validating or dispatching them.
+      const chosen = cheer && wanted.includes('twitch') ? ['twitch']
+        : emoteHome && wanted.includes(emoteHome) ? [emoteHome] : wanted;
       if (chosen.includes('youtube')) {
         // Sending from an open shadow root still requires a real action.
         // Validate the whole mixed send before handing any site its copy.
@@ -2986,7 +3013,6 @@
       // streamer would receive nothing. The page's own chat box is the only
       // thing that actually cheers, so the message is routed through it
       // instead, exactly as it would be if it had been typed there by hand.
-      const cheer = FCM.findCheer(text, cheermotes);
       if (cheer && chosen.includes('twitch')) {
         if (hostPlatform !== 'twitch') {
           // No Twitch chat box on this page to hand it to, and posting it
