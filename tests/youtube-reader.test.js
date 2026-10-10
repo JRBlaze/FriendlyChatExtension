@@ -416,4 +416,5 @@ async function run() {
 
 module.exports = run;
 module.exports.fixture = reader;
+module.exports.row = row;
 if (require.main === module) run().catch(error => { console.error(error); process.exitCode = 1; });

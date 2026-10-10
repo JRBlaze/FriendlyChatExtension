@@ -351,4 +351,6 @@ async function run() {
 }
 
 module.exports = run;
+module.exports.fixture = fixture;
+module.exports.element = element;
 if (require.main === module) run().catch(error => { console.error(error); process.exitCode = 1; });

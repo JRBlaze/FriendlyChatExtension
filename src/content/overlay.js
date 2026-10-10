@@ -352,6 +352,11 @@
     FCM.makeEmoteInput(inputEl, { maxLength: 480 });
 
     const feed = FCM.createFeed(feedEl, () => settings);
+    const mentionSound = FCM.createMentionSound?.({
+      getWindow: () => panel.ownerDocument?.defaultView || window, getSettings: () => settings,
+      claim: () => chrome.runtime.sendMessage({ cmd: 'mentionSound' }),
+    });
+    feed.onMessage?.((message, row) => mentionSound?.notify(message, row));
     feed.onCount((n) => { countEl.textContent = `${n} message${n === 1 ? '' : 's'}`; });
     // The optional reader owns a separate lifecycle; it never joins a sending
     // connection or changes the Twitch/Kick counterpart for this channel.
@@ -1465,6 +1470,7 @@
         parent.appendChild(host);
       }
       feed.resettle();
+      mentionSound?.refresh();
       refreshPopButton();
       // The panel has been sitting with the page's geometry overridden, so it
       // is put back where the placement code thinks it should be rather than
@@ -1533,6 +1539,7 @@
       setPeek(false);
       win.document.body.appendChild(host);
       feed.resettle();
+      mentionSound?.refresh();
       // Covers every way the window can go: the viewer closing it, this tab
       // navigating, the browser taking it back.
       win.addEventListener('pagehide', () => { if (pipWindow === win) popIn(); }, { once: true });
@@ -2255,6 +2262,13 @@
             <label>Fade in new messages</label>
             <input type="checkbox" data-set="animations">
           </div>
+          <div class="fcm-field">
+            <label>Mention and highlight sound<small>A short, soft chime; at most once every five seconds</small></label>
+            <input type="checkbox" data-set="mentionSound">
+          </div>
+          <div class="fcm-field">
+            <button type="button" data-act="preview-mention-sound">Preview sound</button>
+          </div>
           <div class="fcm-field fcm-field-col">
             <label>Highlight these names<small>Comma separated</small></label>
             <input type="text" data-set="highlightNames" placeholder="yourname, your_other_name">
@@ -2300,7 +2314,7 @@
         else el.value = settings[key];
         const continuous = el.type === 'range' || el.type === 'number' || el.type === 'text';
         const evt = continuous ? 'input' : 'change';
-        el.addEventListener(evt, () => {
+        el.addEventListener(evt, event => {
           let value;
           if (el.type === 'checkbox') value = el.checked;
           else if (el.type === 'range' || el.type === 'number') value = fieldNumber(el, settings[key]);
@@ -2309,9 +2323,16 @@
           // waits, and only for the ones that fire while a hand is still moving.
           settings = { ...settings, [key]: value };
           applySettings(settings);
+          if (key === 'mentionSound' && value === true) mentionSound?.arm(event);
           if (continuous) persistSettingSoon({ [key]: value });
           else persistSetting({ [key]: value });
         });
+      });
+
+      sheet.querySelector('[data-act="preview-mention-sound"]').addEventListener('click', async event => {
+        if (!event.isTrusted) return;
+        const played = await mentionSound?.preview(event);
+        toast(played ? 'Soft chime preview' : 'Sound could not play. Click the chat and try again.');
       });
 
       const openAuth = sheet.querySelector('[data-act="open-auth-url"]');
@@ -2370,6 +2391,7 @@
     function applySettings(next) {
       settings = { ...FCM.DEFAULT_SETTINGS, ...(next || {}) };
       FCM.setViewSettings(settings);
+      mentionSound?.refresh();
       platformSection.open = settings.platformsCollapsed !== true;
       sendSection.open = settings.sendToCollapsed !== true;
       if (recentEmotes) recentEmotes.refresh();
@@ -3349,6 +3371,7 @@
         destroyed = true;
         sentHistory.length = 0;
         resetHistoryBrowse();
+        mentionSound?.destroy();
         if (youtube) youtube.destroy();
         FCM.setYouTubeIdentity('');
         displayFont.destroy();
@@ -3402,7 +3425,7 @@
 
       chat(msg) { previewClips(feed.addMessage(msg, filter), msg); },
 
-      batch(rows) { rows.forEach((row) => previewClips(feed.addMessage(row, filter), row)); },
+      batch(rows) { rows.forEach((row) => previewClips(feed.addMessage({ ...row, history: true }, filter), row)); },
 
       setStatus(platform, state, chan) {
         const previous = status[platform].channel;
@@ -3450,9 +3473,10 @@
         renderPrompt();
       },
 
-      setEmotes(platform, kind, store) {
-        FCM.setEmotes(platform, kind, store);
+      setEmotes(platform, kind, store, replace = false) {
+        FCM.setEmotes(platform, kind, store, replace);
         if (recentEmotes) recentEmotes.refresh();
+        if (compose?.refreshEmotes) compose.refreshEmotes();
       },
 
       // Re-applies settings changed elsewhere (the options page, another tab) to
@@ -3532,6 +3556,7 @@
 
       setAccounts(next, about) {
         accounts = next || accounts;
+        FCM.setMentionAccounts?.(accounts);
         // Kept from the last summary that carried an address, so one without it
         // cannot blank the redirect guidance for a sign-in failure.
         if (about && about.redirectUri) {

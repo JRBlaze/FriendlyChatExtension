@@ -199,6 +199,36 @@ const SHARED = [
 const FCM_LINKS_KEY = 'fcm_channel_links_v1';
 
 const suites = {};
+
+suites.compactoverlay = function () {
+  require('./compact-overlay.test').run();
+  ok(true, 'compact overlay layout and disclosure contracts');
+};
+
+suites.pinmessages = async function () {
+  await require('./pin-messages.test').run();
+  ok(true, 'native Twitch pin/unpin and moderator boundaries');
+};
+
+suites.mentionsound = async function () {
+  await require('./mention-sound.test').run();
+  ok(true, 'optional mention chime');
+};
+
+suites.mentionhighlight = async function () {
+  await require('./mention-highlight.test').run();
+  ok(true, 'prominent mention and keyword rows');
+};
+
+suites.quickstart = async function () {
+  await require('./quick-start.test').run();
+  ok(true, 'first-install quick-start guide');
+};
+
+suites.emoteavailability = async function () {
+  await require('./emote-availability.test').run();
+  ok(true, 'issue #77 emote availability regressions');
+};
 suites.releasenotes = async function () {
   await require('./release-notes.test')();
   ok(true, 'installed update-notes notification and page');
@@ -5853,8 +5883,8 @@ suites.compose = function () {
       collectiblesLate: { url: 'https://files.kick.com/emotes/5747999/fullsize', source: 'Kick Channel', learned: true },
     });
     const guessed = FCM.allEmoteEntries().find((e) => e.name === 'collectiblesLate');
-    eq(guessed.source, 'Kick Channel', 'compose: a message’s emote is filed by guesswork');
-    eq(guessed.collectible, false, 'compose: and is not known to be collected');
+    eq(guessed, undefined, 'compose: a message does not grant picker access');
+    eq(FCM.findEmote('collectiblesLate').source, 'Kick Channel', 'compose: its picture stays available for reading');
 
     FCM.setEmotes('kick', 'native', {
       collectiblesLate: { url: 'https://files.kick.com/emotes/5747999/fullsize', source: 'Kick Collectibles', collectible: true },
@@ -5889,7 +5919,8 @@ suites.compose = function () {
       twiceGuessed: { url: 'https://k/two.png', source: 'Kick Channel', learned: true },
     });
     const guessed = FCM.allEmoteEntries().find((e) => e.name === 'twiceGuessed');
-    eq(guessed.url, 'https://k/one.png', 'compose: one guess does not replace another');
+    eq(guessed, undefined, 'compose: repeated guesses still do not grant access');
+    eq(FCM.findEmote('twiceGuessed').url, 'https://k/one.png', 'compose: one guess does not replace another');
   }
 
   // The guessed picture goes with the guessed label. A message names its own
@@ -11943,8 +11974,8 @@ suites.moderation = function () {
     // duration, so an unknown action used to fall through to a permanent ban.
     {
       const { FCM, calls } = build();
-      eq(FCM.MODERATION_ACTIONS, ['delete', 'timeout', 'ban', 'unban'],
-        'mod: the four actions there are');
+      eq(FCM.MODERATION_ACTIONS, ['delete', 'timeout', 'ban', 'unban', 'pin', 'unpin'],
+        'mod: explicit moderation actions, including Twitch pins');
       for (const platform of ['twitch', 'kick']) {
         for (const action of [undefined, null, '', 'tmeout', 'BAN', 'purge', 'ban ', {}]) {
           calls.length = 0;
@@ -15716,7 +15747,7 @@ suites.modstrip = function () {
   const bar = compose.modBarFor(twitchRow);
   ok(bar, 'modstrip: a moderator gets a strip on a row from the chat they moderate');
   const labels = bar.children.map((b) => b.textContent);
-  eq(labels, ['\u2715', '10m', 'Ban'], 'modstrip: delete, one timeout and ban, in that order');
+  eq(labels, ['\u2715', '10m', 'Ban', 'Pin'], 'modstrip: delete, one timeout, ban, and a Twitch pin shortcut');
 
   bar.children[0].click();
   eq(actions.pop(), {
@@ -15843,7 +15874,7 @@ suites.modstrip = function () {
 
     // An armed Ban must not be able to vanish out from under the pointer: the
     // press that confirms it has to stay deliverable.
-    const armed = strip.children[strip.children.length - 1];
+    const armed = strip.querySelector('.fcm-modbar-ban');
     armed.click();
     eq(armed.textContent, 'Ban?', 'modstrip: armed');
     move(258, 12);

@@ -1,4 +1,5 @@
-// Introduce optional YouTube chat once on this installation. Background starts,
+// First installs get the general guide; eligible updates introduce YouTube.
+// Both use the existing once-per-installation marker. Background starts,
 // permission changes and later updates must not keep opening setup tabs.
 (function (FCM) {
   'use strict';
@@ -15,8 +16,9 @@
       // Claim before opening, including when the browser refuses the tab. The
       // popup and options page remain a way to find setup without repeated nags.
       await chrome.storage.local.set({ [key]: FEATURE });
+      const page = reason === 'install' ? 'src/setup/quick-start.html' : 'src/youtube/permission.html';
       await chrome.tabs.create({
-        url: `${chrome.runtime.getURL('src/youtube/permission.html')}?source=${reason}`,
+        url: `${chrome.runtime.getURL(page)}?source=${reason}`,
         active: reason === 'install',
       });
     } catch (e) { /* Onboarding failure must not interrupt chat or force a retry. */ }

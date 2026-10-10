@@ -15,6 +15,7 @@
   // The feed background each theme paints behind a username, which is what a
   // name colour has to be readable against.
   const AUTHOR_BACKDROP = { dark: [13, 13, 15], light: [245, 247, 251] };
+  const HIGHLIGHT_BACKDROP = { dark: [48, 26, 33], light: [255, 240, 240] };
   // Aimed well above the 4.5 bar on purpose. The panel ships at 96% opacity,
   // which lifts every colour slightly toward the background behind it, so names
   // clamped to exactly 4.5 measured about 4.3 once actually rendered. This is
@@ -94,11 +95,12 @@
    * Returns an empty string when the platform sent no usable colour, which
    * leaves the row on the stylesheet's own platform colour.
    */
-  FCM.authorColorStyle = function (value) {
+  FCM.authorColorStyle = function (value, highlighted = false) {
     if (!/^#[0-9a-fA-F]{6}$/.test(String(value || ''))) return '';
     const raw = [1, 3, 5].map((i) => parseInt(String(value).slice(i, i + 2), 16));
-    const dark = toHex(readableOn(raw, AUTHOR_BACKDROP.dark));
-    const light = toHex(readableOn(raw, AUTHOR_BACKDROP.light));
+    const backdrop = highlighted ? HIGHLIGHT_BACKDROP : AUTHOR_BACKDROP;
+    const dark = toHex(readableOn(raw, backdrop.dark));
+    const light = toHex(readableOn(raw, backdrop.light));
     return ` style="--author-dark:${dark};--author-light:${light}"`;
   };
 
@@ -121,6 +123,7 @@
     cheermotes: new Map(),
     settings: { ...FCM.DEFAULT_SETTINGS },
     selfNames: [],
+    accountNames: [],
   };
   FCM.view = view;
 
@@ -129,12 +132,19 @@
   // against it instead of rebuilding on every keystroke.
   view.emoteVersion = 0;
 
-  FCM.setEmotes = function (platform, kind, store) {
+  FCM.setEmotes = function (platform, kind, store, replace = false) {
     const target = view.emotes[platform] && view.emotes[platform][kind];
     if (!target || !store) return;
     // Merge rather than replace: a later call must not drop emotes already
     // rendered on screen.
     let changed = false;
+    // Keep pictures for scrollback, but a fresh native snapshot can revoke use.
+    if (replace) Object.keys(target).forEach((name) => {
+      if (!Object.prototype.hasOwnProperty.call(store, name) && target[name].selectable !== false) {
+        target[name].selectable = false;
+        changed = true;
+      }
+    });
     Object.keys(store).forEach((name) => {
       const incoming = store[name];
       const existing = target[name];
@@ -142,6 +152,12 @@
         target[name] = incoming;
         changed = true;
         return;
+      }
+
+      if (!incoming.learned && typeof incoming.selectable === 'boolean'
+        && existing.selectable !== incoming.selectable) {
+        existing.selectable = incoming.selectable;
+        changed = true;
       }
 
       // A name first seen in a live message is a guess, and the whole record is
@@ -333,6 +349,7 @@
     FCM.PLATFORMS.forEach((platform) => FCM.resetPlatformView(platform));
     chatters.clear();
     FCM.setYouTubeIdentity('');
+    FCM.setMentionAccounts(null);
   };
 
   FCM.setYouTubeIdentity = function (name) {
@@ -341,12 +358,21 @@
     view.youtubeMentionPattern = names.length ? new RegExp(`@?(?:${names.map(FCM.escapeRegExp).join('|')})`, 'giu') : null;
   };
 
+  // Account summaries already expose these names to this overlay. Keep them
+  // transient and rebuild matches without changing the user's saved word list.
+  FCM.setMentionAccounts = function (accounts) {
+    view.accountNames = FCM.PLATFORMS.map(platform => accounts?.[platform]?.connected === true ? accounts[platform].login : '')
+      .filter(name => typeof name === 'string').map(FCM.normalizeChannel).filter(Boolean);
+    FCM.setViewSettings(view.settings);
+  };
+
   FCM.setViewSettings = function (settings) {
     view.settings = { ...FCM.DEFAULT_SETTINGS, ...(settings || {}) };
-    view.selfNames = String(view.settings.highlightNames || '')
+    const configured = String(view.settings.highlightNames || '')
       .split(/[,\n]/)
       .map((n) => FCM.normalizeChannel(n))
       .filter(Boolean);
+    view.selfNames = [...new Set([...configured, ...view.accountNames])].sort((a, b) => b.length - a.length);
     // Compiled once here rather than per message: on a busy channel that was a
     // regex build for every line that arrived.
     view.mentionPattern = view.selfNames.length
@@ -1188,7 +1214,8 @@
     const body = FCM.renderMessageBody(platform, msg.text, msg, deferImages);
     const authorLower = String(msg.author || '').toLowerCase();
     const isSelf = view.selfNames.includes(authorLower) || (platform === 'youtube' && authorLower.replace(/^@+/, '') === view.youtubeSelfName);
-    if (body.mentioned && !isSelf) classes.push('fcm-mentioned');
+    const highlighted = body.mentioned && !isSelf;
+    if (highlighted) classes.push('fcm-mentioned');
     // `/me`: the platform's own chats drop the colon and paint the whole line
     // in the sender's colour, which is the only thing that tells an action
     // apart from an ordinary message once the wrapper has been taken off.
@@ -1231,7 +1258,7 @@
     // lightness is moved until the name is readable — and because the panel can
     // switch between light and dark under an already-rendered row, a value for
     // each theme is emitted and CSS picks.
-    const colorAttr = FCM.authorColorStyle(msg.color);
+    const colorAttr = FCM.authorColorStyle(msg.color, highlighted);
 
     const firstTag = msg.firstMessage
       ? '<span class="fcm-first-tag" title="Their first ever message in this channel">'
@@ -1248,7 +1275,8 @@
       if (youtubeEvent.header && youtubeEvent.header !== msg.text) eventHtml += `<span class="fcm-youtube-event-header">${FCM.escapeHtml(youtubeEvent.header)}</span>`;
     }
 
-    el.innerHTML = replyContextHtml(platform, msg.reply)
+    const highlightTag = highlighted ? '<span class="fcm-highlight-tag">HIGHLIGHTED</span>' : '';
+    el.innerHTML = highlightTag + replyContextHtml(platform, msg.reply)
       + `<span class="fcm-dot fcm-dot-${platform}"></span>`
       + time
       + firstTag

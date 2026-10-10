@@ -67,8 +67,10 @@
   --sys-bg: #101014;
   --sys-border: #3f3f4e;
   --sys-text: #9e9eb8;
-  --mention-bg: rgba(124, 107, 255, 0.28);
-  --mention-text: #d3caff;
+  --highlight-row-bg: #301a21;
+  --highlight-edge: #ff6868;
+  --mention-bg: #652c3a;
+  --mention-text: #ffe2e2;
   --sys-label-bg: #2f2f3c;
   --sys-label-text: #b0b0cc;
   --shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
@@ -122,8 +124,10 @@
   --sys-bg: #e6ebf4;
   --sys-border: #b4bfd2;
   --sys-text: #4a5566;
-  --mention-bg: rgba(95, 85, 232, 0.16);
-  --mention-text: #2f2597;
+  --highlight-row-bg: #fff0f0;
+  --highlight-edge: #b82434;
+  --mention-bg: #ffd9dd;
+  --mention-text: #8f1523;
   --sys-label-bg: #c3cddd;
   --sys-label-text: #3d4757;
   --shadow: 0 18px 40px rgba(23, 31, 56, 0.22);
@@ -193,7 +197,7 @@
 .fcm-panel.fcm-collapsed .fcm-prompt { display: none; }
 
 /* YouTube uses the same feed; this is only its setup control. */
-.fcm-youtube-wrap { flex-shrink: 0; min-width: 0; }
+.fcm-youtube-wrap { display: flow-root; flex-shrink: 0; min-width: 0; }
 .fcm-youtube-suggestions { padding: 8px 10px; border-bottom: 1px solid var(--border); background: var(--surface2); font-size: 12px; }
 .fcm-youtube-suggestions[hidden] { display: none; }
 .fcm-youtube-suggestions > div { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 0 0 7px; min-width: 0; }
@@ -203,9 +207,9 @@
 .fcm-youtube-suggestions > div button { border-color: var(--danger); }
 .fcm-youtube-suggestions > button { padding: 2px 0; color: var(--text-muted); background: transparent; border: 0; text-decoration: underline; }
 .fcm-youtube-suggestions :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.fcm-youtube { padding: 6px 10px; border-bottom: 1px solid var(--border); font-size: 12px; }
-.fcm-youtube summary { cursor: pointer; color: var(--text-muted); }
-.fcm-youtube form { display: flex; flex-wrap: wrap; gap: 7px; padding: 9px 0 3px; max-height: 40vh; overflow-y: auto; }
+.fcm-youtube { padding: 3px 6px; border-bottom: 1px solid var(--border); font-size: 12px; }
+.fcm-youtube summary { min-height: 24px; line-height: 24px; cursor: pointer; color: var(--text-muted); }
+.fcm-youtube form { clear: both; display: flex; flex-wrap: wrap; gap: 7px; padding: 9px 0 3px; max-height: 40vh; overflow-y: auto; }
 .fcm-youtube label { width: 100%; color: var(--text); }
 .fcm-youtube input[type="text"] { display: block; width: 100%; margin-top: 3px; padding: 7px; color: var(--text); background: var(--surface); border: 1px solid var(--border2); border-radius: 4px; font: inherit; }
 .fcm-youtube .fcm-youtube-pair { display: flex; align-items: flex-start; gap: 6px; overflow-wrap: anywhere; }
@@ -220,7 +224,7 @@
 .fcm-dot-youtube { background: #ff5555; }
 .fcm-author.fcm-author-youtube { color: var(--youtube-text); cursor: pointer; }
 .fcm-author.fcm-author-youtube:hover { text-decoration: underline; }
-.fcm-youtube-wrap > .fcm-chip-btn { margin: 4px 8px; }
+.fcm-youtube-wrap > .fcm-chip-btn { float: left; margin: 3px 6px; }
 .fcm-youtube-wrap > .fcm-chip-btn[data-on="true"] { border-color: var(--youtube-text); }
 .fcm-youtube-event { border-left: 2px solid var(--youtube-text); }
 .fcm-youtube-event-label { font-weight: 700; color: var(--youtube-text); margin-right: 5px; }
@@ -244,8 +248,8 @@
 .fcm-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 9px;
+  gap: 6px;
+  padding: 3px 6px;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
@@ -258,11 +262,11 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  font-family: var(--fcm-mono);
+  font-family: var(--fcm-font);
   font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  text-transform: none;
   color: var(--text-muted);
   flex-shrink: 0;
 }
@@ -307,9 +311,9 @@
 .fcm-chips {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   flex-wrap: wrap;
-  padding: 6px 9px;
+  padding: 3px 6px;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
@@ -321,17 +325,17 @@
 .fcm-chip-btn {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   min-height: 23px;
-  padding: 2px 9px;
-  border-radius: 999px;
+  padding: 2px 6px;
+  border-radius: 4px;
   border: 1px solid var(--border);
   background: var(--surface2);
   color: var(--text-muted);
-  font-family: var(--fcm-mono);
+  font-family: var(--fcm-font);
   font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.03em;
+  letter-spacing: 0;
   cursor: pointer;
   /* Never shrunk and never clipped: a chip is as wide as its name needs, and
      if that will not sit beside the other one it goes on the next line. The
@@ -397,10 +401,10 @@
 /* `margin-left: auto` rather than `space-between` on the header, because the
    header now holds exactly two things and the buttons belong hard right
    whether or not the brand beside them is showing. */
-.fcm-actions { display: flex; align-items: center; gap: 3px; flex-shrink: 0; margin-left: auto; }
+.fcm-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; margin-left: auto; }
 
 .fcm-icon-btn {
-  width: 22px; height: 22px;
+  width: 24px; height: 24px;
   display: inline-flex; align-items: center; justify-content: center;
   border-radius: 5px;
   border: 1px solid transparent;
@@ -657,8 +661,22 @@
 }
 
 .fcm-msg.fcm-mentioned {
-  background: rgba(124, 107, 255, 0.09);
-  box-shadow: inset 2px 0 0 var(--accent);
+  background: var(--highlight-row-bg);
+  box-shadow: inset 3px 0 0 var(--highlight-edge), inset -1px 0 0 var(--highlight-edge);
+  padding-top: 5px;
+  padding-bottom: 5px;
+  contain-intrinsic-size: auto 64px;
+}
+.fcm-highlight-tag {
+  display: block;
+  margin-bottom: 3px;
+  text-align: right;
+  color: var(--highlight-edge);
+  font-family: var(--fcm-mono);
+  font-size: max(9px, calc(var(--fcm-size) - 4px));
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: .04em;
 }
 
 .fcm-dot {
@@ -999,14 +1017,14 @@
    site's own menu rather than anything drawn here. */
 .fcm-native {
   display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
-  padding: 5px 8px;
+  padding: 2px 6px;
   background: var(--surface);
   border-top: 1px solid var(--border);
   flex-shrink: 0;
 }
 .fcm-native-chip {
   display: inline-flex; align-items: center; gap: 5px;
-  height: 20px; padding: 0 8px; border-radius: 999px;
+  height: 24px; padding: 0 6px; border-radius: 4px;
   border: 1px solid var(--border); background: var(--surface2);
   color: var(--text-muted); font-family: var(--fcm-mono);
   font-size: 9.5px; font-weight: 600; cursor: pointer; white-space: nowrap;
@@ -1048,14 +1066,14 @@
 .fcm-composer {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 7px 8px;
+  gap: 4px;
+  padding: 4px 6px;
   background: var(--surface);
   border-top: 1px solid var(--border);
   flex-shrink: 0;
 }
-.fcm-composer-row { display: flex; align-items: center; gap: 6px; }
-.fcm-recent-emotes { display: flex; gap: 4px; min-width: 0; max-width: 100%; padding: 2px 0 6px; }
+.fcm-composer-row { display: flex; align-items: center; gap: 4px; }
+.fcm-recent-emotes { display: flex; gap: 4px; min-width: 0; max-width: 100%; padding: 0; }
 .fcm-recent-emotes[hidden] { display: none; }
 .fcm-recent-emote { flex: 0 0 32px; height: 32px; padding: 3px; border: 1px solid var(--border); border-radius: 5px; background: transparent; cursor: pointer; }
 .fcm-recent-emote[data-platform="twitch"] { border-bottom-color: #9146ff; }
@@ -1103,14 +1121,14 @@
 .fcm-targets[data-locked="true"] .fcm-target[data-on="false"] { color: var(--text-dim); }
 
 /* Send targets: which platforms a typed message goes to. */
-.fcm-targets { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.fcm-targets { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 .fcm-targets-label {
   font-family: var(--fcm-mono); font-size: 9px; letter-spacing: 0.08em;
   text-transform: uppercase; color: var(--text-dim); margin-right: 1px;
 }
 .fcm-target {
   display: inline-flex; align-items: center; gap: 5px;
-  height: 19px; padding: 0 8px; border-radius: 999px;
+  height: 24px; padding: 0 6px; border-radius: 4px;
   border: 1px solid var(--border); background: var(--surface2);
   color: var(--text-muted); font-family: var(--fcm-mono);
   font-size: 9.5px; font-weight: 600; cursor: pointer; white-space: nowrap;
@@ -1147,7 +1165,7 @@
 /* Opens the site's own GIF keyboard. Wider than the emote button because it
    is a word rather than a glyph; the same shape otherwise. */
 .fcm-gif-btn {
-  height: 28px; padding: 0 7px; flex-shrink: 0;
+  height: 28px; padding: 0 5px; flex-shrink: 0;
   display: inline-flex; align-items: center; justify-content: center;
   border-radius: 6px; border: 1px solid var(--border);
   background: var(--surface2); color: var(--text-muted);
@@ -1177,7 +1195,7 @@
   min-width: 0;
   min-height: 28px;
   max-height: 84px;
-  padding: 5px 9px;
+  padding: 4px 7px;
   border-radius: 6px;
   border: 1px solid var(--border);
   background: var(--surface2);
@@ -1241,7 +1259,7 @@
 }
 
 .fcm-send {
-  height: 28px; padding: 0 12px; flex-shrink: 0;
+  height: 28px; padding: 0 9px; flex-shrink: 0;
   border-radius: 6px; border: 1px solid transparent;
   background: var(--send-bg); color: var(--send-fg);
   font-family: var(--fcm-font); font-size: 12px; font-weight: 600; cursor: pointer;
@@ -1268,8 +1286,8 @@
 /* ── Status bar ────────────────────────────────────────────────────────────── */
 
 .fcm-statusbar {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  padding: 4px 10px;
+  display: flex; align-items: center; justify-content: space-between; gap: 2px 6px; flex-wrap: wrap;
+  padding: 2px 6px;
   background: var(--surface);
   border-top: 1px solid var(--border);
   font-family: var(--fcm-mono);
@@ -1681,7 +1699,7 @@
 }
 
 /* Native disclosures retain chat connections and target choices while closed. */
-.fcm-platform-section { flex-shrink: 0; background: var(--surface); border-bottom: 1px solid var(--border); }
+.fcm-platform-section { display: flow-root; flex-shrink: 0; background: var(--surface); border-bottom: 1px solid var(--border); }
 .fcm-section-toggle {
   cursor: pointer; padding: 3px 9px; color: var(--text-muted);
   font-family: var(--fcm-mono); font-size: 10px; line-height: 17px;
@@ -1691,6 +1709,19 @@
 .fcm-platform-notice { color: var(--link); font-weight: 600; overflow-wrap: anywhere; }
 .fcm-platform-notice[hidden] { display: none; }
 .fcm-platform-section .fcm-chips { border-bottom: 0; padding-top: 3px; }
-.fcm-send-section > .fcm-section-toggle { padding: 0; }
-.fcm-send-section .fcm-targets { padding-top: 3px; }
+.fcm-send-section > .fcm-section-toggle { padding: 2px 0; }
+.fcm-send-section .fcm-targets { padding-top: 0; }
 .fcm-target-summary { color: var(--text); overflow-wrap: anywhere; }
+
+/* Open disclosures share a row with their controls. Floats plus a flex formatting
+   context keep native details/summary keyboard behavior on Chrome 116/Firefox 140.
+   Names wrap in the remaining width; prompts and YouTube controls get full rows. */
+.fcm-platform-section[open] > .fcm-section-toggle { float: left; padding: 4px 6px 4px 9px; }
+.fcm-platform-section[open] .fcm-chips { min-width: 0; }
+.fcm-platform-section[open]:has(.fcm-platform-notice:not([hidden])) > .fcm-section-toggle { float: none; }
+.fcm-platform-section .fcm-prompt { clear: both; }
+.fcm-platform-section > div:not(.fcm-chips) { clear: both; }
+.fcm-send-section { display: flow-root; }
+.fcm-send-section[open] > .fcm-section-toggle { float: left; margin-right: 6px; }
+.fcm-send-section[open] .fcm-targets { min-width: 0; }
+.fcm-send-section[open] .fcm-target-summary { display: none; }

@@ -44,7 +44,8 @@ if (typeof importScripts === 'function') {
     '/src/background/clips.js',
     '/src/background/updates.js',
     '/src/background/youtube-onboarding.js',
-    '/src/background/release-notes.js'
+    '/src/background/release-notes.js',
+    '/src/background/quick-start.js'
   );
 }
 
@@ -192,7 +193,7 @@ function makeSink(session, platform, generation) {
     event: (text, meta) => send(session, { type: 'event', platform, text, meta: meta || null }),
     chat: (msg) => send(session, { type: 'chat', msg }),
     batch: (rows) => send(session, { type: 'batch', rows }),
-    emotes: (kind, store) => send(session, { type: 'emotes', platform, kind, store }),
+    emotes: (kind, store, replace = false) => send(session, { type: 'emotes', platform, kind, store, replace }),
     deleteMsg: (messageId) => send(session, { type: 'deleteMsg', platform, messageId: String(messageId) }),
     deleteUser: (username) => send(session, { type: 'deleteUser', platform, username: String(username) }),
     status: (state) => {
@@ -220,9 +221,9 @@ function makeSink(session, platform, generation) {
     emoteSets: (ids) => {
       if (!current()) return;
       const known = conn.emoteSets || [];
-      const merged = Array.from(new Set([...known, ...(ids || [])]));
-      if (merged.length === known.length) return;
-      conn.emoteSets = merged;
+      const next = Array.from(new Set(ids || []));
+      if (next.length === known.length && next.every(id => known.includes(id))) return;
+      conn.emoteSets = next;
       loadTwitchEmotes(session, platform, mine).catch(() => {});
     },
     moderator: (can) => {
@@ -269,6 +270,10 @@ async function onJoined(session, platform, generation) {
   // Reading the settings takes real milliseconds, and clicking through
   // channels can retire this join inside them.
   if (!sink.current()) return;
+  // A reconnect/account change must re-establish send access, even if loading
+  // subsequently fails. Scrollback pictures stay in the render store.
+  conn.nativeEmotesFresh = false;
+  sink.emotes('native', {}, true);
 
   if (settings.showHistory) {
     if (platform === 'twitch') {
@@ -339,7 +344,8 @@ async function loadKickEmotes(session, sink, channel) {
 
   const count = Object.keys(store).length;
   if (count) {
-    sink.emotes('native', store);
+    session.conns.kick.nativeEmotesFresh = true;
+    sink.emotes('native', store, true);
     sink.sys(FCM.kickEmoteCountLine(store));
     await FCM.emoteCache.write('kick', channel, await accountIdFor('kick'),
       'native', FCM.kickEmotesWorthCaching(store));
@@ -430,8 +436,11 @@ async function sendCachedEmotes(session, platform, generation) {
   ['native', 'thirdparty'].forEach((kind) => {
     const store = kinds[kind];
     const count = store ? Object.keys(store).length : 0;
-    if (!count) return;
-    sink.emotes(kind, store);
+    if (!count || (kind === 'native' && conn.nativeEmotesFresh)) return;
+    // Cached native pictures are for reading until current access is checked.
+    const ready = kind === 'native' ? Object.fromEntries(Object.entries(store).map(([name, emote]) =>
+      [name, { ...emote, selectable: false }])) : store;
+    sink.emotes(kind, ready);
     total += count;
   });
   if (total) sink.sys(`${total} emotes ready from last time — checking for new ones`);
@@ -760,20 +769,13 @@ async function loadTwitchEmotesNow(session, platform, generation, sink) {
     return;
   }
   // Only the first pass is worth saying out loud; the later ones are top-ups.
-  sink.emotes('native', store);
-  // Cached against the account as well as the channel: this list is the answer
-  // to what *this* viewer may send here, and it grows across the three passes,
-  // so the last and largest one is what ends up stored.
-  // Only when this pass found at least as much as the best one so far. The
-  // passes are not equal — an earlier one runs before Twitch has said which
-  // sets this account may send — and the cache is what the next visit opens
-  // with.
-  if (count >= (conn.emoteBest || 0)) {
-    conn.emoteBest = count;
-    FCM.emoteCache
-      .write(platform, channel, (record && record.userId) || '', 'native', store)
-      .catch(() => {});
-  }
+  conn.nativeEmotesFresh = true;
+  sink.emotes('native', store, true);
+  // The cache belongs to this account and channel, and keeps the latest answer.
+  // A smaller fresh list can mean a subscription expired; size is not freshness.
+  FCM.emoteCache
+    .write(platform, channel, (record && record.userId) || '', 'native', store)
+    .catch(() => {});
   if (conn.announcedEmotes) return;
   conn.announcedEmotes = true;
 
@@ -846,9 +848,9 @@ function leaveChannel(session, platform, { silent = false } = {}) {
   conn.thirdPartyFor = null;
   conn.announcedThirdParty = false;
   conn.announcedEmotes = false;
-  // The largest emote list seen for the channel being left says nothing about
-  // the next one.
-  conn.emoteBest = 0;
+  // The next account/channel must receive its own current IRC set snapshot.
+  conn.emoteSets = [];
+  conn.nativeEmotesFresh = false;
   if (conn.canModerate) {
     conn.canModerate = false;
     send(session, { type: 'moderator', platform, canModerate: false });
@@ -1334,9 +1336,40 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   syncHeartbeat();
 });
 
+// Only a timestamp is retained: coalesce mention sounds across live chat tabs.
+let lastMentionSoundAt = -Infinity;
+
 // Popup and options page ask for a snapshot rather than holding a port.
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg) return undefined;
+
+  if (msg.cmd === 'mentionSound') {
+    const session = sender?.tab && sessions.get(sender.tab.id);
+    if (!session?.hostChannel || sender.id !== chrome.runtime.id || sender.frameId !== 0) {
+      sendResponse({ play: false }); return true;
+    }
+    FCM.loadSettings().then(settings => {
+      const now = Date.now();
+      const play = settings.mentionSound === true && (now - lastMentionSoundAt >= 5000 || now < lastMentionSoundAt);
+      if (play) lastMentionSoundAt = now;
+      sendResponse({ play });
+    }).catch(() => sendResponse({ play: false }));
+    return true;
+  }
+
+  if (msg.cmd === 'quickStartAccounts' || msg.cmd === 'quickStartConnect') {
+    FCM.quickStartRequest(msg, sender).then(async result => {
+      if (result.ok && result.changed) {
+        const summary = await FCM.auth.summary();
+        sessions.forEach(session => {
+          send(session, authMessage(summary));
+          rejoinForAuth(session, msg.platform);
+        });
+      }
+      sendResponse(result);
+    }).catch(() => sendResponse({ ok: false, code: 'failed' }));
+    return true;
+  }
 
   // The popup's release questions. Answered from what the last check stored,
   // except for 'updateCheck', which is the user asking to look now.

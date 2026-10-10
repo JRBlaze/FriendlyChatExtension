@@ -203,6 +203,7 @@
       const youtubeEvent = sanitizeEvent(message.youtubeEvent), youtubeBadges = sanitizeBadges(message.youtubeBadges);
       messages.push({ platform: 'youtube', id: message.id, username: message.username,
         displayName: message.displayName, text: message.text, ts: message.ts, badges: [], readOnly: true,
+        ...(message.history === true ? { history: true } : {}),
         ...(youtubeEmotes.length ? { youtubeEmotes } : {}),
         ...(youtubeEvent ? { youtubeEvent } : {}), ...(youtubeBadges.length ? { youtubeBadges } : {}) });
     }

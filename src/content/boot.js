@@ -159,7 +159,7 @@
       case 'event': overlay.event(msg.platform, msg.text, msg.meta); break;
       case 'chat': overlay.chat(msg.msg); break;
       case 'batch': overlay.batch(msg.rows || []); break;
-      case 'emotes': overlay.setEmotes(msg.platform, msg.kind, msg.store); break;
+      case 'emotes': overlay.setEmotes(msg.platform, msg.kind, msg.store, msg.replace); break;
       case 'needKickEmotes': fetchKickEmotesFromPage(msg.channel, msg.loaded); break;
       case 'needKickModerator': reportKickStandingFromPage(msg.channel); break;
       case 'badges': overlay.setBadges(msg.platform, msg.badges); break;
@@ -471,7 +471,17 @@
         });
         if (!res.ok) return null;
         const store = FCM.parseKickEmotePayload(await res.json(), slug);
-        return Object.keys(store).length ? store : null;
+        if (!Object.keys(store).length) return null;
+        let standing = null;
+        if (token && Object.values(store).some(emote => emote.channel && emote.subscribersOnly)) {
+          try {
+            const status = await fetch(`https://kick.com/api/v2/channels/${encodeURIComponent(slug)}/me`, {
+              headers, credentials: 'include', redirect: 'error',
+            });
+            if (status.ok) standing = await status.json();
+          } catch (e) { /* unavailable entitlement stays hidden */ }
+        }
+        return FCM.applyKickEmoteAccess(store, standing);
       } catch (e) {
         return null;
       }
@@ -489,7 +499,7 @@
       // enough to matter, so this is one channel's emote list and it must not
       // be poured into the next channel's picker.
       if (!count || !overlay || epoch !== navEpoch) return;
-      overlay.setEmotes('kick', 'native', store);
+      overlay.setEmotes('kick', 'native', store, true);
       // Only when this found more than the worker did. The worker may already
       // have announced a list of its own, and the same line twice over reads as
       // a bug rather than as the fuller answer arriving.

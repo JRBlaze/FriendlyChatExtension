@@ -126,7 +126,7 @@
             // the one place it says so without a special scope. It arrives
             // after the join rather than with it, which is why the emote load
             // has to be able to happen twice.
-            if (tags['emote-sets']) {
+            if (Object.prototype.hasOwnProperty.call(tags, 'emote-sets')) {
               sink.emoteSets(String(tags['emote-sets']).split(',').filter(Boolean));
             }
             return;

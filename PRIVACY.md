@@ -1,6 +1,6 @@
 # Privacy Policy — Friendly Chat Extension
 
-_Last updated: October 5, 2026_
+_Last updated: October 9, 2026_
 
 Friendly Chat Extension shows merged Twitch and Kick chat on the stream you
 are watching, with optional YouTube chat and native sending when signed in and ready. This page explains what
@@ -14,10 +14,36 @@ their own data practices, described below.
 
 ## What the extension uses
 
+### First-time setup
+
+A new installation opens a bundled quick-start guide once, introducing Friendly
+Chat, optional Twitch/Kick account connections, optional YouTube access, and
+All Settings. It reuses the
+existing device-local introduction marker; no new setup history, completion
+record, analytics or browser permission is added. The marker stays outside sync
+and backups. Reloads, restarts and ordinary updates do not reopen the guide.
+
+The guide reads only connected-account flags and display names from the
+background; account tokens never enter its message responses or page. Connecting
+requires an explicit Connect Twitch or Connect Kick button press and uses the
+existing OAuth flows described below. Existing connections are preserved.
+Finishing or skipping does not disconnect an account, change preferences, or
+send a chat message. Opening All Settings is an explicit action. Names and the
+current guide step stay in the page's memory; the guide can be reopened from the
+popup or All Settings. Step 2 also checks whether the existing optional YouTube
+origin permission is granted. Its Allow YouTube access button requests only
+`https://www.youtube.com/*`, directly from your explicit button action. Existing
+access is shown without another prompt; denial or failure leaves Continue
+available. Permission status stays in page memory and is managed by the browser,
+not synced or backed up as a setup choice. Opening the guide never requests it.
+The existing background token-validation lifecycle is unchanged.
+
 ### Optional YouTube chat
 
-Installation or the first update containing this feature opens a local setup page
-with an optional access button. No permission is requested until you click it.
+New installations use the general quick-start guide. The first eligible update
+for an existing user who has not seen the YouTube introduction opens its local
+access page. Its access button is available on Step 2 of the quick-start guide,
+from the toolbar popup, and in All Settings. No permission is requested until you click it.
 The popup and settings offer the same control. A local version marker
 (`fcm_youtube_onboarding_v1`, value `1.23.0`) prevents repeated introductions;
 it contains no channel or account information and is not synced, backed up or sent
@@ -143,6 +169,36 @@ or Kick page can access the messages displayed on it. Captured rows are not sent
 by the extension to an analytics service or stored by a Friendly Chat server.
 You can revoke YouTube site access in the browser's extension settings.
 
+### Message highlights
+
+The overlay matches your configured highlight words/names and the connected
+Twitch/Kick usernames already present in its account summary. YouTube uses the
+sending identity described above. Matches receive a more visible row and text
+highlight. Twitch/Kick names are held only in the current page's memory, cleared
+on account changes/navigation, and never added automatically to the saved,
+synced or backed-up highlight list. No new account lookup, site-session reading,
+analytics, notification permission or message storage is introduced.
+
+### Optional highlight sound
+
+Mention and highlight sound is off by default. Enabling it stores one boolean
+in existing preference storage, sync and portable backups. A new accepted live
+highlighted message can trigger a short chime synthesized with Web Audio on the
+current chat page. Preview is an explicit action and does not enable alerts.
+No audio file is downloaded and no microphone or notification permission is
+requested. Your device/browser manages playback and muting.
+
+The current feed suppresses duplicates, hidden sources, own-post highlights and
+initial history before alerting. YouTube's initial reader scan carries an
+optional in-memory history flag through the existing bounded message bridge;
+it is not persisted. A background request contains only an alert request, not
+message text, keywords, usernames or credentials. A single in-memory timestamp
+coalesces alerts across open chat tabs to at most once every five seconds; it
+is never logged, stored, synced or backed up. No sound queue or scheduled job
+is created. Turning the option off closes audio contexts; leaving the overlay removes
+interaction listeners and closes its contexts; a moved chat uses its current window and requires
+user interaction to enable audio there.
+
 ### Copying messages
 
 Choosing **Copy message** in a chat row's menu writes only that message's body to
@@ -174,7 +230,12 @@ to 24 platform/name pairs so the bar can show up to eight newest available emote
 across Twitch and Kick. Existing platform lists keep their names; combined ordering
 is remembered starting with this update, without adding timestamps.
 The names and their ordering are not synced, backed up or sent to a service. Images and availability
-come from the current chat's loaded emote sets. The bar's on/off preference syncs
+come from the current chat's loaded emote sets and current platform access
+responses. Cached native images and emotes received from other viewers do not
+unlock picker access. Kick's watched-channel subscriber emotes use a subscription
+or broadcaster flag read from the same website session's channel-standing response;
+no session credential is sent to the content/background emote message bridge.
+Unavailable emotes are hidden without deleting saved favorite or recent names. The bar's on/off preference syncs
 and is included in settings backups. Hiding the bar retains recent names; removing
 the extension deletes its local records.
 
@@ -226,7 +287,12 @@ extension, open once after a version update, and make no network requests.
   request or store credit-card numbers, bank details or billing credentials.
 - **Chat interactions.** Typed drafts, selected destinations, replies, supported
   moderation actions and recalled messages are handled to carry out your chat
-  actions. There is no general click, pointer, scroll or keystroke analytics log.
+  actions. Twitch pin/unpin requests send the selected message ID, channel ID,
+  connected moderator account ID and optional pin duration to Twitch, using the
+  existing connected account permission. Pinning is an explicit moderator action
+  that changes the native channel pin for all viewers. No pinned-message history
+  is stored or synced; Kick pins stay in its native controls. There is no general
+  click, pointer, scroll or keystroke analytics log.
   Services contacted over the network receive your IP address as part of normal
   requests. Friendly Chat does not obtain GPS coordinates or use IP geolocation.
 

@@ -23,6 +23,7 @@
     let placeholderEl = null;
     const seen = new Set();
     let onCount = null;
+    let onMessage = null;
     // Told whenever the feed starts or stops following the live end, and how
     // many messages have arrived since it stopped.
     let onPinChange = null;
@@ -697,6 +698,7 @@
       // anything on the message path.
       get hasMessages() { return !!feedEl.querySelector('.fcm-msg'); },
       onCount(fn) { onCount = fn; },
+      onMessage(fn) { onMessage = fn; },
 
       // The "nothing here yet" row. The feed owns it because the feed is what
       // takes it away: the first message to arrive clears it.
@@ -723,6 +725,7 @@
         queue(el);
         msgCount++;
         if (onCount) onCount(msgCount);
+        if (onMessage && !destroyed) { try { onMessage(msg, el); } catch (error) { /* Notification failure must not interrupt chat. */ } }
         return el;
       },
 

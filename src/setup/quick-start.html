@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Quick start · Friendly Chat</title>
+  <link rel="stylesheet" href="quick-start.css">
+</head>
+<body>
+  <main>
+    <header class="brand">
+      <img src="../../icons/icon48.png" width="40" height="40" alt="">
+      <span>Friendly Chat</span>
+      <span class="tag">Quick start</span>
+    </header>
+    <div class="guide">
+      <div class="progress">
+        <span id="progress-label">Step 1 of 3</span>
+        <ol aria-label="Setup progress">
+          <li id="progress-1" aria-current="step">Welcome</li>
+          <li id="progress-2">Accounts</li>
+          <li id="progress-3">Settings</li>
+        </ol>
+      </div>
+
+      <section id="step-1" aria-labelledby="title-1">
+        <p class="eyebrow">Your streams. One conversation.</p>
+        <h1 id="title-1" tabindex="-1">Welcome to Friendly Chat.</h1>
+        <p class="intro">Read Twitch, Kick, and Youtube chats together on the stream page you already watch, and choose where each message goes.</p>
+        <div class="features">
+          <article><span class="number">01</span><h2>Open a stream</h2><p>Visit a Twitch or Kick channel. Friendly Chat appears over its chat. Refresh stream tabs that were open before installation.</p></article>
+          <article><span class="number">02</span><h2>Bring chats together</h2><p>When the streamer is also live on the other platforms, add that chat to the same feed. You can also link channels yourself.</p></article>
+          <article><span class="number">03</span><h2>Choose where to send</h2><p>Use <strong>Sent to</strong> to select Twitch, Kick, and/or Youtube. Enjoy emotes, favorites, replies and chat tools in one place.</p></article>
+        </div>
+        <p class="note">Optional YouTube live chat is available from Settings. You choose which chats to add and where to send.</p>
+      </section>
+
+      <section id="step-2" aria-labelledby="title-2" hidden>
+        <p class="eyebrow">Use the accounts you chat with.</p>
+        <h1 id="title-2" tabindex="-1">Connect your chats.</h1>
+        <p class="intro">Connect Twitch and Kick, and allow access to YouTube chat. All three choices are optional.</p>
+        <div class="account-grid">
+          <article class="account twitch">
+            <span class="platform">Twitch</span>
+            <h2>Your Twitch account</h2>
+            <p>Sign in to Twitch and approve the connection in the window your browser opens.</p>
+            <p id="account-twitch" class="account-status">Checking your connection…</p>
+            <button id="connect-twitch" class="primary" type="button" disabled>Connect Twitch</button>
+          </article>
+          <article class="account kick">
+            <span class="platform">Kick</span>
+            <h2>Your Kick account</h2>
+            <p>Sign in to Kick and approve the connection in the window your browser opens.</p>
+            <p id="account-kick" class="account-status">Checking your connection…</p>
+            <button id="connect-kick" class="primary" type="button" disabled>Connect Kick</button>
+          </article>
+          <article class="account youtube">
+            <span class="platform">YouTube</span>
+            <h2>Allow YouTube chat</h2>
+            <p>Allow Friendly Chat to find and add YouTube live chat on Twitch and Kick pages. Sending uses your signed-in YouTube chat box.</p>
+            <p id="youtube-status" class="account-status" role="status" aria-live="polite">Checking YouTube access…</p>
+            <button id="allow-youtube" class="primary" type="button" disabled>Allow YouTube access</button>
+          </article>
+        </div>
+        <div class="account-note">
+          <p>Every choice here is optional. You can read Twitch and Kick without connecting, and connect later from the stream panel's <strong>Settings → Accounts</strong>. Connecting here does not change which account the Twitch or Kick website is signed in as. YouTube access can also be allowed later from the toolbar popup or All Settings.</p>
+          <button id="check" class="text-button" type="button">Check connections</button>
+        </div>
+      </section>
+
+      <section id="step-3" aria-labelledby="title-3" hidden>
+        <p class="eyebrow">Start with the defaults, or make it yours.</p>
+        <h1 id="title-3" tabindex="-1">Ready to make it your own?</h1>
+        <p class="intro">All Settings lets you adjust the overlay's appearance, emotes, chat behavior and optional YouTube access. The defaults are ready to use.</p>
+        <div class="settings-preview">
+          <h2>A few things you can customize</h2>
+          <ul><li>Text size, theme and overlay opacity</li><li>Which chats connect and how messages appear</li><li>Emote display and optional YouTube chat</li></ul>
+        </div>
+        <div class="actions">
+          <button id="settings" class="primary" type="button">Open All Settings</button>
+          <button id="skip" class="secondary" type="button">Skip and finish</button>
+        </div>
+        <p class="note">You can always return to All Settings from the Friendly Chat toolbar button.</p>
+      </section>
+
+      <section id="complete" aria-labelledby="complete-title" hidden>
+        <p class="eyebrow">Setup complete</p>
+        <h1 id="complete-title" tabindex="-1">You're ready to chat.</h1>
+        <p class="intro">Open a Twitch or Kick channel to get started. Refresh any stream tabs that were open before you installed Friendly Chat.</p>
+        <p class="note">You can close this guide. Settings and account connections are available whenever you need them, and the quick-start guide stays in the toolbar popup and All Settings.</p>
+        <button id="review" class="secondary" type="button">Review this guide</button>
+      </section>
+
+      <div id="navigation" class="navigation">
+        <button id="back" class="secondary" type="button" hidden>Back</button>
+        <button id="next" class="primary" type="button">Get started</button>
+      </div>
+      <p id="status" role="status" aria-live="polite"></p>
+    </div>
+    <footer>Connections and preferences can be changed later. <a href="../options/options.html">All Settings</a></footer>
+  </main>
+  <script src="../shared/namespace.js"></script>
+  <script src="../shared/constants.js"></script>
+  <script src="youtube-access.js"></script>
+  <script src="quick-start.js"></script>
+</body>
+</html>
