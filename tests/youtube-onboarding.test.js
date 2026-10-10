@@ -59,7 +59,7 @@ async function run() {
     }
     assert.deepEqual(f.operations, [], 'Unrelated lifecycle events are ignored');
     await Promise.all([f.fire({ reason: 'install' }), f.fire({ reason: 'update', previousVersion: '1.22.6' })]);
-    assert.deepEqual(f.tabs, [{ url: f.origin + 'src/youtube/permission.html?source=install', active: true }]);
+    assert.deepEqual(f.tabs, [{ url: f.origin + 'src/setup/quick-start.html?source=install', active: true }]);
     assert.equal(f.store[KEY], '1.23.0');
     assert.deepEqual(f.operations, ['read', 'write', 'tab', 'read'], 'The marker is persisted before opening, and events are serialized');
     await f.fire({ reason: 'update', previousVersion: '1.23.0' });

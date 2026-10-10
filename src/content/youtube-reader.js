@@ -22,6 +22,7 @@
   let accessHelper = null, accessOpen = false, accessReloadReady = false;
   let nativeState = { available: false, reason: 'composer-unavailable' }, restoringAccess = false;
   let ackTimer = null, heartbeat = null, queued = null;
+  let initialScanDone = false;
   const seen = new Map();
 
   function stop(disconnect) {
@@ -64,6 +65,8 @@
     // Sending has its own native page. Its optimistic rows never enter capture.
     if (sending) return;
     const ready = !!document.querySelector('yt-live-chat-item-list-renderer');
+    const history = !initialScanDone;
+    if (ready) initialScanDone = true;
     let messages = [], deleted = [];
     function flush() {
       try { port.postMessage({ type: 'batch', run, videoId: video, messages, deleted, ready }); }
@@ -86,6 +89,7 @@
         if (seen.has(id)) continue;
         const message = FCM.youtube.parseRow(row, video, Date.now());
         if (!message) continue;
+        if (history) message.history = true;
         messages.push(message);
         remember(id, 'message');
       }

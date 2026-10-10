@@ -126,7 +126,15 @@
             ...(signed ? { redirect: 'error' } : {}),
           });
           const store = FCM.parseKickEmotePayload(data, slug);
-          if (Object.keys(store).length) return store;
+          if (Object.keys(store).length) {
+            let standing = null;
+            if (signed && Object.values(store).some(emote => emote.channel && emote.subscribersOnly)) {
+              standing = await FCM.getJson(`https://kick.com/api/v2/channels/${encodeURIComponent(key)}/me`, {
+                headers: { Accept: 'application/json', ...headers }, credentials: 'include', redirect: 'error',
+              });
+            }
+            return FCM.applyKickEmoteAccess(store, standing);
+          }
         }
         return {};
       };

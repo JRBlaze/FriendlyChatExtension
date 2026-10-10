@@ -17,6 +17,11 @@
   </header>
 
   <section>
+    <h2>Getting started</h2>
+    <p><a href="../setup/quick-start.html" target="_blank" rel="noopener">Open the quick-start guide</a> for an introduction and Twitch/Kick account connections.</p>
+  </section>
+
+  <section>
     <h2>Release notes</h2>
     <p><a href="../releases/notes.html" target="_blank" rel="noopener">See what's new in Friendly Chat</a></p>
   </section>
@@ -217,6 +222,14 @@
       </div>
       <input type="checkbox" id="animations">
     </div>
+    <div class="field">
+      <div class="field-text">
+        <label for="mentionSound">Mention and highlight sound</label>
+        <small>A short, soft chime for new highlighted messages. Off by default; bursts play at most once every five seconds. After a reload, click the stream page once to enable audio.</small>
+      </div>
+      <input type="checkbox" id="mentionSound">
+    </div>
+    <p><button id="mention-sound-preview" class="btn" type="button">Preview sound</button> <span id="mention-sound-status" role="status" aria-live="polite"></span></p>
     <div class="field field-col">
       <div class="field-text">
         <label for="highlightNames">Highlight these names</label>
@@ -361,6 +374,7 @@
 <script src="../shared/youtube.js"></script>
 <script src="../shared/youtube-links.js"></script>
 <script src="../shared/util.js"></script>
+<script src="../shared/mention-sound.js"></script>
 <script src="../youtube/access-card.js"></script>
 <script src="options.js"></script>
 </body>

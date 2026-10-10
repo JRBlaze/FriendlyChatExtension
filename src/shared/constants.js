@@ -253,6 +253,7 @@
     // has everything.
     modHoverTools: true,
     highlightNames: '',
+    mentionSound: false,
     // Emote names kept to hand, newest first. Names rather than urls, because
     // the same emote can arrive from a different provider tomorrow.
     favouriteEmotes: [],

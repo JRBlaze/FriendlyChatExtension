@@ -55,7 +55,10 @@ async function run() {
   const files = pack.collect(ROOT);
   for (const file of [FILE, 'src/releases/notes.html', 'src/releases/notes.css']) assert.ok(files.includes(file));
   const markup = fs.readFileSync(path.join(ROOT, 'src/releases/notes.html'), 'utf8');
-  for (const version of ['1.23.0','1.23.1','1.23.2','1.23.3','1.23.4','1.23.5']) assert.ok(markup.includes('Version ' + version));
+  for (const version of ['1.23.0','1.23.1','1.23.2','1.23.3','1.23.4','1.23.5','1.23.6']) assert.ok(markup.includes('Version ' + version));
+  assert.equal((markup.match(/LATEST UPDATE/g) || []).length, 1);
+  assert.ok(markup.indexOf('Version 1.23.6') < markup.indexOf('Version 1.23.5'));
+  for (const feature of ['Quick start', 'emote access', 'highlight', 'chime', 'pin', 'Slimmer']) assert.ok(markup.includes(feature));
   assert.match(markup, /aria-labelledby="v1235"/);
   assert.match(markup, /Paid messages stay on their platform/);
   assert.match(markup, /about:blank/);

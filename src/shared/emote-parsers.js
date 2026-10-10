@@ -104,6 +104,7 @@
       };
       // The picker groups by the channel an emote belongs to, and Kick is
       // the one platform that says outright which set an emote came from.
+      if (emote.subscribers_only === true) record.subscribersOnly = true;
       if (label.channel) record.channel = true;
       if (label.owner) record.owner = label.owner;
       if (label.collectible) record.collectible = true;
@@ -123,6 +124,17 @@
       });
     });
 
+    return store;
+  };
+
+  // The watched channel's catalog includes locked emotes even when signed out.
+  // Other subscribed-channel sets and collectibles come only in the personal
+  // response. A moderator flag grants no subscription entitlement.
+  FCM.applyKickEmoteAccess = function (store, standing) {
+    const subscribed = standing?.is_subscribed === true || standing?.is_broadcaster === true;
+    Object.values(store).forEach((emote) => {
+      emote.selectable = !emote.subscribersOnly || !emote.channel || subscribed;
+    });
     return store;
   };
 

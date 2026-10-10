@@ -176,6 +176,7 @@
           platform: 'youtube', messageId: message.id,
           author: message.displayName, login: message.username,
           text: message.text, timestamp: message.ts, readOnly: true, youtubeEmotes: message.youtubeEmotes,
+          ...(message.history === true ? { history: true } : {}),
           youtubeEvent: message.youtubeEvent, youtubeBadges: message.youtubeBadges,
         }, filter); });
         batch.deleted.forEach((id) => feed.markMessageDeleted('youtube', id));

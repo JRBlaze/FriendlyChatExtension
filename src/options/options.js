@@ -7,7 +7,7 @@
     'autoOpen', 'autoConnectHost', 'startCollapsed', 'hideNativeChat',
     'watchWhenLive', 'revealHighlights', 'showNativeStats', 'autoClaimBonus',
     'showHistory', 'showEvents', 'thirdPartyEmotes', 'timestamps', 'showBadges',
-    'animations', 'showGifs', 'showShareReminders', 'modHoverTools', 'showClipPreviews', 'showRecentEmotes',
+    'animations', 'showGifs', 'showShareReminders', 'modHoverTools', 'showClipPreviews', 'showRecentEmotes', 'mentionSound',
   ];
   const SELECTS = ['crossPromptMode', 'theme', 'kickRedirect'];
   const RANGES = [
@@ -491,6 +491,19 @@
   try {
     $('version').textContent = `v${chrome.runtime.getManifest().version}`;
   } catch (e) { /* not running as an extension page */ }
+
+  const mentionSound = FCM.createMentionSound?.({ getWindow: () => window,
+    getSettings: () => ({ mentionSound: $('mentionSound').checked === true }) });
+  $('mentionSound').addEventListener('change', event => {
+    mentionSound?.refresh();
+    if ($('mentionSound').checked) mentionSound?.arm(event);
+  });
+  $('mention-sound-preview').addEventListener('click', async event => {
+    if (!event.isTrusted) return;
+    const played = await mentionSound?.preview(event);
+    $('mention-sound-status').textContent = played ? 'Soft chime preview.' : 'Sound could not play. Interact with this page and try again.';
+  });
+  window.addEventListener?.('pagehide', () => mentionSound?.destroy());
 
   bind();
   renderLinks();

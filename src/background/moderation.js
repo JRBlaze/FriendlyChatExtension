@@ -31,6 +31,21 @@
       + `&moderator_id=${encodeURIComponent(record.userId)}`;
 
     try {
+      if (action === 'pin' || action === 'unpin') {
+        if (!opts.messageId) return { ok: false, reason: 'no-message' };
+        const timed = action === 'pin' && opts.seconds !== undefined;
+        if (timed && (!Number.isInteger(opts.seconds) || opts.seconds < 30 || opts.seconds > 1800)) {
+          return { ok: false, reason: 'invalid-pin-duration' };
+        }
+        const duration = timed ? `&duration_seconds=${opts.seconds}` : '';
+        const res = await fetch(
+          `${FCM.TWITCH_HELIX}/chat/pins?${scope}&message_id=${encodeURIComponent(opts.messageId)}${duration}`,
+          { method: action === 'pin' ? 'PUT' : 'DELETE', headers }
+        );
+        if (res.ok) return { ok: true, action, target: opts.username, messageId: opts.messageId, seconds: timed ? opts.seconds : undefined };
+        const body = await res.json().catch(() => ({}));
+        return { ok: false, reason: 'refused', detail: body.message || `HTTP ${res.status}` };
+      }
       if (action === 'delete') {
         if (!opts.messageId) return { ok: false, reason: 'no-message' };
         const res = await fetch(
@@ -143,13 +158,18 @@
   // a typo in a new caller, a field an older page never sent — used to fall
   // through to the branch that needs no name at all and ban somebody
   // permanently. It is refused here, before a token is read or a request made.
-  FCM.MODERATION_ACTIONS = Object.freeze(['delete', 'timeout', 'ban', 'unban']);
+  FCM.MODERATION_ACTIONS = Object.freeze(['delete', 'timeout', 'ban', 'unban', 'pin', 'unpin']);
 
   FCM.moderate = function (platform, action, opts, conn, settings) {
     if (!FCM.MODERATION_ACTIONS.includes(action)) {
       return Promise.resolve({ ok: false, reason: 'unsupported-action' });
     }
     if (platform === 'twitch') return moderateTwitch(action, opts || {}, conn, settings);
+    // Kick has no documented public pin API. Refuse before reading credentials;
+    // a pin must never fall through to its shared ban/timeout endpoint.
+    if (platform === 'kick' && (action === 'pin' || action === 'unpin')) {
+      return Promise.resolve({ ok: false, reason: 'unsupported-pin' });
+    }
     if (platform === 'kick') return moderateKick(action, opts || {}, conn, settings);
     return Promise.resolve({ ok: false, reason: 'unsupported' });
   };
@@ -160,6 +180,11 @@
     const who = result.target || 'that viewer';
     if (result.ok) {
       if (result.action === 'delete') return `${name}: deleted a message from ${who}`;
+      if (result.action === 'pin') {
+        const duration = result.seconds === undefined ? 'until the stream ends' : `for ${result.seconds / 60}m`;
+        return `${name}: pinned a message from ${who} ${duration}`;
+      }
+      if (result.action === 'unpin') return `${name}: unpinned a message from ${who}`;
       if (result.action === 'unban') return `${name}: lifted the ban on ${who}`;
       if (result.action === 'ban') return `${name}: banned ${who}`;
       if (result.action === 'timeout') {
@@ -173,7 +198,9 @@
       'not-connected': `connect a ${name} account to moderate`,
       'no-channel': `${name} chat is not connected here`,
       'no-user': `could not find ${who} on ${name}`,
-      'no-message': 'no message to delete — click the name on the message you mean',
+      'no-message': 'no message to act on — click the name on the message you mean',
+      'invalid-pin-duration': 'choose a pin duration from 30 seconds to 30 minutes',
+      'unsupported-pin': 'use Kick’s native chat controls to pin or unpin messages',
       refused: result.detail || `${name} refused the action`,
       network: `could not reach ${name}`,
       'unsupported-action': 'that is not a moderation action, so nothing was done',

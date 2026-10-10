@@ -98,12 +98,14 @@ function fixture(options = {}) {
   const sandbox = vm.createContext({ document, chrome, console, URL: LocalURL, Blob, setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; }, clearTimeout() {}, clearInterval() {},
     setInterval: () => 1, fetch: async () => ({ text: async () => '' }), window });
   sandbox.self = sandbox;
-  for (const file of ['src/shared/namespace.js', 'src/shared/constants.js', 'src/shared/util.js']) {
+  for (const file of ['src/shared/namespace.js', 'src/shared/constants.js', 'src/shared/util.js', 'src/shared/clips.js']) {
     vm.runInContext(fs.readFileSync(path.join(ROOT, file), 'utf8'), sandbox, { filename: path.join(ROOT, file) });
   }
   const FCM = sandbox.FCM;
   FCM.BROWSER = options.browser || 'chrome';
-  const feed = { onCount() {}, onPinChange() {}, addSys: text => messages.push(text), clearPlaceholder() {}, setPlaceholder() {},
+  let onIncomingMessage;
+  const feed = { onMessage(fn) { onIncomingMessage = fn; },
+    addMessage(message) { const row = element(); if (onIncomingMessage) onIncomingMessage(message, row); return row; }, onCount() {}, onPinChange() {}, addSys: text => messages.push(text), clearPlaceholder() {}, setPlaceholder() {},
     dropPlatform() {}, applyFilter() {}, destroy() {}, scrollToBottom() {}, trim() {}, resettle() {} };
   Object.assign(FCM, {
     createNativeBridge: () => ({ release() {},
@@ -112,14 +114,15 @@ function fixture(options = {}) {
       dialogOver() {}, coveringChat() {}, expectMenu() {}, activate(kind) { nativeActions.push(kind); return true; },
       stats: () => options.nativeStats || {} }),
     createNativeEventWatcher: () => ({ start() {}, stop() {} }), createFeed: () => feed,
+    createMentionSound: options.sound ? hooks => { options.soundHooks = hooks; return options.sound; } : undefined,
     createDisplayFont: () => ({ destroy() {}, refresh: async () => {}, size: n => n }), makeEmoteInput() {},
     emoteOnlyPlatform: () => options.emoteHome || null, findCheer: () => options.cheer || null, toKickMessage: text => text,
     loadSettings: async () => ({ ...FCM.DEFAULT_SETTINGS, ...storage.fcm_settings_v1, theme: 'dark', revealHighlights: false, showNativeStats: !!options.nativeStats, autoClaimBonus: false, showShareReminders: false, autoOpen: false }),
     setYouTubeIdentity(name) { youtubeIdentities.push(name); },
-    setViewSettings() {}, watchSiteTheme: () => ({ current: () => 'dark', stop() {} }),
+    setViewSettings() {}, setMentionAccounts(accounts) { options.onMentionAccounts?.(accounts); }, watchSiteTheme: () => ({ current: () => 'dark', stop() {} }),
     createRecentEmotes: hooks => { recentHooks.push(hooks); return { record(text, platforms) { recentRecords.push({ text, platforms: Array.from(platforms) }); }, refresh() {}, destroy() {} }; },
-    setEmotes() {},
-    createCompose: hooks => { composeHooks = hooks; return { closeAll() {}, handleKey: () => !!options.autocomplete }; },
+    setEmotes(...args) { options.onEmotes?.(...args); },
+    createCompose: hooks => { composeHooks = hooks; return { closeAll() {}, handleKey: () => !!options.autocomplete, refreshEmotes: options.refreshEmotes }; },
     view: { emotes: { kick: { native: {} } } },
     sendViaNativeComposer: async (site, text) => { nativeSends.push(text); return options.nativeResult || { ok: true }; },
     resetPlatformView() {},
@@ -901,4 +904,5 @@ async function run() {
 }
 
 module.exports = run;
+module.exports.fixture = fixture;
 if (require.main === module) run().catch(error => { console.error(error); process.exitCode = 1; });

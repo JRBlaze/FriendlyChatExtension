@@ -26,7 +26,7 @@
       [sets.native, sets.thirdparty].forEach((store) => {
         Object.keys(store || {}).forEach((name) => {
           const emote = store[name];
-          if (!emote || !emote.url) return;
+          if (!emote || !emote.url || emote.selectable === false || emote.learned) return;
           const already = seen.get(name);
           if (already) {
             // The same name in both stores is one emote listed once, and the
@@ -188,7 +188,8 @@
       const sets = FCM.view.emotes[platform];
       if (!sets) return null;
       for (const store of [sets.native, sets.thirdparty]) {
-        if (store && Object.prototype.hasOwnProperty.call(store, name) && store[name]?.url) return store[name];
+        if (store && Object.prototype.hasOwnProperty.call(store, name) && store[name]?.url
+          && store[name].selectable !== false && !store[name].learned) return store[name];
       }
       return null;
     }
@@ -680,6 +681,10 @@
     function applyAutocomplete(index) {
       const item = AC.items[index === undefined ? AC.index : index];
       if (!item) return;
+      if (item.type === 'emote' && !FCM.allEmoteEntries().some(current => current.name === item.name && current.url === item.url)) {
+        closePopup();
+        return;
+      }
       if (item.type === 'mention' && item.platform === 'youtube'
         && !FCM.recentChatters().some(c => c.platform === 'youtube' && c.name === item.name)) {
         closePopup();
@@ -1165,6 +1170,26 @@
         });
         menu.appendChild(timeouts);
 
+        // Native channel-wide pins are supported by Twitch's public API only.
+        // Keep Kick pinning in its own controls and YouTube moderation absent.
+        if (platform === 'twitch') {
+          addAction('Pin this message for 5 minutes', {
+            disabled: !target.messageId,
+            hint: 'replaces the current channel pin',
+            run: () => act('pin', { seconds: 300 }),
+          });
+          addAction('Pin this message until stream ends', {
+            disabled: !target.messageId,
+            hint: 'replaces the current channel pin',
+            run: () => act('pin'),
+          });
+          addAction('Unpin this message', {
+            disabled: !target.messageId,
+            hint: 'if currently pinned',
+            run: () => act('unpin'),
+          });
+        }
+
         addAction('Delete this message', {
           disabled: !target.messageId,
           hint: target.messageId ? '' : 'no id',
@@ -1298,6 +1323,11 @@
           recheckYield(row, bar);
         }, BAN_ARM_MS);
       }, 'fcm-modbar-ban'));
+      if (platform === 'twitch' && target.messageId) {
+        bar.appendChild(stripButton('Pin', 'Pin this message on Twitch for 5 minutes (replaces the current pin)', () => {
+          onModerate(platform, 'pin', Object.assign({ seconds: 300 }, target));
+        }, 'fcm-modbar-pin'));
+      }
 
       return bar;
     }
@@ -1446,6 +1476,13 @@
       closeAll() { closePopup(); closeMenu(); },
       insertMention,
       toggleEmotePicker,
+      refreshEmotes() {
+        if (!isOpen()) return;
+        if (AC.browse) {
+          pickerAll = FCM.allEmoteEntries();
+          renderPickerBody(pickerQuery);
+        } else updateAutocomplete();
+      },
       isPopupOpen: isOpen,
       // Exposed so the suggestion list can be driven without a real input event.
       updateAutocomplete,

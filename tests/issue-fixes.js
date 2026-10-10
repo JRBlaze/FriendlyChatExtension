@@ -153,6 +153,7 @@ async function run() {
         addEventListener: (type, fn) => listeners.set(type, fn), removeEventListener: type => listeners.delete(type),
       }, document, host, pageParent: () => document.documentElement,
       feed: { resettle() { mediaDocuments.push(host.parentNode); } },
+      mentionSound: { refresh() {} },
       root: { dataset: {} }, destroyed: false, collapsed: false,
       panel: { getBoundingClientRect: () => ({ width: 380, height: 640 }) },
       FCM: { PLATFORM_META: { twitch: { name: 'Twitch' } } }, hostPlatform: 'twitch', channel: 'test',

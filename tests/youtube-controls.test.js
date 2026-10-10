@@ -131,7 +131,9 @@ async function run() {
   assert.deepEqual(f.deletions, [['youtube', f.batch.deleted[0]]]);
   const withEmote = JSON.parse(JSON.stringify(f.batch));
   withEmote.messages[0].youtubeEmotes = [{ start: 7, end: 9, url: 'https://yt3.ggpht.com/fixture=s48' }];
+  withEmote.messages[0].history = true;
   f.callbacks.onBatch(withEmote);
+  assert.equal(f.rows[1].history, true, 'initial history remains silent in the merged feed');
   assert.deepEqual(f.rows[1].youtubeEmotes, withEmote.messages[0].youtubeEmotes, 'image ranges reach the merged feed');
   f.rows.pop();
 

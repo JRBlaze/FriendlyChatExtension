@@ -18,6 +18,22 @@ dashboard and other dashboard pages shows or removes it automatically.
 ![Firefox](https://img.shields.io/badge/Firefox-140%2B-orange)
 [![Version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FJRBlaze%2FFriendlyChatExtension%2Fmain%2Fmanifest.json&query=%24.version&label=version&color=green)](../../releases/latest)
 
+## New in 1.23.6
+
+- **Current emote access:** fresh Twitch/Kick availability updates remove expired
+  native emotes from favorites, recent emotes and the picker, while preserving
+  saved names and chat rendering.
+- **First-time quick start:** a welcome guide, optional Twitch/Kick connection
+  buttons and YouTube access, then All Settings or Skip and finish.
+- **Clearer highlights:** your connected username and custom highlight words
+  stand out with a tinted message row, red edges and a highlighted label.
+- **Optional mention sound:** an off-by-default, short soft chime with Preview
+  and a five-second shared cooldown; initial history and hidden rows stay silent.
+- **Twitch moderator pins:** pin for five minutes or until stream ends, and
+  unpin a selected message. Kick pinning stays in its native controls.
+- **More room for chat:** slimmer header, platform/YouTube rows and footer with
+  full channel names, discovery notices, replies and destinations retained.
+
 ## New in 1.23.5
 
 - **Paid message isolation:** Cheers and their messages go only to Twitch;
@@ -92,7 +108,38 @@ and the [privacy policy](PRIVACY.md).
 Actual extension UI with sample chat and accounts. [More screenshots](store-screenshots/2026-09-27/README.md)
 show YouTube sending, saved links, Kick, and access setup.
 
+## First-time setup
+
+A new installation opens a **Quick start** guide once:
+
+1. **Welcome:** learn how Friendly Chat merges Twitch and Kick chat on stream
+   pages, how to add the other chat, and how to choose where to send.
+2. **Accounts:** use **Connect Twitch** and **Connect Kick** to sign in and approve
+   the extension's existing account connections. The guide shows connected names.
+   Use **Allow YouTube access** on the same step to approve the optional browser
+   permission for YouTube chat. All three choices are optional; choose **Continue**
+   to set them up later.
+3. **Settings:** choose **Open All Settings** to customize Friendly Chat, or
+   **Skip and finish** to start with the defaults. Both choices complete the guide.
+
+Open a Twitch or Kick channel when finished. Refresh stream tabs that were open
+before installation. Account connections do not change the account signed into
+Twitch or Kick's website, and setup does not send a chat message. Existing accounts
+are preserved; cancelled or failed sign-ins can be retried or skipped.
+
+The guide does not repeat on extension reloads, browser restarts or ordinary
+updates. Reopen it from **Quick start** in the toolbar popup or **Getting started**
+in All Settings. Optional YouTube access remains available in the popup and
+All Settings; no site-access prompt opens automatically during the guide.
+
 ## Compact chat controls
+
+The header and footer use tighter spacing and flatter buttons, leaving more room
+for chat on laptops and narrow panels. Expanded **Platforms** and **Send to**
+share a row with their controls where space allows. YouTube visibility and its
+setup disclosure share one row too. Long channel names still wrap, and discovery
+notices keep their own space. Button targets remain usable without reducing the
+chat font size; replies, recent emotes, balances and send status stay available.
 
 Click **Platforms** above the feed to collapse or expand the Twitch, Kick and
 YouTube selectors and setup prompts. The compact header still shows a notice
@@ -100,7 +147,7 @@ when another Twitch/Kick channel is found but not added, or an unadded live
 YouTube suggestion is available. Expand it to review and add the chat.
 
 Click **Send to** above the message box to hide or show its destination buttons.
-The compact header lists the currently selected available destinations,
+The collapsed header lists the currently selected available destinations,
 including the destination of a reply. Collapsing either section keeps chat
 connections, feed filters, drafts and send choices intact. Both sections start
 expanded by default. Your independent expand/collapse choices are saved in your
@@ -125,15 +172,56 @@ draft alone and does not send or automatically paste anything. Empty or deleted
 messages cannot be copied through this action. A confirmation appears after a
 successful copy; if the browser blocks it, select the text and copy it manually.
 
+## Highlighted messages
+
+Messages mentioning you or a word in **Highlight these names** stand out with a
+red-tinted row, red edges, a **HIGHLIGHTED** label, and a stronger highlight on the
+matching text. This works across Twitch, Kick and YouTube, in dark and light
+themes. It stays visible when you hover a message; chat tools and copying still
+work normally.
+
+Connected Twitch/Kick usernames are included automatically while this overlay
+is open. The displayed YouTube sending name is also included for YouTube rows.
+For another name or a keyword, add a comma-separated entry under **Highlight
+these names** in All Settings or the stream panel's Settings. Matching remains
+case-insensitive and respects word boundaries; links and emote names do not
+create false highlights. Your own posts keep their existing full-row exemption.
+
+Account names are held only in the current page's memory and removed when
+accounts disconnect/change or you leave the channel. They do not rewrite your
+saved highlight list. A new account/list applies when subsequent messages or
+history are rendered; it does not rescan older rows already on screen.
+
+## Optional mention sound
+
+Turn on **Mention and highlight sound** in All Settings or the stream panel's
+Settings to hear a short, soft chime when a new message matches your username
+or highlight words. It starts **off**. **Preview sound** lets you try it without
+enabling alerts. The chime uses two quiet sine notes, lasts about a quarter of
+a second, and plays at most once every five seconds across open chat tabs.
+
+Only accepted live highlighted rows can alert. Your own posts follow the visual
+highlight exemption; duplicates, hidden platform messages and initial history
+stay silent, including YouTube's initial captured chat. No delayed alert queue
+plays when you return. After reloading or moving chat to a new pop-out window,
+click that chat page once to enable browser audio. Turning the option off stops
+its audio resources. Browser/device mute settings still apply.
+
+The preference syncs and is included in normal settings backups. Sound is
+synthesized on your device; there is no downloaded audio, new permission or
+background audio service. Existing chat sending and account connections are
+unchanged.
+
 ## Add YouTube chat
 
 YouTube is an optional source in the merged feed on Twitch and Kick. Sending through
 YouTube's own chat box turns on automatically when its signed-in composer is ready,
 unless you previously turned that target off for this Twitch/Kick host channel.
-On installation, a one-time setup page introduces YouTube and offers **Allow
-YouTube access**. Existing users receive the same introduction in a background
-tab when this update arrives. Click the button and approve your browser's request,
-or choose **Not now** to keep using Twitch and Kick without YouTube.
+New installations open the quick-start guide; Step 2 includes **Allow YouTube
+access**. Access can also be enabled from All Settings or the toolbar popup. Existing users who have not received the
+YouTube introduction get that introduction once in a background tab on update.
+Click **Allow YouTube access** and approve your browser's request, or choose
+**Not now** to keep using Twitch and Kick without YouTube.
 
 The toolbar popup and extension settings also highlight **New in 1.23.0: YouTube
 chat**, with an access button and a setup link. Already allowed access is shown
@@ -306,7 +394,7 @@ has signed. Chrome is first below; Firefox is [further down](#install-in-firefox
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.23.5.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.23.6.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and an extra folder named `FriendlyChatExtension-main`
@@ -338,7 +426,7 @@ Firefox ESR 140. Firefox for Android is not supported: the sign-in API the exten
 accounts with does not exist there.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.23.5-firefox.xpi` from the Assets list. That file is the add-on, signed
+`FriendlyChatExtension-v1.23.6-firefox.xpi` from the Assets list. That file is the add-on, signed
 by Mozilla, and there is nothing to unzip.
 
 1. **Open the file with Firefox.** Click it in Firefox's downloads list, or drag the file from
@@ -365,7 +453,7 @@ The add-on is not on addons.mozilla.org, and will not be: Mozilla signs it witho
 and this repository's releases are the only place it is published.
 
 **Trying an unsigned build.** Each release also carries
-`FriendlyChatExtension-v1.23.5-firefox-unsigned.xpi`, the same package before Mozilla signed it.
+`FriendlyChatExtension-v1.23.6-firefox-unsigned.xpi`, the same package before Mozilla signed it.
 Opened the ordinary way, release Firefox refuses it as unverified; it loads only as a temporary
 add-on: open `about:debugging`, choose *This Firefox*, press *Load Temporary Add-on…* and pick the
 file itself, without unpacking it. A temporary add-on is removed when Firefox restarts, and its
@@ -1015,6 +1103,22 @@ over to it, which is what asking for it looks like.
 
 ## Where the emotes come from
 
+The picker, favorites and recent-emote bar offer native emotes only after current
+platform responses establish access. Cached pictures and emotes posted by other
+viewers remain available for reading chat, but do not unlock them for sending.
+Fresh native lists hide emotes whose access has expired, including when the list
+shrinks; your saved favorite and recent names stay intact and return if access
+is restored. An open picker updates when a fresh list arrives.
+
+Twitch's complete user-emote response takes precedence over channel catalogs and
+older IRC emote sets. If that endpoint is unavailable, current IRC sets remain a
+fallback. On Kick, subscriber-only emotes from the watched channel require a
+current subscription or broadcaster response from the same website session used
+to fetch the list. When that check is unavailable, those emotes stay hidden while
+free emotes and chat reading remain available. Lists refresh on channel joins and
+reconnects; reloading a page requests a fresh check. Cancellation alone does not
+remove access while the platform still reports an active subscription.
+
 Incoming Twitch messages never needed a lookup — an emote arrives as an id and a position in the
 IRC tag, so it renders whether or not anyone has fetched a list. The picker is a different
 question: it can only offer what it has been told about, and it was being told about nothing from
@@ -1048,12 +1152,13 @@ What an account may use comes from four places, and the difference between them 
 All four are asked and merged. The user endpoint is the authoritative answer and covers channels
 you subscribe to that you are not currently watching; the emote-set ids cover the same ground from
 the other direction and work with any token, which is how Chatterino does it. Each is allowed to
-fail on its own, so a viewer with no account still gets globals and the channel's own.
+fail on its own. Channel catalogs provide pictures for reading, while globals and
+current user/IRC responses establish which entries the picker may offer.
 
 They arrive at different times — the join, then the room id, then USERSTATE — so the load runs
-more than once and each pass adds to what is there. The view merges emote stores rather than
-replacing them, so nothing an earlier pass found is lost, and the label from the most specific
-source is the one that survives.
+more than once. The view retains pictures for reading earlier messages, but each
+fresh native list replaces send availability. A smaller list can revoke expired
+access; the cache no longer treats the largest list as the best answer.
 
 Kick answers `/emotes/<channel>` with the channel's set, the global set and the emoji set — to a
 stranger. Signed in it answers with two more: **Collectibles**, the emotes this account has gone
@@ -1068,8 +1173,7 @@ the picker emptier than it was before anyone signed in.
 cookie of the tab it is in — and in a Firefox container tab or a private window that is a
 different account from the one the background worker's cookie jar would hand over. Signing with
 the wrong account's cookie is worse than not signing at all: the answer looks right, offers emotes
-this viewer does not have and cannot send, and the store is only ever added to, so nothing later
-takes them back out. So on Kick the worker asks as a stranger and leaves the personal half to the
+this viewer does not have and cannot send. So on Kick the worker asks as a stranger and leaves the personal half to the
 page, which is asked every time and says nothing unless it found more. Only where there is no Kick
 page to ask — Kick merged into a Twitch tab — does the worker sign the request itself, from the
 browser's default cookie store.
@@ -1100,12 +1204,29 @@ answer for everybody.
 
 ## Moderating
 
+**Twitch message pins:** if you moderate the Twitch channel, hover a message and
+choose **Pin** to pin it for five minutes. The username menu also offers
+**Pin this message for 5 minutes**, **Pin this message until stream ends**, and
+**Unpin this message**. Pins are visible to everyone in that Twitch channel;
+a new pin replaces the current one. Unpin applies to the selected message only,
+so Twitch refuses it if that message is not currently pinned. A connected Twitch
+account with the existing moderation permission is required; Twitch also checks
+whether the channel permits that account to pin. No extra scope is requested.
+The result appears in Friendly Chat as a feed notice and toast. Twitch draws its
+native pinned banner; the overlay's existing **Reveal highlights** setting keeps
+native banners visible on the host page. Counterpart pins are not mirrored into
+the merged feed, and no local pinned-message history is saved.
+
+**Kick pinning:** use Kick's native chat controls. Its public API does not yet
+provide supported pin/unpin actions, so Friendly Chat does not offer a Kick pin
+button. YouTube moderator actions remain unavailable.
+
 If you are a moderator or the broadcaster in a channel, clicking a name in the feed adds a
-**Moderate** section to the menu: a row of timeout presets, then delete this message, remove
-timeout / unban, and ban.
+**Moderate** section to the menu: timeout presets, Twitch pin/unpin choices,
+delete this message, remove timeout / unban, and ban.
 
 Pointing at a message in a chat you moderate grows a small strip on the row itself — **✕** to
-delete that message, **10m** to time the sender out, and **Ban** — so the actions a busy chat
+delete that message, **10m** to time the sender out, **Ban**, and Twitch **Pin** — so the actions a busy chat
 needs most are a single click. Ban takes two presses: the first arms the button and it reads
 *Ban?*, the second bans, and it disarms itself after a few seconds if you do not. The strip can be
 turned off in the settings (*Moderation strip on messages*); the username menu carries everything

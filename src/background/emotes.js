@@ -202,7 +202,9 @@
       const headers = { 'Client-Id': clientId };
       if (token) headers.Authorization = `Bearer ${token}`;
 
-      const put = (e, fallback, channel) => {
+      const globalIds = new Set(), userIds = new Set(), ids = new Map();
+      let userComplete = false;
+      const put = (e, fallback, channel, selectable = true) => {
         if (!e || !e.name || !e.id) return;
         if (!store[e.name]) {
           store[e.name] = {
@@ -210,11 +212,13 @@
             // fetched twice at two different sizes.
             url: `${TWITCH_EMOTE_CDN}/${e.id}/default/dark/2.0`,
             source: twitchEmoteSource(e) || fallback || 'Twitch',
+            selectable,
           };
           // Which channel it belongs to, as an id for now. The picker groups by
           // channel name, and a name costs a lookup that is only worth making
           // once for the whole set rather than once per emote. '0' is Twitch's
           // way of saying "nobody's", which is what a global is.
+          ids.set(e.name, String(e.id));
           if (e.owner_id && e.owner_id !== '0') store[e.name].ownerId = String(e.owner_id);
         }
         // Marked whether or not the name was already known, because these
@@ -222,6 +226,7 @@
         // an emote belongs to the channel being watched. The label is left
         // alone: an emote is still a "Twitch Sub" emote, it is just this
         // channel's.
+        if (selectable && ids.get(e.name) === String(e.id)) store[e.name].selectable = true;
         if (channel) store[e.name].channel = true;
       };
 
@@ -229,13 +234,16 @@
 
       const jobs = [
         get(`${FCM.TWITCH_HELIX}/chat/emotes/global`)
-          .then((d) => (d && d.data ? d.data : []).forEach((e) => put(e, 'Twitch Global'))),
+          .then((d) => (d && d.data ? d.data : []).forEach((e) => {
+            put(e, 'Twitch Global');
+            if (e && e.id) globalIds.add(String(e.id));
+          })),
       ];
 
       if (broadcasterId) {
         jobs.push(
           get(`${FCM.TWITCH_HELIX}/chat/emotes?broadcaster_id=${encodeURIComponent(broadcasterId)}`)
-            .then((d) => (d && d.data ? d.data : []).forEach((e) => put(e, 'Twitch Channel', true)))
+            .then((d) => (d && d.data ? d.data : []).forEach((e) => put(e, 'Twitch Channel', true, false)))
         );
       }
 
@@ -249,10 +257,13 @@
               + (broadcasterId ? `&broadcaster_id=${encodeURIComponent(broadcasterId)}` : '')
               + (cursor ? `&after=${encodeURIComponent(cursor)}` : '');
             const data = await get(`${FCM.TWITCH_HELIX}/chat/emotes/user?${qs}`);
-            if (!data || !data.data) break;
-            data.data.forEach((e) => put(e));
+            if (!data || !Array.isArray(data.data)) break;
+            data.data.forEach((e) => {
+              put(e);
+              if (e && e.id) userIds.add(String(e.id));
+            });
             cursor = (data.pagination && data.pagination.cursor) || '';
-            if (!cursor) break;
+            if (!cursor) { userComplete = true; break; }
           }
         })());
       }
@@ -271,6 +282,11 @@
       }
 
       await Promise.all(jobs.map((job) => job.catch(() => null)));
+      // A completed user response is authoritative, even when it is empty.
+      // Channel catalogs and old IRC sets do not override revoked access.
+      if (userComplete) Object.keys(store).forEach((name) => {
+        store[name].selectable = globalIds.has(ids.get(name)) || userIds.has(ids.get(name));
+      });
       await nameOwners(store, get);
       return store;
     },
