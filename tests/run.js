@@ -15627,8 +15627,104 @@ suites.prompts = function () {
   ok(prompts.length === 3 && prompts[2].share === positive,
     'prompts: polling hands the affirmative streak button to the overlay');
 
+  // One native Share action can be read through changing wrappers/text.
+  const milestoneButton = button('Share');
+  const milestoneRow = block('195-stream streak reached! You earned 450', [milestoneButton]);
+  added([milestoneRow]);
+  const milestone = prompts[prompts.length - 1];
+  const count = prompts.length;
+  eq(milestone.kind, 'streak', 'prompts: stream-streak wording is classified as a streak');
+  added([block('You have earned an extra 450!', [milestoneButton])]);
+  eq(prompts.length, count, 'prompts: changing text around one Share action is not a new reminder');
+  const redrawnButton = button('Share');
+  const redrawnRow = block('+450 +450 195-Stream Streak Reached', [redrawnButton]);
+  added([redrawnRow]);
+  eq(prompts.length, count, 'prompts: remounted milestone with reordered reward text appears once');
+  ok(milestone.share === redrawnButton && milestone.el === redrawnRow,
+    'prompts: the existing reminder follows the current native Share control');
+  added([block('195-stream streak reached! You earned 450', [button('Share')])]);
+  eq(prompts.length, count, 'prompts: identical remount also stays deduplicated');
+  added([block('196-stream streak reached! You earned 450', [milestoneButton])]);
+  eq(prompts.length, count + 1, 'prompts: a different milestone is offered even on a reused button');
+  added([block('Your 13-month resub is ready to share', [button('Share')])]);
+  eq(prompts.length, count + 2, 'prompts: a different resub still appears');
+  added([block('13 months subscribed! Share your anniversary', [button('Share')])]);
+  eq(prompts.length, count + 2, 'prompts: resub wording changes do not duplicate its month milestone');
+  const genericButton = button('Share');
+  added([block('Tell chat about your achievement!', [genericButton])]);
+  const generic = prompts[prompts.length - 1];
+  const genericCount = prompts.length;
+  added([block('An achievement is ready to share', [genericButton])]);
+  eq(prompts.length, genericCount, 'prompts: other Share notifications also deduplicate by their control');
+  const genericRedraw = button('Share');
+  added([block('TELL CHAT ABOUT YOUR ACHIEVEMENT!', [genericRedraw])]);
+  eq(prompts.length, genericCount, 'prompts: casing and redraw do not create a second generic reminder');
+  ok(generic.share === genericRedraw, 'prompts: generic reminder uses the replacement button');
+  added([block('A separate achievement is ready', [button('Share')])]);
+  eq(prompts.length, genericCount + 1, 'prompts: a separate generic notification is retained');
+  // A clock jump beyond the former ten-minute TTL cannot revive a reminder.
+  sandbox.Date = { now: () => Date.now() + 11 * 60 * 1000 };
+  added([redrawnRow]);
+  eq(prompts.length, genericCount + 1, 'prompts: an old milestone cannot reappear after ten minutes');
   watcher.stop();
   ok(!polls.some(Boolean), 'prompts: stopping the watcher stops the poll');
+  watcher.start();
+  observers[observers.length - 1]([{ addedNodes: [redrawnRow] }]);
+  eq(prompts.length, genericCount + 1, 'prompts: reconnecting the same watcher retains reminder identity');
+  watcher.stop();
+  // A new page/channel watcher owns independent reminder state.
+  const fresh = FCM.createNativeEventWatcher({ id: 'twitch', messageList: () => list }, () => {},
+    prompt => prompts.push(prompt));
+  fresh.start();
+  observers[observers.length - 1]([{ addedNodes: [redrawnRow] }]);
+  eq(prompts.length, genericCount + 2, 'prompts: another page/channel may offer its own milestone');
+  fresh.stop();
+  // Exercise the bound without losing identity for a still-mounted control.
+  const boundedPrompts = [];
+  const bounded = FCM.createNativeEventWatcher({ id: 'twitch', messageList: () => list }, () => {},
+    prompt => boundedPrompts.push(prompt));
+  bounded.start();
+  const emitBounded = nodes => observers[observers.length - 1]([{ addedNodes: nodes }]);
+  const retainedButton = button('Share');
+  emitBounded([block('Original achievement ready to share', [retainedButton])]);
+  for (let index = 0; index < 205; index++) {
+    emitBounded([block('Separate achievement ' + index, [button('Share')])]);
+  }
+  eq(boundedPrompts.length, 206, 'prompts: distinct notifications survive the bounded cache');
+  emitBounded([block('Changed original achievement text', [retainedButton])]);
+  eq(boundedPrompts.length, 206, 'prompts: a live control remains deduplicated after text-cache pruning');
+  // Polling and row observation must agree even when they read different text.
+  const pollButton = button('Share');
+  emitBounded([block('Share this new achievement with chat', [pollButton])]);
+  pollButton.parentElement = block('Your new achievement is ready', [pollButton]);
+  pollButton.parentElement.parentElement = column;
+  column.querySelectorAll = () => [pollButton];
+  const dual = FCM.createNativeEventWatcher({ id: 'twitch', messageList: () => list,
+    chatContainer: () => column }, () => {}, prompt => boundedPrompts.push(prompt));
+  bounded.stop(); dual.start();
+  observers[observers.length - 1]([{ addedNodes: [block('Share this new achievement with chat', [pollButton])] }]);
+  const dualCount = boundedPrompts.length;
+  polls.filter(Boolean).forEach(fn => fn());
+  eq(boundedPrompts.length, dualCount, 'prompts: observer and polling report one native action once');
+  dual.stop();
+  // A partial first render gains its milestone when Twitch fills in the card.
+  const stagedButton = button('Share');
+  const staged = FCM.createNativeEventWatcher({ id: 'twitch', messageList: () => list }, () => {},
+    prompt => boundedPrompts.push(prompt));
+  staged.start();
+  const emitStaged = text => observers[observers.length - 1]([{ addedNodes: [block(text, [stagedButton])] }]);
+  const stageCount = boundedPrompts.length;
+  emitStaged('You have earned an extra 450!');
+  emitStaged('195-stream streak reached! You earned 450');
+  eq(boundedPrompts.length, stageCount + 1, 'prompts: progressively filled milestone is one reminder');
+  emitStaged('196-stream streak reached! You earned 450');
+  eq(boundedPrompts.length, stageCount + 2, 'prompts: filling in a milestone retains later distinct milestones');
+  staged.stop();
+  const beforeKick = observers.length;
+  const kick = FCM.createNativeEventWatcher({ id: 'kick', messageList: () => list }, () => {},
+    prompt => prompts.push(prompt));
+  kick.start(); kick.stop();
+  eq(observers.length, beforeKick, 'prompts: Kick never attaches the Twitch reminder reader');
 };
 
 // ── The moderation strip on a message ─────────────────────────────────────────

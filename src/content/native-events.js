@@ -96,10 +96,9 @@
 
   // Nothing Twitch asks a viewer to share runs to a paragraph.
   const MAX_PROMPT_CHARS = 400;
-  // A prompt is drawn once and stays until it is answered. The site redraws it
-  // as the list scrolls, and each redraw is the same prompt; a new one of the
-  // same wording inside this window is not something that happens.
-  const PROMPT_REPEAT_MS = 10 * 60 * 1000;
+  // Remember prompts for this page/channel, including temporary reconnects.
+  // Bound text aliases and their current controls; old button keys are weak.
+  const PROMPT_LIMIT = 200;
   // How often the chat column is looked over for a prompt drawn somewhere other
   // than the message list, which is where the resub one has been seen to sit.
   const PROMPT_POLL_MS = 2000;
@@ -134,7 +133,7 @@
    * the words themselves are what the viewer reads.
    */
   function promptKind(text) {
-    if (/watch\s*streak|streams?\s+in\s+a\s+row|consecutive/i.test(text)) return 'streak';
+    if (/(?:watch|stream)\s*streak|streams?\s+in\s+a\s+row|consecutive/i.test(text)) return 'streak';
     if (/resub|anniversar|month|subscri/i.test(text)) return 'resub';
     return 'share';
   }
@@ -198,6 +197,17 @@
     return { kind: promptKind(text), text, share };
   }
 
+  // Twitch can reorder reward amounts or read the same action through a smaller
+  // wrapper. Prefer the milestone itself over its changing presentation text.
+  function promptIdentity(found) {
+    const text = found.text.toLowerCase().replace(/[-\u2010-\u2015]/g, ' ').replace(/\s+/g, ' ').trim();
+    const count = found.kind === 'streak'
+      ? text.match(/\b(\d+)\s*(?:streams?\s+streak|streams?\s+in\s+a\s+row|consecutive\s+streams?)\b/)
+      : found.kind === 'resub' ? text.match(/\b(\d+)\s*months?\b/) : null;
+    const milestone = count ? `${found.kind}:${count[1]}` : '';
+    return { key: milestone || `${found.kind}:${text}`, milestone };
+  }
+
   /**
    * The smallest block around a Share button that reads as a prompt, for a
    * button drawn outside the message list.
@@ -236,6 +246,7 @@
     // is scrolled and virtualised, and a redraw is not a second redemption.
     const reported = new Map();
     const prompted = new Map();
+    const promptButtons = new WeakMap();
 
     function alreadySaid(text) {
       const now = Date.now();
@@ -247,17 +258,24 @@
       return false;
     }
 
-    function alreadyPrompted(text) {
-      const now = Date.now();
-      prompted.forEach((at, key) => { if (now - at > PROMPT_REPEAT_MS) prompted.delete(key); });
-      if (prompted.has(text)) return true;
-      prompted.set(text, now);
-      return false;
-    }
-
     function offerPrompt(found, el) {
-      if (!onPrompt || !found || alreadyPrompted(found.text)) return;
-      onPrompt({ ...found, el });
+      if (!onPrompt || !found) return;
+      const { key, milestone } = promptIdentity(found);
+      const previous = promptButtons.get(found.share);
+      // A reused button with a different explicit milestone is a new action.
+      // A fragment lacking that milestone still belongs to its existing action.
+      const sameButton = previous && (!milestone || !previous.milestone || milestone === previous.milestone);
+      const record = (sameButton && previous) || prompted.get(key);
+      const entry = record || { prompt: { ...found, el }, milestone };
+      entry.milestone = milestone || entry.milestone;
+      // The overlay keeps this object: update its native action after a redraw,
+      // without adding a row or reviving a reminder the viewer dismissed.
+      entry.prompt.share = found.share;
+      entry.prompt.el = el;
+      promptButtons.set(found.share, entry);
+      prompted.set(key, entry);
+      if (prompted.size > PROMPT_LIMIT) prompted.delete(prompted.keys().next().value);
+      if (!record) onPrompt(entry.prompt);
     }
 
     function consider(node) {
@@ -322,7 +340,6 @@
         if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
         watched = null;
         reported.clear();
-        prompted.clear();
       },
     };
   };
