@@ -99,8 +99,8 @@ async function checks(browser, origin, name, mode) {
     for (const width of [375, 1100]) for (const colorScheme of ['dark', 'light']) {
       await page.setViewportSize({width, height:820});
       await page.emulateMedia({colorScheme});
-      assert.equal(await page.locator('h2').count(), 9);
-      assert.equal(await page.locator('h2').first().innerText(), 'Version 1.23.8');
+      assert.equal(await page.locator('h2').count(), 10);
+      assert.equal(await page.locator('h2').first().innerText(), 'Version 1.23.9');
       assert.match(await page.locator('h1').innerText(), /update/);
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
       await page.screenshot({path:path.join(output, `${name}-notes-${width}-${colorScheme}.png`),fullPage:true});

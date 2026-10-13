@@ -22,6 +22,8 @@
       conn.generation = generation;
       const current = () => conn.generation === generation;
 
+      if (conn.realtimeCleanup) { conn.realtimeCleanup(); conn.realtimeCleanup = null; }
+
       if (conn.pingTimer) { clearInterval(conn.pingTimer); conn.pingTimer = null; }
       if (conn.pongTimer) { clearTimeout(conn.pongTimer); conn.pongTimer = null; }
       if (conn.ws) {
@@ -122,9 +124,56 @@
         ));
       if (conn.auth && (ownRoom || marked)) sink.moderator(true);
 
+      // Kick can retire its public Pusher app. Negotiate a current Pusher app
+      // after that rejection; this provider accepts browser-extension origins.
+      // The descriptor is anonymous and contains no account credentials.
+      let request = null, requestTimer = null;
+      conn.realtimeCleanup = () => {
+        if (request) request.abort();
+        if (requestTimer) clearTimeout(requestTimer);
+      };
+      let socketUrl = FCM.KICK_PUSHER_URL;
+      if (conn.useRealtime) {
+        try {
+          conn.realtimeClientId = conn.realtimeClientId || crypto.randomUUID();
+          const route = channelId ? '/channels/' + encodeURIComponent(channelId) + '/chat/connection' : '/connection';
+          const controller = new AbortController();
+          request = controller;
+          requestTimer = setTimeout(() => controller.abort(), 10000);
+          const response = await fetch('https://web.kick.com/api/v1/realtime' + route, {
+            method: 'POST', credentials: 'omit', redirect: 'error', cache: 'no-store',
+            headers: { 'Content-Type': 'application/json' }, signal: request.signal,
+            body: JSON.stringify({
+              client: { id: conn.realtimeClientId, type: 'web' },
+              capabilities: { accepted_providers: [{ provider: 'pusher' }] },
+            }),
+          });
+          if (!response.ok) throw new Error('realtime request refused');
+          const descriptor = (await response.json()).data;
+          if (!current() || conn.forceClose) return;
+          const app = descriptor && descriptor.mode === 'websocket' && Array.isArray(descriptor.connections)
+            && descriptor.connections.find(item => item && item.provider === 'pusher');
+          const credentials = app && app.credentials;
+          if (!credentials || typeof credentials.app_key !== 'string' || !/^[a-zA-Z0-9]+$/.test(credentials.app_key)
+              || typeof credentials.cluster !== 'string' || !/^[a-z0-9-]+$/.test(credentials.cluster)) {
+            throw new Error('invalid Pusher descriptor');
+          }
+          socketUrl = 'wss://ws-' + credentials.cluster + '.pusher.com/app/' + credentials.app_key
+            + '?protocol=7&client=js&version=7.4.0&flash=false';
+        } catch (e) {
+          // Do not log response bodies or arbitrary server/error text.
+          if (current() && !conn.forceClose) retryLater('could not prepare the current chat connection');
+          return;
+        } finally {
+          clearTimeout(requestTimer);
+          requestTimer = null;
+          request = null;
+        }
+      }
+
       let ws;
       try {
-        ws = new WebSocket(FCM.KICK_PUSHER_URL);
+        ws = new WebSocket(socketUrl);
       } catch (e) {
         retryLater(`could not open a connection (${e.message})`);
         return;
@@ -135,6 +184,7 @@
       // stop the live one pinging — Pusher drops a room that goes quiet.
       let myPing = null;
       let myPong = null;
+      let switchingTransport = false;
       const clearPong = () => {
         if (!myPong) return;
         clearTimeout(myPong);
@@ -148,6 +198,19 @@
         if (!msg || !msg.event) return;
         // Any valid server event proves liveness, including chat in a busy room.
         clearPong();
+
+        if (msg.event === 'pusher:error') {
+          const error = typeof msg.data === 'string' ? FCM.safeJsonParse(msg.data, {}) : msg.data;
+          if (error && error.code === 4001 && !conn.useRealtime) {
+            conn.useRealtime = true;
+            switchingTransport = true;
+            sink.sys('Kick: chat service changed — switching to its current connection');
+          } else {
+            sink.sys('Kick: chat connection rejected');
+          }
+          ws.close();
+          return;
+        }
 
         if (msg.event === 'pusher:connection_established') {
           ws.send(JSON.stringify({
@@ -263,6 +326,7 @@
       ws.onerror = () => { if (current()) sink.sys('Kick: connection error'); };
 
       ws.onclose = () => {
+        if (current() && conn.ws === ws && conn.realtimeCleanup) { conn.realtimeCleanup(); conn.realtimeCleanup = null; }
         clearPong();
         // This socket's keepalive, not whatever is on `conn` now.
         if (myPing) {
@@ -284,7 +348,7 @@
         sink.status('disconnected');
         sink.sys('Kick: disconnected');
         const exhausted = (conn.attempt || 0) >= FCM.MAX_RECONNECT_ATTEMPTS;
-        const delay = exhausted ? FCM.RECONNECT_COOLDOWN_MS : FCM.backoffDelay(conn.attempt || 0);
+        const delay = switchingTransport ? 0 : exhausted ? FCM.RECONNECT_COOLDOWN_MS : FCM.backoffDelay(conn.attempt || 0);
         sink.sys(exhausted
           ? 'Kick: reconnect limit reached — retrying in 5 minutes (or reconnect from the overlay now)'
           : `Kick: reconnecting in ${Math.round(delay / 1000)}s...`);
@@ -302,6 +366,7 @@
       // outgoing socket inert, whatever order they fire in.
       conn.generation = (conn.generation || 0) + 1;
       conn.forceClose = true;
+      if (conn.realtimeCleanup) { conn.realtimeCleanup(); conn.realtimeCleanup = null; }
       if (conn.retryTimer) { clearTimeout(conn.retryTimer); conn.retryTimer = null; }
       if (conn.pingTimer) { clearInterval(conn.pingTimer); conn.pingTimer = null; }
       if (conn.pongTimer) { clearTimeout(conn.pongTimer); conn.pongTimer = null; }

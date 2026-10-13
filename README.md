@@ -18,6 +18,12 @@ dashboard and other dashboard pages shows or removes it automatically.
 ![Firefox](https://img.shields.io/badge/Firefox-140%2B-orange)
 [![Version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FJRBlaze%2FFriendlyChatExtension%2Fmain%2Fmanifest.json&query=%24.version&label=version&color=green)](../../releases/latest)
 
+## New in 1.23.9
+
+- **Kick reconnect loop fixed:** when Kick retires its chat connection details,
+  Friendly Chat retrieves the current compatible connection automatically.
+  History, emotes and existing chat controls continue to work.
+
 ## New in 1.23.8
 
 - **Chat recovers after outages:** Twitch, Kick and YouTube pause for five minutes
@@ -412,7 +418,7 @@ has signed. Chrome is first below; Firefox is [further down](#install-in-firefox
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.23.8.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.23.9.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and an extra folder named `FriendlyChatExtension-main`
@@ -444,7 +450,7 @@ Firefox ESR 140. Firefox for Android is not supported: the sign-in API the exten
 accounts with does not exist there.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.23.8-firefox.xpi` from the Assets list. That file is the add-on, signed
+`FriendlyChatExtension-v1.23.9-firefox.xpi` from the Assets list. That file is the add-on, signed
 by Mozilla, and there is nothing to unzip.
 
 1. **Open the file with Firefox.** Click it in Firefox's downloads list, or drag the file from
@@ -471,7 +477,7 @@ The add-on is not on addons.mozilla.org, and will not be: Mozilla signs it witho
 and this repository's releases are the only place it is published.
 
 **Trying an unsigned build.** Each release also carries
-`FriendlyChatExtension-v1.23.8-firefox-unsigned.xpi`, the same package before Mozilla signed it.
+`FriendlyChatExtension-v1.23.9-firefox-unsigned.xpi`, the same package before Mozilla signed it.
 Opened the ordinary way, release Firefox refuses it as unverified; it loads only as a temporary
 add-on: open `about:debugging`, choose *This Firefox*, press *Load Temporary Add-on…* and pick the
 file itself, without unpacking it. A temporary add-on is removed when Firefox restarts, and its
@@ -1478,7 +1484,7 @@ and Kick's token exchange and refresh, go through the Cloudflare Worker — see
 | Twitch chat | `wss://irc-ws.chat.twitch.tv` — anonymous `justinfan` login |
 | Twitch live state, metadata, badges | `gql.twitch.tv`, using Twitch's own public web client id |
 | Twitch history | `recent-messages.robotty.de` (the service Chatterino uses) |
-| Kick chat | Kick's Pusher WebSocket, subscribed anonymously to the chatroom |
+| Kick chat | Anonymous Pusher subscriptions; current app key/cluster from `web.kick.com/api/v1/realtime/...` after the legacy application is retired |
 | Kick channel, live state, history, emotes | `kick.com/api/v2/...` and `kick.com/emotes/...` |
 | Optional YouTube live discovery | Public YouTube channel/video pages, fetched without credentials after site access is granted |
 | Optional YouTube reading and sending | Two attached `youtube.com/live_chat` frames using YouTube's normal page requests and browser-permitted session |
@@ -1518,7 +1524,7 @@ src/
                        that call's list is what Firefox's background.scripts
                        is generated from
     twitch-source.js   IRC socket, reconnect/backoff, history
-    kick-source.js     Pusher socket, reconnect/backoff, history
+    kick-source.js     Kick Pusher socket, current app discovery, reconnect/backoff, history
     discovery.js       platform lookups, badges, counterpart matching
     emotes.js          third-party emote providers
     auth.js            Twitch implicit + Kick PKCE sign-in, token storage
@@ -1668,8 +1674,15 @@ from two to thirty seconds. After ten failed retries, that platform pauses for
 five minutes before starting another retry cycle; its system row reports the
 pause, and reconnecting from the overlay retries immediately. Leaving the chat
 or changing channels cancels its pending retries. The other chats keep running.
-Kick sends a heartbeat at least every 25 seconds (sooner if its server requests
-it) and reconnects if no server event arrives within 30 seconds after a ping.
+If Kick retires its legacy Pusher application, the extension automatically asks
+Kick for a current Pusher application and immediately switches to that public
+app key and cluster. Pusher supports extension origins; Kick's alternative
+Centrifugo service currently rejects them. Setup omits account credentials,
+rejects redirects and has a ten-second deadline. The random reader identifier
+stays in background memory for this tab session. Each migrated retry asks for
+fresh connection details. Pusher sends heartbeats every 25 seconds or sooner
+and closes after a thirty-second response deadline. Leaving or replacing a
+chat cancels setup and heartbeat work.
 The green Kick label on an ordinary system row names the platform; a red Kick
 label marks an error such as a disconnect, rather than an error in every service.
 YouTube uses its own embedded reader: it retries after two, four and eight seconds,

@@ -144,6 +144,7 @@ async function youtubeRecovery() {
 }
 
 async function run() {
+  await require('./kick-realtime.test').run();
   await youtubeRecovery();
   for (const browser of ['chrome', 'firefox']) {
     // Negotiate a bounded heartbeat; malformed values cannot create a tight loop.
@@ -388,7 +389,11 @@ async function coverage() {
     const source = fs.readFileSync(path.join(ROOT, file), 'utf8');
     const diff = execFileSync('git', ['diff', '--no-ext-diff', '--unified=0', '--', file],
       { cwd: ROOT, encoding: 'utf8' });
-    const report = gate.report(file, source, scripts, gate.selectedLines(source, diff, false));
+    const changed = gate.selectedLines(source, diff, false);
+    // Only changed source is gated; an unchanged file's empty selection is
+    // already checked by gate.selfTest(), and must not fail a narrower fix.
+    if (!changed.size) { console.log(`${file}: unchanged`); continue; }
+    const report = gate.report(file, source, scripts, changed);
     const hit = report.lines.filter(line => line.covered).length;
     const funcs = [...report.functions.values()].filter(Boolean).length;
     const ranges = [...report.ranges.values()].filter(Boolean).length;

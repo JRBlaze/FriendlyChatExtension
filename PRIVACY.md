@@ -1,6 +1,6 @@
 # Privacy Policy — Friendly Chat Extension
 
-_Last updated: October 9, 2026_
+_Last updated: October 13, 2026_
 
 Friendly Chat Extension shows merged Twitch and Kick chat on the stream you
 are watching, with optional YouTube chat and native sending when signed in and ready. This page explains what
@@ -263,6 +263,15 @@ extension, open once after a version update, and make no network requests.
 - **Chat and channel information.** The extension reads the chat messages,
   channel names, and emotes for the streams you watch so it can display them.
   It does not keep a history of what you watch.
+- **Anonymous Kick connection setup.** When Kick retires its legacy chat
+  connection, the extension asks `web.kick.com` for the current public chat
+  transport using the channel ID and a random reader identifier. That identifier
+  stays in background memory for the current tab session, and is sent only to
+  Kick. These setup and renewal requests omit cookies and account tokens and
+  reject redirects. Kick returns a public Pusher app key and cluster for
+  anonymous chat subscriptions. This does not sign you in or obtain an account
+  token. The reader identifier is not saved in extension storage, synced,
+  backed up, logged or sent to the page.
 - **Your settings.** Your preferences, favourites, and channel pairings are
   stored in your browser's extension storage. General preferences use the browser's
   sync storage and can follow your browser account when sync is enabled. Tokens,
