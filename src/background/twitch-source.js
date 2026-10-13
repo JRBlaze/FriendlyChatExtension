@@ -32,6 +32,7 @@
       }
       if (conn.retryTimer) { clearTimeout(conn.retryTimer); conn.retryTimer = null; }
       conn.forceClose = false;
+      conn.connectedAt = 0;
       conn.channel = channel;
       conn.auth = auth || null;
 
@@ -258,23 +259,23 @@
         if (conn.forceClose) return;
         // A connection that stayed up starts the next backoff from scratch; one
         // that fell over immediately does not, so a room that will not hold is
-        // retried more and more slowly and eventually left alone.
+        // retried more slowly, then paused before the next bounded retry cycle.
         if (conn.connectedAt && Date.now() - conn.connectedAt >= FCM.STABLE_CONNECTION_MS) {
           conn.attempt = 0;
         }
         conn.connectedAt = 0;
         sink.status('disconnected');
         sink.sys('Twitch: disconnected');
-        if ((conn.attempt || 0) >= FCM.MAX_RECONNECT_ATTEMPTS) {
-          sink.sys('Twitch: reconnect limit reached (reconnect from the overlay to retry)');
-          return;
-        }
-        const delay = FCM.backoffDelay(conn.attempt || 0);
-        sink.sys(`Twitch: reconnecting in ${Math.round(delay / 1000)}s...`);
+        const exhausted = (conn.attempt || 0) >= FCM.MAX_RECONNECT_ATTEMPTS;
+        const delay = exhausted ? FCM.RECONNECT_COOLDOWN_MS : FCM.backoffDelay(conn.attempt || 0);
+        sink.sys(exhausted
+          ? 'Twitch: reconnect limit reached — retrying in 5 minutes (or reconnect from the overlay now)'
+          : `Twitch: reconnecting in ${Math.round(delay / 1000)}s...`);
         conn.retryTimer = setTimeout(() => {
           // The channel may have changed while this was pending.
           if (!current() || conn.forceClose || conn.channel !== channel) return;
-          conn.attempt = (conn.attempt || 0) + 1;
+          conn.retryTimer = null;
+          conn.attempt = exhausted ? 0 : (conn.attempt || 0) + 1;
           FCM.twitchSource.connect(channel, sink, conn, conn.auth);
         }, delay);
       };

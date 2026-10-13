@@ -18,6 +18,16 @@ dashboard and other dashboard pages shows or removes it automatically.
 ![Firefox](https://img.shields.io/badge/Firefox-140%2B-orange)
 [![Version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FJRBlaze%2FFriendlyChatExtension%2Fmain%2Fmanifest.json&query=%24.version&label=version&color=green)](../../releases/latest)
 
+## New in 1.23.8
+
+- **Chat recovers after outages:** Twitch, Kick and YouTube pause for five minutes
+  after their retry limit, then try again automatically. Manual reconnect still
+  retries immediately, and leaving a chat cancels its pending retries.
+- **Kick connection health:** more frequent heartbeats and a response deadline
+  detect silent connections and restart them.
+- **YouTube retry recovery:** stable reading resets its retry counter; reconnects
+  recheck access and never replay an uncertain message.
+
 ## New in 1.23.7
 
 - **One Share reminder per action:** Twitch stream/watch streaks, resubs and other
@@ -285,7 +295,8 @@ second message. Both close when the source stops; no separate tab opens.
 It uses no YouTube Data API key and needs
 no server you operate. Browser/site embedding restrictions, withheld permission,
 or changes to YouTube's layout can prevent capture; the controls report failures
-and limit reconnect attempts. Normal YouTube page requests and browser-permitted
+and pause for five minutes after three failed retries before starting another
+cycle. Stable reading resets that retry counter. Normal YouTube page requests and browser-permitted
 cookies still apply. See [Privacy](PRIVACY.md).
 
 The feed shows ordinary messages, paid messages and supported membership events. Native YouTube emoji and channel emotes render inline when the captured
@@ -401,7 +412,7 @@ has signed. Chrome is first below; Firefox is [further down](#install-in-firefox
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.23.7.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.23.8.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and an extra folder named `FriendlyChatExtension-main`
@@ -433,7 +444,7 @@ Firefox ESR 140. Firefox for Android is not supported: the sign-in API the exten
 accounts with does not exist there.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.23.7-firefox.xpi` from the Assets list. That file is the add-on, signed
+`FriendlyChatExtension-v1.23.8-firefox.xpi` from the Assets list. That file is the add-on, signed
 by Mozilla, and there is nothing to unzip.
 
 1. **Open the file with Firefox.** Click it in Firefox's downloads list, or drag the file from
@@ -460,7 +471,7 @@ The add-on is not on addons.mozilla.org, and will not be: Mozilla signs it witho
 and this repository's releases are the only place it is published.
 
 **Trying an unsigned build.** Each release also carries
-`FriendlyChatExtension-v1.23.7-firefox-unsigned.xpi`, the same package before Mozilla signed it.
+`FriendlyChatExtension-v1.23.8-firefox-unsigned.xpi`, the same package before Mozilla signed it.
 Opened the ordinary way, release Firefox refuses it as unverified; it loads only as a temporary
 add-on: open `about:debugging`, choose *This Firefox*, press *Load Temporary Add-on…* and pick the
 file itself, without unpacking it. A temporary add-on is removed when Firefox restarts, and its
@@ -1651,6 +1662,21 @@ page/channel, with a bound of 200 text identities; a fresh page/channel starts f
 *Twitch share reminders* in the settings turns all of it off. This reader runs only on Twitch.
 
 ### Why the sockets live in the service worker
+
+Twitch and Kick reconnect automatically after a dropped connection, with delays
+from two to thirty seconds. After ten failed retries, that platform pauses for
+five minutes before starting another retry cycle; its system row reports the
+pause, and reconnecting from the overlay retries immediately. Leaving the chat
+or changing channels cancels its pending retries. The other chats keep running.
+Kick sends a heartbeat at least every 25 seconds (sooner if its server requests
+it) and reconnects if no server event arrives within 30 seconds after a ping.
+The green Kick label on an ordinary system row names the platform; a red Kick
+label marks an error such as a disconnect, rather than an error in every service.
+YouTube uses its own embedded reader: it retries after two, four and eight seconds,
+then takes the same five-minute pause. Thirty seconds of connected reading resets
+its retry counter. Each restart checks site permission again and uses fresh frame
+identifiers; it never replays a sent or uncertain message. Add chat retries now,
+and Remove YouTube or leaving the host channel cancels recovery.
 
 Both WebSockets and every REST call run in the background worker, not the content script. A Kick
 socket opened from a `twitch.tv` tab is a cross-origin connection that only the extension's host

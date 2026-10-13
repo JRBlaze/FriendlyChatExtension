@@ -97,15 +97,22 @@
 
     function failed(attempt) {
       if (current !== attempt) return;
-      release(attempt);
-      if (attempt.retries >= 3) {
-        current = null;
-        status('error', 'YouTube chat is unavailable or blocked. Check the live URL and choose Add chat to retry.');
-        return;
+      // Count a burst of failures, not every interruption over a whole stream.
+      if (attempt.connectedAt && Date.now() - attempt.connectedAt >= FCM.STABLE_CONNECTION_MS) {
+        attempt.retries = 0;
       }
-      const delay = 2000 * (2 ** attempt.retries++);
-      status('connecting', 'YouTube chat disconnected. Reconnecting…');
-      attempt.retryTimer = setTimeout(() => retry(attempt), delay);
+      release(attempt);
+      const exhausted = attempt.retries >= 3;
+      const delay = exhausted ? FCM.RECONNECT_COOLDOWN_MS : 2000 * (2 ** attempt.retries++);
+      status('connecting', exhausted
+        ? 'YouTube chat reconnect limit reached. Retrying in 5 minutes; choose Add chat to retry now.'
+        : 'YouTube chat disconnected. Reconnecting…');
+      const retryTimer = attempt.retryTimer = setTimeout(() => {
+        if (current !== attempt || attempt.retryTimer !== retryTimer) return;
+        attempt.retryTimer = null;
+        if (exhausted) attempt.retries = 0;
+        retry(attempt);
+      }, delay);
     }
 
     async function retry(attempt) {
@@ -125,6 +132,7 @@
 
     function connect(attempt) {
       if (current !== attempt) return;
+      attempt.connectedAt = 0;
       try {
         attempt.run = Array.from(crypto.getRandomValues(new Uint8Array(16)), value => value.toString(16).padStart(2, '0')).join('');
         const port = chrome.runtime.connect({ name: 'fcm-youtube-host' });
@@ -198,6 +206,7 @@
           const batch = FCM.youtube.sanitizeBatch(message, attempt.videoId, attempt.run);
           if (!batch) return;
           if (batch.ready) {
+            if (!attempt.connectedAt) attempt.connectedAt = Date.now();
             clearTimeout(attempt.timer);
             // Background tabs may have their timers batched once per minute.
             attempt.timer = setTimeout(() => failed(attempt), 120000);
@@ -255,7 +264,7 @@
         }
         videoId = result.videoId;
       }
-      const attempt = { videoId, run: '', retries: 0, port: null, frame: null, senderFrame: null,
+      const attempt = { videoId, run: '', retries: 0, connectedAt: 0, port: null, frame: null, senderFrame: null,
         timer: null, retryTimer: null, sequence: 0, pending: null, nativeState: null, access: 'unknown',
         accessOpen: false, accessRestoring: false, accessReloading: false, accessFailed: false, accessTimer: null, reloadUsed: false, senderEpoch: 0 };
       current = attempt;

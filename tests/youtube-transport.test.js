@@ -105,6 +105,8 @@ function source(useDefaultDocument = false) {
     crypto: { getRandomValues(array) { return array.fill(++nonce); } },
     setTimeout: time.setTimeout, clearTimeout: time.clearTimeout,
   });
+  context.self = context;
+  evaluate('src/shared/constants.js', context);
   evaluate('src/content/youtube-source.js', context);
   const statuses = [], batches = [];
   const options = { onStatus: value => statuses.push(value), onBatch: value => batches.push(value) };
@@ -362,7 +364,13 @@ async function run() {
     s.message('host-ready'); s.message('batch', { ready: true }); s.time.fire(120000);
     s.time.fire(4000); await settle(); s.message('reader-disconnected');
     s.time.fire(8000); await settle(); s.activePort().disconnect();
-    assert.equal(s.statuses.at(-1).state, 'error'); assert.equal(s.time.timers.size, 0);
+    assert.equal(s.statuses.at(-1).state, 'connecting');
+    assert.match(s.statuses.at(-1).text, /retrying in 5 minutes/i);
+    assert.equal(s.time.timers.size, 1);
+    const before = s.chrome.runtime.ports.length;
+    s.time.fire(300000); await settle();
+    assert.equal(s.chrome.runtime.ports.length, before + 1);
+    assert.notEqual(s.activePort().sent[0].run, second.sent[0].run);
     s.control.stop();
   }
   // Reentrant/new starts cannot revive an old attempt, including queued timers.
@@ -407,6 +415,7 @@ async function run() {
     function context(values) {
       const sandbox = vm.createContext({ URL, Uint8Array, ...values, FCM: {} });
       sandbox.self = sandbox;
+      evaluate('src/shared/constants.js', sandbox);
       evaluate('src/shared/youtube.js', sandbox);
       return sandbox;
     }

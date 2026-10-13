@@ -55,10 +55,14 @@ async function run() {
   const files = pack.collect(ROOT);
   for (const file of [FILE, 'src/releases/notes.html', 'src/releases/notes.css']) assert.ok(files.includes(file));
   const markup = fs.readFileSync(path.join(ROOT, 'src/releases/notes.html'), 'utf8');
-  for (const version of ['1.23.0','1.23.1','1.23.2','1.23.3','1.23.4','1.23.5','1.23.6','1.23.7']) assert.ok(markup.includes('Version ' + version));
+  for (const version of ['1.23.0','1.23.1','1.23.2','1.23.3','1.23.4','1.23.5','1.23.6','1.23.7','1.23.8']) assert.ok(markup.includes('Version ' + version));
   assert.equal((markup.match(/LATEST UPDATE/g) || []).length, 1);
   assert.ok(markup.indexOf('Version 1.23.6') < markup.indexOf('Version 1.23.5'));
   assert.ok(markup.indexOf('Version 1.23.7') < markup.indexOf('Version 1.23.6'));
+  assert.ok(markup.indexOf('Version 1.23.8') < markup.indexOf('Version 1.23.7'));
+  assert.match(markup, /Twitch, Kick and YouTube.*five minutes/);
+  assert.match(markup, /Stable YouTube reading/);
+  assert.match(markup, /never replay an uncertain message/);
   assert.match(markup, /One Share reminder per action/);
   assert.match(markup, /streaks, resubs and other Share prompts/);
   assert.match(markup, /current native Share button/);
