@@ -139,6 +139,8 @@
   FCM.RECONNECT_BASE_DELAY_MS = 2000;
   FCM.RECONNECT_MAX_DELAY_MS  = 30000;
   FCM.MAX_RECONNECT_ATTEMPTS  = 10;
+  // Pause a failed retry burst without stranding chat for the rest of the visit.
+  FCM.RECONNECT_COOLDOWN_MS = 5 * 60 * 1000;
   // How long a connection has to hold before the attempt count is forgiven.
   //
   // The counter used to be cleared the moment a socket said hello, which meant

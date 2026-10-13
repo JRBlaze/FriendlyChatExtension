@@ -14170,6 +14170,7 @@ suites.reconnects = function () {
   }
 
   return (async () => {
+    await require('./connection-recovery')();
     // ── a lookup Kick refused is tried again, not abandoned ──
     {
       const w = bootWorker({
@@ -14224,9 +14225,9 @@ suites.reconnects = function () {
 
         const said = w.of('sys').map((m) => m.text).join(' | ');
         contains(said, 'reconnect limit reached',
-          'reconnects: a connection that never holds eventually stops being retried');
+          'reconnects: a connection that never holds eventually pauses its retry burst');
         ok(w.socketsFor('pusher').length <= 6,
-          'reconnects: and it is not reopened once past the limit');
+          'reconnects: and it is not reopened during the five-minute cooldown');
       } finally { w.teardown(); }
     }
 

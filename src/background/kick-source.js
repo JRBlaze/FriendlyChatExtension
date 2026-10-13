@@ -2,7 +2,9 @@
 (function (FCM) {
   'use strict';
 
-  const KICK_PING_MS = 4 * 60 * 1000;
+  // Stay below Chrome's worker idle window and honor a shorter server timeout.
+  const KICK_PING_MS = 25 * 1000;
+  const KICK_PONG_MS = 30 * 1000;
 
   FCM.kickSource = {
     /**
@@ -20,11 +22,14 @@
       conn.generation = generation;
       const current = () => conn.generation === generation;
 
+      if (conn.pingTimer) { clearInterval(conn.pingTimer); conn.pingTimer = null; }
+      if (conn.pongTimer) { clearTimeout(conn.pongTimer); conn.pongTimer = null; }
       if (conn.ws) {
         try { conn.ws.close(); } catch (e) { /* already gone */ }
       }
       if (conn.retryTimer) { clearTimeout(conn.retryTimer); conn.retryTimer = null; }
       conn.forceClose = false;
+      conn.connectedAt = 0;
       conn.channel = channel;
       conn.auth = auth || null;
 
@@ -52,17 +57,16 @@
        * nothing said why.
        */
       const retryLater = (why) => {
-        if ((conn.attempt || 0) >= FCM.MAX_RECONNECT_ATTEMPTS) {
-          sink.sys(`Kick: ${why} — giving up (reconnect from the overlay to retry)`);
-          sink.status('error');
-          return;
-        }
-        const delay = FCM.backoffDelay(conn.attempt || 0);
+        const exhausted = (conn.attempt || 0) >= FCM.MAX_RECONNECT_ATTEMPTS;
+        const delay = exhausted ? FCM.RECONNECT_COOLDOWN_MS : FCM.backoffDelay(conn.attempt || 0);
         sink.status('disconnected');
-        sink.sys(`Kick: ${why} — trying again in ${Math.round(delay / 1000)}s...`);
+        sink.sys(exhausted
+          ? `Kick: ${why}; reconnect limit reached — retrying in 5 minutes (or reconnect from the overlay now)`
+          : `Kick: ${why} — trying again in ${Math.round(delay / 1000)}s...`);
         conn.retryTimer = setTimeout(() => {
           if (!current() || conn.forceClose || conn.channel !== channel) return;
-          conn.attempt = (conn.attempt || 0) + 1;
+          conn.retryTimer = null;
+          conn.attempt = exhausted ? 0 : (conn.attempt || 0) + 1;
           FCM.kickSource.connect(channel, sink, conn, conn.auth);
         }, delay);
       };
@@ -130,11 +134,20 @@
       // so a close arriving after a newer socket has installed its own cannot
       // stop the live one pinging — Pusher drops a room that goes quiet.
       let myPing = null;
+      let myPong = null;
+      const clearPong = () => {
+        if (!myPong) return;
+        clearTimeout(myPong);
+        if (conn.pongTimer === myPong) conn.pongTimer = null;
+        myPong = null;
+      };
 
       ws.onmessage = (e) => {
         if (!current()) return;
         const msg = FCM.safeJsonParse(e.data, null);
         if (!msg || !msg.event) return;
+        // Any valid server event proves liveness, including chat in a busy room.
+        clearPong();
 
         if (msg.event === 'pusher:connection_established') {
           ws.send(JSON.stringify({
@@ -151,12 +164,25 @@
           conn.connectedAt = Date.now();
           sink.status('connected');
           sink.sys(`Connected to Kick: ${channel}`);
-          // Idle rooms otherwise get dropped by Pusher's inactivity timeout.
+          // Pusher advertises this in seconds. Missing or invalid values use a
+          // safe default; a longer value must not let Chrome idle the worker.
+          const details = FCM.safeJsonParse(msg.data, {});
+          const activity = details && details.activity_timeout;
+          const pingMs = typeof activity === 'number' && Number.isFinite(activity) && activity > 0
+            ? Math.min(KICK_PING_MS, activity * 1000) : KICK_PING_MS;
           if (conn.pingTimer) clearInterval(conn.pingTimer);
           myPing = setInterval(() => {
-            if (ws.readyState !== WebSocket.OPEN) return;
+            if (!current() || ws.readyState !== WebSocket.OPEN || myPong) return;
             ws.send(JSON.stringify({ event: 'pusher:ping', data: {} }));
-          }, KICK_PING_MS);
+            // A socket can stay OPEN after the network disappears. Do not keep
+            // postponing this deadline with more pings and display green forever.
+            myPong = setTimeout(() => {
+              if (!current()) return;
+              sink.sys('Kick: connection timed out — reconnecting');
+              ws.close();
+            }, KICK_PONG_MS);
+            conn.pongTimer = myPong;
+          }, pingMs);
           conn.pingTimer = myPing;
           sink.joined(chatroomId);
           return;
@@ -237,6 +263,7 @@
       ws.onerror = () => { if (current()) sink.sys('Kick: connection error'); };
 
       ws.onclose = () => {
+        clearPong();
         // This socket's keepalive, not whatever is on `conn` now.
         if (myPing) {
           clearInterval(myPing);
@@ -249,22 +276,22 @@
         if (conn.forceClose) return;
         // A connection that stayed up starts the next backoff from scratch; one
         // that fell over immediately does not, so a room that will not hold is
-        // retried more and more slowly and eventually left alone.
+        // retried more slowly, then paused before the next bounded retry cycle.
         if (conn.connectedAt && Date.now() - conn.connectedAt >= FCM.STABLE_CONNECTION_MS) {
           conn.attempt = 0;
         }
         conn.connectedAt = 0;
         sink.status('disconnected');
         sink.sys('Kick: disconnected');
-        if ((conn.attempt || 0) >= FCM.MAX_RECONNECT_ATTEMPTS) {
-          sink.sys('Kick: reconnect limit reached (reconnect from the overlay to retry)');
-          return;
-        }
-        const delay = FCM.backoffDelay(conn.attempt || 0);
-        sink.sys(`Kick: reconnecting in ${Math.round(delay / 1000)}s...`);
+        const exhausted = (conn.attempt || 0) >= FCM.MAX_RECONNECT_ATTEMPTS;
+        const delay = exhausted ? FCM.RECONNECT_COOLDOWN_MS : FCM.backoffDelay(conn.attempt || 0);
+        sink.sys(exhausted
+          ? 'Kick: reconnect limit reached — retrying in 5 minutes (or reconnect from the overlay now)'
+          : `Kick: reconnecting in ${Math.round(delay / 1000)}s...`);
         conn.retryTimer = setTimeout(() => {
           if (!current() || conn.forceClose || conn.channel !== channel) return;
-          conn.attempt = (conn.attempt || 0) + 1;
+          conn.retryTimer = null;
+          conn.attempt = exhausted ? 0 : (conn.attempt || 0) + 1;
           FCM.kickSource.connect(channel, sink, conn, conn.auth);
         }, delay);
       };
@@ -277,6 +304,7 @@
       conn.forceClose = true;
       if (conn.retryTimer) { clearTimeout(conn.retryTimer); conn.retryTimer = null; }
       if (conn.pingTimer) { clearInterval(conn.pingTimer); conn.pingTimer = null; }
+      if (conn.pongTimer) { clearTimeout(conn.pongTimer); conn.pongTimer = null; }
       if (conn.ws) { try { conn.ws.close(); } catch (e) { /* already gone */ } conn.ws = null; }
     },
 
