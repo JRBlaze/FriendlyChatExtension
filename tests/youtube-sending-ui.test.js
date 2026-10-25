@@ -62,10 +62,10 @@ function fixture(options = {}) {
         const entries = events.get(type) || []; entries.push({ fn, once: !!options.once }); events.set(type, entries);
       },
       removeEventListener(type, fn) { events.set(type, (events.get(type) || []).filter(entry => entry.fn !== fn)); },
-      fire(type) {
+      fire(type, details = {}) {
         for (const entry of [...(events.get(type) || [])]) {
           if (entry.once) this.removeEventListener(type, entry.fn);
-          entry.fn({ type });
+          entry.fn({ type, ...details });
         }
       },
     };
@@ -96,7 +96,8 @@ function fixture(options = {}) {
     static revokeObjectURL(url) { revokedUrls.push(url); }
   }
   const sandbox = vm.createContext({ document, chrome, console, URL: LocalURL, Blob, setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; }, clearTimeout() {}, clearInterval() {},
-    setInterval: () => 1, fetch: async () => ({ text: async () => '' }), window });
+    setInterval: (fn, ms) => { options.onInterval?.(fn, ms); return 1; },
+    ResizeObserver: options.ResizeObserver, fetch: async () => ({ text: async () => '' }), window });
   sandbox.self = sandbox;
   for (const file of ['src/shared/namespace.js', 'src/shared/constants.js', 'src/shared/util.js', 'src/shared/clips.js']) {
     vm.runInContext(fs.readFileSync(path.join(ROOT, file), 'utf8'), sandbox, { filename: path.join(ROOT, file) });
@@ -111,13 +112,13 @@ function fixture(options = {}) {
     createNativeBridge: () => ({ release() {},
       cards(includeHighlights) { nativeCardQueries.push(includeHighlights); return options.nativeCards || null; },
       setNativeHidden(hide, exemptions) { nativeVisibility.push({ hide, exemptions }); },
-      dialogOver() {}, coveringChat() {}, expectMenu() {}, activate(kind) { nativeActions.push(kind); return true; },
-      stats: () => options.nativeStats || {} }),
+      dialogOver() {}, coveringChat() {}, expectMenu() {}, activate(kind) { nativeActions.push(kind); return options.activateResult !== false; },
+      stats: () => options.readNativeStats ? options.readNativeStats() : options.nativeStats || {} }),
     createNativeEventWatcher: () => ({ start() {}, stop() {} }), createFeed: () => feed,
     createMentionSound: options.sound ? hooks => { options.soundHooks = hooks; return options.sound; } : undefined,
     createDisplayFont: () => ({ destroy() {}, refresh: async () => {}, size: n => n }), makeEmoteInput() {},
     emoteOnlyPlatform: () => options.emoteHome || null, findCheer: () => options.cheer || null, toKickMessage: text => text,
-    loadSettings: async () => ({ ...FCM.DEFAULT_SETTINGS, ...storage.fcm_settings_v1, theme: 'dark', revealHighlights: false, showNativeStats: !!options.nativeStats, autoClaimBonus: false, showShareReminders: false, autoOpen: false }),
+    loadSettings: async () => ({ ...FCM.DEFAULT_SETTINGS, ...storage.fcm_settings_v1, theme: 'dark', revealHighlights: false, showNativeStats: !!options.nativeStats, autoClaimBonus: false, showShareReminders: false, autoOpen: false, ...options.settings }),
     setYouTubeIdentity(name) { youtubeIdentities.push(name); },
     setViewSettings() {}, setMentionAccounts(accounts) { options.onMentionAccounts?.(accounts); }, watchSiteTheme: () => ({ current: () => 'dark', stop() {} }),
     createRecentEmotes: hooks => { recentHooks.push(hooks); return { record(text, platforms) { recentRecords.push({ text, platforms: Array.from(platforms) }); }, refresh() {}, destroy() {} }; },
@@ -419,7 +420,148 @@ async function historyChecks() {
   await arrow(pending, 'ArrowDown'); assert.equal(pending.input.value, 'next draft');
 }
 
+async function playbackPerformanceChecks() {
+  for (const browser of ['chrome', 'firefox']) for (const platform of ['kick', 'twitch']) {
+    let tick;
+    const storage = { fcm_settings_v1: { hideNativeChat: true, fontSize: 17, savedAt: 123 } };
+    const f = fixture({ browser, platform, storage, settings: { autoOpen: true },
+      onInterval(fn, ms) { if (ms === 500) tick = fn; },
+    });
+    assert.equal(Object.hasOwn(f.FCM.DEFAULT_SETTINGS, 'hideNativeChat'), false,
+      'the removed preference has no default on a new installation');
+    await f.api.mount(); tick();
+    f.api.applyStoredSettings({ ...f.FCM.DEFAULT_SETTINGS, hideNativeChat: true }); tick();
+    await f.popout(); tick(); f.api.destroy();
+    assert.deepEqual(f.nativeVisibility, [], 'even an older saved true value never hides native chat');
+    assert.equal(storage.fcm_settings_v1.hideNativeChat, true, 'no destructive storage migration is needed');
+    assert.equal(storage.fcm_settings_v1.fontSize, 17, 'existing preferences are preserved');
+    f.FCM.cleanYouTubeLinks = () => ({});
+    const restored = f.FCM.readBackup({ format: f.FCM.BACKUP_FORMAT, backupVersion: 1,
+      settings: { hideNativeChat: true, fontSize: 18, maxMessages: 600 },
+      links: { 'kick:fixture': { channel: 'counterpart', manual: true } },
+    });
+    assert.equal(restored.ok, true, 'older backups remain importable');
+    assert.equal(Object.hasOwn(restored.stores.settings, 'hideNativeChat'), false);
+    assert.equal(restored.stores.settings.fontSize, 18);
+    assert.equal(restored.stores.settings.maxMessages, 600);
+    assert.equal(restored.stores.links['kick:fixture'].channel, 'counterpart');
+  }
+  for (const file of ['src/options/options.html', 'src/options/options.js', 'src/content/overlay.js']) {
+    assert.doesNotMatch(fs.readFileSync(path.join(ROOT, file), 'utf8'), /hideNativeChat|Hide the site's own chat/,
+      'the removed control has no UI, event binding or runtime consumer');
+  }
+  assert.match(fs.readFileSync(path.join(ROOT, 'src/options/options.html'), 'utf8'), /id="revealHighlights"/,
+    'native card clearance remains configurable');
+  for (const browser of ['chrome', 'firefox']) for (const platform of ['kick', 'twitch']) {
+    for (const [autoOpen, startCollapsed, autoClaimBonus] of [
+      [true, false, true], [true, false, false], [false, false, true],
+      [false, false, false], [true, true, true], [true, true, false],
+    ]) {
+      let tick, reads = 0;
+      const stats = { canClaim: false, claimNamed: true, hasPoints: true, points: '10' };
+      const f = fixture({ browser, platform, nativeStats: stats,
+        settings: { autoOpen, startCollapsed, autoClaimBonus },
+        readNativeStats() { reads++; return stats; },
+        onInterval(fn, ms) { if (ms === 500) tick = fn; },
+      });
+      await f.api.mount();
+      reads = 0; tick();
+      const wanted = (autoOpen && !startCollapsed) || autoClaimBonus ? 1 : 0;
+      assert.equal(reads, wanted, 'each tick reads native controls at most once, including hidden/collapsed panels');
+      stats.canClaim = true; stats.points = '11'; reads = 0; tick();
+      assert.equal(reads, wanted, 'the next tick reads fresh controls and balances');
+      assert.equal(f.nativeActions.filter(kind => kind === 'claim').length, autoClaimBonus ? 1 : 0);
+      tick();
+      assert.equal(f.nativeActions.filter(kind => kind === 'claim').length, autoClaimBonus ? 1 : 0,
+        'sharing a reading never repeats a claim');
+      stats.canClaim = false; tick(); stats.canClaim = true; stats.claimNamed = false; tick();
+      assert.equal(f.nativeActions.filter(kind => kind === 'claim').length, autoClaimBonus ? 1 : 0,
+        'unnamed controls are never automatically pressed');
+      stats.claimNamed = true; tick();
+      assert.equal(f.nativeActions.filter(kind => kind === 'claim').length, autoClaimBonus ? 2 : 0);
+      if (autoOpen && !startCollapsed) {
+        await f.popout(); reads = 0; tick();
+        assert.equal(reads, 1, 'pop-out ticks also share one current reading');
+      }
+      f.api.destroy();
+      const actions = f.nativeActions.length;
+      reads = 0;
+      tick();
+      assert.equal(f.nativeActions.length, actions, 'a cancelled interval cannot claim after teardown');
+      assert.equal(reads, 0, 'teardown also prevents a stale tick from reading native controls');
+    }
+
+    let resize, reads = 0, serial = 0;
+    const frames = new Map();
+    class Observer {
+      constructor(callback) { resize = callback; }
+      observe() {}
+      disconnect() {}
+    }
+    const rect = { top: 60, width: 340, height: 600, get left() { reads++; return 900; } };
+    const f = fixture({ browser, platform, chatRect: rect, ResizeObserver: Observer });
+    f.window.ResizeObserver = Observer;
+    f.window.requestAnimationFrame = fn => { frames.set(++serial, fn); return serial; };
+    f.window.cancelAnimationFrame = id => frames.delete(id);
+    await f.api.mount(); reads = 0;
+    for (let i = 0; i < 1000; i++) resize([]);
+    assert.equal(reads, 0, 'startup/player-resize bursts defer placement reads until a frame');
+    assert.equal(frames.size, 1, 'a resize burst schedules a single placement pass');
+    const frame = () => { const [id, fn] = frames.entries().next().value; frames.delete(id); fn(); };
+    frame(); assert.equal(reads, 1);
+    reads = 0;
+    for (let i = 0; i < 1000; i++) f.window.fire('scroll', { target: f.host });
+    assert.equal(frames.size, 0, 'chat autoscroll inside the overlay never requests host-page placement');
+    f.window.fire('scroll', { target: { id: 'chatroom-messages' } });
+    assert.equal(frames.size, platform === 'kick' ? 0 : 1,
+      'Kick message-list autoscroll does not move its outer column; other hosts retain placement');
+    if (frames.size) frame();
+    reads = 0;
+    f.window.fire('scroll', { target: f.document });
+    f.window.fire('resize'); resize([]);
+    assert.equal(frames.size, 1, 'page scroll, window resize and observer notifications share the frame');
+    frame(); assert.equal(reads, 1, 'actual page movement still updates placement');
+    f.window.fire('resize'); f.api.destroy();
+    assert.equal(frames.size, 0, 'teardown cancels pending placement');
+    resize([]); assert.equal(frames.size, 0, 'a late observer callback cannot restart placement');
+
+    const fallback = fixture({ browser, platform, chatRect: rect });
+    await fallback.api.mount(); reads = 0;
+    fallback.window.fire('scroll', { target: fallback.host });
+    assert.equal(reads, 0, 'own-feed scrolling is ignored without animation-frame support too');
+    fallback.window.fire('resize'); assert.equal(reads, 1, 'the synchronous compatibility fallback still places');
+    fallback.api.destroy();
+  }
+  // Exercise the existing bar's combinations as well as its shared snapshot.
+  // YouTube metadata checks the label fallback for an adapter without native labels.
+  for (const platform of ['kick', 'twitch', 'youtube']) {
+    let tick;
+    const stats = {};
+    const f = fixture({ platform, nativeStats: stats, activateResult: false,
+      settings: { autoOpen: true, autoClaimBonus: true },
+      onInterval(fn, ms) { if (ms === 500) tick = fn; },
+    });
+    await f.api.mount();
+    for (const flag of ['hasPoints', 'hasBits', 'canClaim', 'hasIdentity', 'hasDrops']) {
+      Object.keys(stats).forEach(key => delete stats[key]); stats[flag] = true;
+      stats.claimNamed = true;
+      tick();
+      stats.points = '12'; stats.bits = '24'; tick();
+      for (const button of [...f.nodes.get('.fcm-native').children]) await button.fire('click');
+    }
+    f.api.applyStoredSettings({ ...f.FCM.DEFAULT_SETTINGS, theme: 'dark', showNativeStats: false, autoClaimBonus: false });
+    tick();
+    f.api.destroy();
+    f.api.applyStoredSettings({ ...f.FCM.DEFAULT_SETTINGS, theme: 'dark' });
+  }
+  console.log('Playback placement and per-tick native-control regressions passed.');
+}
+
 async function run() {
+  assert.match(fs.readFileSync(path.join(ROOT, 'src/content/overlay.js'), 'utf8'),
+    /class="fcm-input"[^>]*spellcheck="true"/,
+    'issue #83: the editable composer explicitly enables browser spelling suggestions');
+  await playbackPerformanceChecks();
   for (const browser of ['chrome', 'firefox']) for (const platform of ['twitch', 'kick']) for (const pip of [false, true]) {
     const f = fixture({ browser, platform, pip }); await f.api.mount();
     await f.popout(pip);
@@ -520,7 +662,7 @@ async function run() {
   const notice = fixture({ nativeCards: { elements: [noticeElement], top: 70, bottom: 122, left: 0, right: 360, height: 52 } });
   await notice.api.mount();
   assert.ok(notice.nativeCardQueries.includes(false), 'highlights-off still queries native notifications');
-  assert.ok(notice.nativeVisibility.some(call => call.exemptions.includes(noticeElement)), 'notifications remain exempt from native chat hiding');
+  assert.deepEqual(notice.nativeVisibility, [], 'notifications and native chat remain visible without overrides');
   for (const manual of [false, true]) for (const noticeBottom of [0, 122, 300]) {
     const rect = { top: 60, left: 0, width: 360, height: 180 };
     const bottom = noticeBottom || 122;
@@ -905,4 +1047,5 @@ async function run() {
 
 module.exports = run;
 module.exports.fixture = fixture;
+module.exports.playbackPerformanceChecks = playbackPerformanceChecks;
 if (require.main === module) run().catch(error => { console.error(error); process.exitCode = 1; });

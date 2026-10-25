@@ -236,6 +236,7 @@ suites.releasenotes = async function () {
 suites.performance = async function () {
   await require('./feed-performance.test').run();
   await require('./native-performance.test').run();
+  await require('./youtube-sending-ui.test').playbackPerformanceChecks();
   await require('./recent-emotes.test').run();
   ok(true, 'chat resource and image lifecycle regressions');
 };

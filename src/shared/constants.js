@@ -260,7 +260,6 @@
     // the same emote can arrive from a different provider tomorrow.
     favouriteEmotes: [],
     showRecentEmotes: true,
-    hideNativeChat: false,      // collapse the site's own chat while merged
     // Press Kick's own "Watch now" when it opens a channel's profile over a
     // stream that is running. Kick does that to the streamer on their own
     // channel, which is the one place the layout is never what was wanted.

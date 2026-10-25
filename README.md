@@ -18,6 +18,15 @@ dashboard and other dashboard pages shows or removes it automatically.
 ![Firefox](https://img.shields.io/badge/Firefox-140%2B-orange)
 [![Version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FJRBlaze%2FFriendlyChatExtension%2Fmain%2Fmanifest.json&query=%24.version&label=version&color=green)](../../releases/latest)
 
+## New in 1.23.10
+
+- **Less work alongside Kick video:** share native-control reads, batch resize
+  placement and avoid repositioning the overlay when Kick's message list scrolls.
+- **Native chat stays visible:** remove the Hide the site's own chat setting;
+  older saved values are ignored without resetting other preferences.
+- **Browser spellchecking:** enable spelling marks and right-click suggestions in
+  the message box, including pop-outs, using your browser's language settings.
+
 ## New in 1.23.9
 
 - **Kick reconnect loop fixed:** when Kick retires its chat connection details,
@@ -418,7 +427,7 @@ has signed. Chrome is first below; Firefox is [further down](#install-in-firefox
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.23.9.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.23.10.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and an extra folder named `FriendlyChatExtension-main`
@@ -450,7 +459,7 @@ Firefox ESR 140. Firefox for Android is not supported: the sign-in API the exten
 accounts with does not exist there.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.23.9-firefox.xpi` from the Assets list. That file is the add-on, signed
+`FriendlyChatExtension-v1.23.10-firefox.xpi` from the Assets list. That file is the add-on, signed
 by Mozilla, and there is nothing to unzip.
 
 1. **Open the file with Firefox.** Click it in Firefox's downloads list, or drag the file from
@@ -477,7 +486,7 @@ The add-on is not on addons.mozilla.org, and will not be: Mozilla signs it witho
 and this repository's releases are the only place it is published.
 
 **Trying an unsigned build.** Each release also carries
-`FriendlyChatExtension-v1.23.9-firefox-unsigned.xpi`, the same package before Mozilla signed it.
+`FriendlyChatExtension-v1.23.10-firefox-unsigned.xpi`, the same package before Mozilla signed it.
 Opened the ordinary way, release Firefox refuses it as unverified; it loads only as a temporary
 add-on: open `about:debugging`, choose *This Firefox*, press *Load Temporary Add-on…* and pick the
 file itself, without unpacking it. A temporary add-on is removed when Firefox restarts, and its
@@ -1074,6 +1083,12 @@ passed through byte for byte. Both a dark-theme and a light-theme value are emit
 switching theme under an already-rendered row still lands on a readable one.
 
 ## The message box
+
+The message box enables your browser's built-in spellchecking. With spellchecking
+enabled for your language in the browser, misspelled words can be marked and
+right-clicked for suggested replacements. It stays enabled in pop-out chat too.
+Friendly Chat adds no spelling service or automatic correction; spelling and
+online checking follow your browser settings. See the [privacy policy](PRIVACY.md#browser-spellchecking).
 
 Emotes are drawn where they are typed. Finish a name, press space, and the name becomes the
 picture — so a message with six emotes in it can be read before it is sent rather than after.
@@ -1755,13 +1770,11 @@ sounds — Kick keeps that banner slot in the page permanently and empty, where 
 still measures about 12 px, and counting it would have cost a strip of feed on every channel for
 nothing.
 
-Native-chat hiding follows late-mounted and replaced chat elements on the normal half-second
-tick. Replaced elements and cards have their original inline visibility restored. A temporary
-unhide while the native composer sends is preserved until that send finishes.
-
-Hiding the site's own chat and revealing its cards would contradict each other, so the cards are
-exempted rather than un-hidden: `visibility` is inherited, and setting it back to `visible` on a
-card inside a hidden subtree shows that card and nothing else around it.
+The site's own chat stays visible underneath the overlay. The former **Hide the site's
+own chat** setting has been removed from All Settings and the overlay settings sheet.
+Older saved values are ignored, and older backups still import their supported settings.
+The overlay continues to leave room for native cards and notifications and to step aside
+for native menus.
 
 ### Claiming the bonus
 
@@ -1813,9 +1826,9 @@ Shift-click the button to request an always-on-top
 That optional mode still follows the browser's single-PiP limit. Browsers without the API open
 an ordinary window instead. Normal windows do not stay above other applications automatically.
 
-While popped out, placement stops following the page's chat column. Balances, native sending,
-redemptions and the *Hide the site's own chat while merged* preference still use the source
-page. Closing the window returns the same panel and draft to that page.
+While popped out, placement stops following the page's chat column. Balances, native sending
+and redemptions still use the source page. Closing the window returns the same panel and draft
+to that page.
 
 ### The channel chips
 
@@ -2534,13 +2547,12 @@ proxy needs — and pinning it breaks exactly that.
   whichever arrives first does the work, cancelling the other. Found by running the overlay in a
   window that never composites, which is the same condition as a covered one.
 
-- **Kick renders its whole chat twice and the wrong copy could be hidden.** Kick ships a second,
+- **Kick renders its whole chat twice and lookups could select the wrong copy.** Kick ships a second,
   zero-sized copy of the chat inside a `display: none` streaming placeholder, carrying the same
   `id`s — `#channel-chatroom`, `#chatroom-messages`, `#chatroom-footer` all match twice. Anything
   resolving them with a plain `querySelector` gets whichever comes first in the document, which
-  is not something to depend on across a hydration. *Hide the site's own chat* could therefore
-  hide the invisible copy and leave the real one showing. Those lookups now skip anything the
-  page is not laying out.
+  is not something to depend on across a hydration. Native chat lookups could therefore select
+  the invisible copy. Those lookups now skip anything the page is not laying out.
 
 - **Kick's send button was never found.** It carries no test selector, no `aria-label` and no
   `title` — only `id="send-message-button"`. The send path fell through to pressing Enter, which
@@ -2752,12 +2764,26 @@ layout-dependent prompt text. Ordinary messages therefore avoid that extra
 layout read. The recent-emote bar also ignores storage changes outside its own
 records, avoiding redraws caused by other open streams updating their caches.
 
+The overlay shares one fresh native-control reading per half-second tick for
+the balance bar and automatic bonus checks, including while hidden or popped
+out. Chat-column resize callbacks share a placement frame with window resize
+and page scroll. Kick's native message-list scrolling does not reposition the
+overlay; page movement, column resizing and the existing half-second backstop
+still update its position. This reduces extension work alongside player startup
+and layout changes; it does not control Kick's video quality or buffering.
+
 Resource regressions: `node tests/run.js performance`. The changed-source gate is
 `node tests/release-coverage.js --changed-only <node-output.json>`; it measures
 changed executable lines, functions and V8 ranges, separately from the full suite.
 The optional isolated browser check is
 `node tests/feed-performance-browser.js <artifact-directory>` with an existing
 Playwright installation available through `FCM_PLAYWRIGHT_PATH`.
+`node tests/kick-playback-browser.js <artifact-directory>` compares the current
+overlay with the pinned pre-optimization revision (override `FCM_PLAYBACK_BASE`
+with another pre-optimization ref) using local Kick markup, resize/scroll bursts, refreshes and
+a moving canvas video whose dimensions change between 360p, 720p and 1080p.
+It checks installed Chrome and simulated Firefox mode in Chrome. These are
+isolated layout regressions, not a live Kick bitrate-switch or native Firefox test.
 
 The measurements below describe the earlier tuning baseline.
 

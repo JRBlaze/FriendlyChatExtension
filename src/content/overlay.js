@@ -288,7 +288,7 @@
             <button class="fcm-gif-btn fcm-hidden" type="button"
               title="Send a GIF through Twitch's own GIF keyboard">GIF</button>
             <div class="fcm-input" contenteditable="true" role="textbox"
-              aria-multiline="false" spellcheck="false"></div>
+              aria-multiline="false" spellcheck="true"></div>
             <button class="fcm-send">Send</button>
           </div>
         </div>
@@ -598,15 +598,7 @@
     function refreshCards() {
       const found = native.cards(settings.revealHighlights !== false);
       lastCards = found;
-      const next = found ? found.elements : [];
-      const changed = next.length !== cardEls.length
-        || next.some((el, i) => el !== cardEls[i]);
-      cardEls = next;
-      // Both sites replace these nodes outright when a card starts or ends, and
-      // a fresh node inside a hidden chat is hidden with it — so the exemption
-      // has to follow the cards, not just changes to the setting.
-      if (changed) applyNativeChatVisibility();
-      return changed;
+      cardEls = found ? found.elements : [];
     }
 
     /**
@@ -704,8 +696,15 @@
      * event. One pass per frame is as often as it could possibly matter.
      */
     let placementFrame = null;
-    function schedulePlacement() {
+    function schedulePlacement(event) {
       if (destroyed || placementFrame !== null) return;
+      // Captured scrolls from our shadow tree are retargeted to the host.
+      // They move the feed, never the page column the panel is placed over.
+      if (event && event.type === 'scroll' && event.target === host) return;
+      // Kick autoscrolls its native messages behind the overlay as well. That
+      // scroller moves no surrounding cards or column; resize/page scrolls do.
+      if (event && event.type === 'scroll' && hostPlatform === 'kick'
+        && event.target?.id === 'chatroom-messages') return;
       if (!window.requestAnimationFrame) { syncPlacement(); return; }
       placementFrame = window.requestAnimationFrame(() => {
         placementFrame = null;
@@ -759,7 +758,7 @@
     function observeTarget(target) {
       if (target === observedTarget) return;
       if (!window.ResizeObserver) return;
-      if (!resizeObserver) resizeObserver = new ResizeObserver(() => syncPlacement());
+      if (!resizeObserver) resizeObserver = new ResizeObserver(() => schedulePlacement());
       resizeObserver.disconnect();
       resizeObserver.observe(target);
       observedTarget = target;
@@ -809,17 +808,12 @@
 
     function tick() {
       displayFont.refresh();
-      // Both sites mount chat late and replace it during normal rendering.
-      // Reconcile the current node even when the cards/settings did not change.
-      applyNativeChatVisibility();
       // Popped out, most of this is about a panel that is over the page, and
       // it is not. What still matters is the page itself: its balances are
-      // still this channel's, its chat is still the one being hidden, and its
-      // redemptions still belong in the feed.
+      // still this channel's, and its redemptions still belong in the feed.
       if (poppedOut()) {
         syncPageChatVisibility();
-        renderNativeBar();
-        claimBonusIfWaiting();
+        syncNativeBar();
         syncNativeEvents();
         return;
       }
@@ -827,8 +821,7 @@
       syncPlacement();
       syncPageChatVisibility();
       syncPeek();
-      renderNativeBar();
-      claimBonusIfWaiting();
+      syncNativeBar();
       // Both sites replace their message list outright often enough that this
       // cannot be attached once and forgotten. start() re-attaches only when
       // the list it is watching is no longer the one on the page.
@@ -952,9 +945,6 @@
       peeking = next;
       peekStartedAt = next ? Date.now() : 0;
       panel.classList.toggle('fcm-peek', peeking);
-      // The site's own chat has to be on screen for its own menu to be, so the
-      // "hide the site's chat" setting stands down for as long as one is open.
-      applyNativeChatVisibility();
     }
 
     // ── Bits, Kicks and channel points ────────────────────────────────────────
@@ -995,7 +985,17 @@
      * the ones the account signed in here can actually spend, which is the only
      * balance worth showing, and reading them needs no token and no scope.
      */
-    function renderNativeBar() {
+    // Native control discovery walks the site's footer and reads layout. Share
+    // one fresh snapshot within a tick, including when only auto-claim needs it.
+    // Nothing is cached across ticks or a user opening a native control.
+    function syncNativeBar() {
+      const needed = !destroyed && ((visible && !collapsed) || settings.autoClaimBonus !== false);
+      const read = needed ? native.stats() : null;
+      renderNativeBar(read);
+      claimBonusIfWaiting(read);
+    }
+
+    function renderNativeBar(read) {
       if (destroyed) return;
       // Nothing of the bar is on screen, so nothing needs reading. What is
       // already rendered still matches the signature that built it, so whenever
@@ -1004,7 +1004,7 @@
       if (!visible || collapsed) return;
       // Read whether or not the balances are wanted: the GIF button follows
       // the site's emote picker, which is not a balance and not that setting.
-      const read = native.stats();
+      read = read || native.stats();
       const stats = settings.showNativeStats === false ? null : read;
       const signature = (stats
         ? `${stats.points}|${stats.bits}|${stats.hasPoints}|${stats.hasBits}`
@@ -1122,9 +1122,8 @@
      */
     let claimed = false;
 
-    function claimBonusIfWaiting() {
+    function claimBonusIfWaiting(stats) {
       if (destroyed || settings.autoClaimBonus === false) return;
-      const stats = native.stats();
       if (!stats.canClaim) { claimed = false; return; }
       if (claimed || !stats.claimNamed) return;
       claimed = true;
@@ -1153,11 +1152,8 @@
         statsSignature = '';
         return;
       }
-      // The site's own chat has to be on screen before its menu will draw, so
-      // the panel steps aside first and the click follows. Both happen in the
-      // same task deliberately: the un-hide is a synchronous style change, and
-      // waiting a frame for it would strand the panel invisible on a tab the
-      // browser has stopped animating.
+      // Step aside before pressing the native control, in the same task, so
+      // the site can draw its menu even when animation frames are throttled.
       peekHoldUntil = Date.now() + NATIVE_MENU_PEEK_MS;
       // Armed before the click, so the element the site draws in response is
       // seen being added even on a site that gives its menu no role to match on.
@@ -2151,10 +2147,6 @@
             <label>Join this site's chat on open</label>
             <input type="checkbox" data-set="autoConnectHost">
           </div>
-          <div class="fcm-field">
-            <label>Hide the site's own chat<small>The overlay covers it either way</small></label>
-            <input type="checkbox" data-set="hideNativeChat">
-          </div>
           ${hostPlatform === 'kick' ? `
           <div class="fcm-field">
             <label>Open the stream when Kick shows the profile
@@ -2411,7 +2403,6 @@
       root.dataset.modtools = String(settings.modHoverTools !== false);
       applyDisplayFont();
       panel.style.opacity = String(FCM.clampNumber(settings.opacity, 50, 100, 96) / 100);
-      applyNativeChatVisibility();
       feed.trim();
       // The text size, timestamps and badges all change how tall every row is,
       // which moves the live end without a scroll, a message or a change to the
@@ -2436,17 +2427,6 @@
         theme = themeWatcher ? themeWatcher.current() : FCM.detectSiteTheme(site.chatContainer());
       }
       root.dataset.theme = theme;
-    }
-
-    // Hiding the site's own chat is about what shows through a panel that is
-    // never quite opaque. The cards above the message list are the exception:
-    // they are the whole point of the reveal, so they stay visible while the
-    // rest of the site's chat is hidden. Everything comes back while one of the
-    // site's own menus is open over it, and while the panel is closed — an
-    // empty chat column would be worse than the duplicate it was hiding.
-    function applyNativeChatVisibility() {
-      const hide = !!settings.hideNativeChat && !collapsed && visible && !peeking;
-      native.setNativeHidden(hide, cardEls);
     }
 
     // ── Misc UI ───────────────────────────────────────────────────────────────
@@ -2587,7 +2567,6 @@
       const btn = root.querySelector('[data-act="collapse"]');
       btn.innerHTML = collapsed ? ICONS.plus : ICONS.minus;
       btn.title = collapsed ? 'Expand' : 'Collapse';
-      applyNativeChatVisibility();
       // Expanding has to restore the full chat-sized height, and collapsing
       // still needs the position and width kept in step.
       syncPlacement();
@@ -2619,7 +2598,6 @@
           launcher.style.cssText = 'right:18px;bottom:18px;';
         }
       }
-      applyNativeChatVisibility();
       // As with expanding: a panel that was off screen has no scroll position
       // worth keeping, and coming back to the live chat is what showing it
       // again means.

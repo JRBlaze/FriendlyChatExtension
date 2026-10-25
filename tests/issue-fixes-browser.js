@@ -35,23 +35,32 @@ async function run() {
       await page.locator('.fcm-msg').first().waitFor();
       await page.evaluate(() => overlay.applyStoredSettings({ ...FCM.view.settings, autoClaimBonus: false, animations: false, hideNativeChat: true }));
 
-      // #56/#59 on each site's actual adapter with synthetic replacement DOM.
+      // Native chat stays visible after removal of the old setting, including
+      // old saved true values and replacement DOM; #59 still opens native cards.
       for (const platform of ['twitch', 'kick']) {
         await page.locator(`.devbar [data-act="site-${platform}"]`).click();
         await page.evaluate(() => overlay.applyStoredSettings({ ...FCM.view.settings, hideNativeChat: true }));
-        await page.waitForFunction(platform => FCM.SITES[platform].nativeChatBody()?.style.visibility === 'hidden', platform);
+        await page.waitForFunction(platform => {
+          const body = FCM.SITES[platform].nativeChatBody();
+          return body && getComputedStyle(body).visibility === 'visible';
+        }, platform);
         await page.evaluate(platform => {
           const body = FCM.SITES[platform].nativeChatBody();
           const replacement = body.cloneNode(true); replacement.style.visibility = '';
           body.replaceWith(replacement);
         }, platform);
-        await page.waitForFunction(platform => FCM.SITES[platform].nativeChatBody()?.style.visibility === 'hidden', platform);
+        await page.waitForTimeout(600);
+        assert.equal(await page.evaluate(platform => getComputedStyle(FCM.SITES[platform].nativeChatBody()).visibility,
+          platform), 'visible', 'replacement native chat stays visible after the periodic tick');
         // Open the real overlay action, with the site drawing a delayed card inside its list.
         await page.evaluate(platform => {
           const adapter = FCM.SITES[platform];
           const list = adapter.messageList();
-          const name = document.createElement('span'); name.textContent = 'fixtureuser';
-          list.appendChild(name); adapter.chatUsername = () => name;
+          // The harness copies adapters when mounting. Use real name markup
+          // rather than replacing a method on the uncopied adapter afterward.
+          const name = document.createElement(platform === 'kick' ? 'button' : 'span');
+          name.textContent = 'fixtureuser'; name.setAttribute('data-a-user', 'fixtureuser');
+          list.appendChild(name);
           name.addEventListener('click', () => {
             window.nameWasVisible = getComputedStyle(name).visibility === 'visible';
             setTimeout(() => {
