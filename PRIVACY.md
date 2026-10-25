@@ -1,6 +1,6 @@
 # Privacy Policy — Friendly Chat Extension
 
-_Last updated: October 13, 2026_
+_Last updated: October 24, 2026_
 
 Friendly Chat Extension shows merged Twitch and Kick chat on the stream you
 are watching, with optional YouTube chat and native sending when signed in and ready. This page explains what
@@ -218,6 +218,17 @@ This history is discarded when the overlay is destroyed, including on channel
 navigation or page reload. It is not written to extension storage, synced,
 included in backups or sent to any service by recalling it. A resend uses the
 currently selected destinations and their existing sending paths.
+
+### Browser spellchecking
+
+The message box enables the browser's built-in spellchecking. Spelling marks,
+suggestions and languages follow your browser and operating-system settings.
+Friendly Chat adds no external spelling service and does not upload drafts for
+spelling checks itself. Browser-provided online checking follows your browser's
+own privacy settings; for example, Chrome's optional Enhanced spell check sends
+typed text to Google, while Basic spell check does not, as described in
+[Chrome's spell check documentation](https://support.google.com/chrome/answer/12027911?hl=en).
+The extension does not change those browser settings.
 
 ### Recent emotes
 

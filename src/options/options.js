@@ -4,7 +4,7 @@
   const $ = (id) => document.getElementById(id);
 
   const CHECKBOXES = [
-    'autoOpen', 'autoConnectHost', 'startCollapsed', 'hideNativeChat',
+    'autoOpen', 'autoConnectHost', 'startCollapsed',
     'watchWhenLive', 'revealHighlights', 'showNativeStats', 'autoClaimBonus',
     'showHistory', 'showEvents', 'thirdPartyEmotes', 'timestamps', 'showBadges',
     'animations', 'showGifs', 'showShareReminders', 'modHoverTools', 'showClipPreviews', 'showRecentEmotes', 'mentionSound',

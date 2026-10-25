@@ -21,6 +21,11 @@ function targets(changedOnly = false) {
   return [...selected.values()];
 }
 
+function coverageLines(source, diff, whole) {
+  const lines = gate.selectedLines(source, diff, whole);
+  return lines.size ? lines : null;
+}
+
 function selfTest() {
   gate.selfTest();
   const selected = targets();
@@ -28,6 +33,13 @@ function selfTest() {
   assert.ok(selected.some(target => target.file === 'src/content/youtube-controls.js' && target.whole));
   assert.ok(targets(true).every(target => selected.some(item => item.file === target.file)));
   assert.equal(new Set(targets(true).map(target => target.file)).size, targets(true).length);
+  assert.equal(coverageLines('remaining\n', '@@ -1 +1,0 @@', false), null,
+    'deleted-only code has no remaining lines to execute');
+  assert.equal(coverageLines('unchanged\n', '', false), null);
+  assert.deepEqual([...coverageLines('one\ntwo\n', '@@ -1 +2 @@', false)], [2],
+    'every added or changed line still goes through the coverage gate');
+  assert.deepEqual([...coverageLines('new\n', '', true)], [1, 2],
+    'new runtime files retain whole-file coverage');
 }
 
 async function main(args) {
@@ -63,7 +75,12 @@ async function main(args) {
     const source = fs.readFileSync(path.join(ROOT, file), 'utf8');
     const diff = whole ? '' : execFileSync('git', ['diff', 'HEAD', '--no-ext-diff', '--unified=0', '--', file],
       { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-    const report = gate.report(file, source, scripts.filter(script => gate.matchesFile(script, file)), gate.selectedLines(source, diff, whole));
+    const changedLines = coverageLines(source, diff, whole);
+    if (!changedLines) {
+      console.log(`${file}: deletion-only change; no remaining changed lines to execute`);
+      continue;
+    }
+    const report = gate.report(file, source, scripts.filter(script => gate.matchesFile(script, file)), changedLines);
     const lines = report.lines.filter(line => line.covered).length;
     const functions = [...report.functions.values()].filter(count => count > 0).length;
     const ranges = [...report.ranges.values()].filter(Boolean).length;
