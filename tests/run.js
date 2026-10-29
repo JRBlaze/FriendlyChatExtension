@@ -233,6 +233,10 @@ suites.releasenotes = async function () {
   await require('./release-notes.test')();
   ok(true, 'installed update-notes notification and page');
 };
+suites.systemmessages = function () {
+  require('./system-messages.test').run();
+  ok(true, 'system-message visibility regressions');
+};
 suites.performance = async function () {
   await require('./feed-performance.test').run();
   await require('./native-performance.test').run();
@@ -11482,7 +11486,7 @@ suites.feed = function () {
   // System rows carry no platform, and a platform filter must not hide them.
   {
     const t = drainRig({});
-    t.feed.addSys('Connected to Twitch');
+    t.feed.addSys('[Twitch] Your Drop is ready to claim');
     t.feed.applyFilter(new Set(['twitch']));
     t.fireFrames();
     ok(!t.feedEl.children[0].classList.contains('fcm-hide'),

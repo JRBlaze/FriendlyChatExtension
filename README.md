@@ -18,6 +18,15 @@ dashboard and other dashboard pages shows or removes it automatically.
 ![Firefox](https://img.shields.io/badge/Firefox-140%2B-orange)
 [![Version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FJRBlaze%2FFriendlyChatExtension%2Fmain%2Fmanifest.json&query=%24.version&label=version&color=green)](../../releases/latest)
 
+## New in 1.23.11
+
+- **Quieter system messages:** routine connections, reconnects, emote/cache
+  loading and history counts stay out of chat. Personal notices, subscriptions,
+  streaks, drops, platform events and actionable errors remain.
+- **Brighter dark-mode notices:** clearer backgrounds, text and source labels.
+- **Clearer Share controls:** slightly larger buttons, a solid purple Share
+  action and a visible keyboard focus ring.
+
 ## New in 1.23.10
 
 - **Less work alongside Kick video:** share native-control reads, batch resize
@@ -427,7 +436,7 @@ has signed. Chrome is first below; Firefox is [further down](#install-in-firefox
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.23.10.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.23.11.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and an extra folder named `FriendlyChatExtension-main`
@@ -459,7 +468,7 @@ Firefox ESR 140. Firefox for Android is not supported: the sign-in API the exten
 accounts with does not exist there.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.23.10-firefox.xpi` from the Assets list. That file is the add-on, signed
+`FriendlyChatExtension-v1.23.11-firefox.xpi` from the Assets list. That file is the add-on, signed
 by Mozilla, and there is nothing to unzip.
 
 1. **Open the file with Firefox.** Click it in Firefox's downloads list, or drag the file from
@@ -486,7 +495,7 @@ The add-on is not on addons.mozilla.org, and will not be: Mozilla signs it witho
 and this repository's releases are the only place it is published.
 
 **Trying an unsigned build.** Each release also carries
-`FriendlyChatExtension-v1.23.10-firefox-unsigned.xpi`, the same package before Mozilla signed it.
+`FriendlyChatExtension-v1.23.11-firefox-unsigned.xpi`, the same package before Mozilla signed it.
 Opened the ordinary way, release Firefox refuses it as unverified; it loads only as a temporary
 add-on: open `about:debugging`, choose *This Firefox*, press *Load Temporary Add-on…* and pick the
 file itself, without unpacking it. A temporary add-on is removed when Firefox restarts, and its
@@ -617,9 +626,13 @@ inside, because Chrome builds up to v1.20.1 take the first `.zip` on a release a
   type. Put words beside it and it goes to both, because then the sentence is the message and
   both chats can read it. An emote both chats have loaded goes to both either way, and picking a
   single chat yourself is still the last word.
-- **System and event rows** render exactly as they do in the desktop app: a `SYSTEM`/`EVENT` tag,
-  a chip naming the source, then the body, in a muted style that never reads like a viewer's
-  message.
+- **A quieter feed:** routine chat connection/reconnection, emote loading/cache,
+  history counts and startup diagnostics stay out of chat. Personal subscription
+  notices, streak/Share reminders, drops and platform events remain, along with
+  actionable account, permission and send errors. Connection chips still show status.
+- **Brighter notices:** system/event rows keep their labelled source chips and
+  use a brighter background and text in dark mode. Share reminders have slightly
+  larger buttons, a solid purple **Share** action and a visible keyboard focus ring.
 - **Messages wrap under the username**, like the platforms' own chats, rather than into a narrow
   column beside it.
 - **Timestamps and username badges can each be turned off**, and the change applies to the
@@ -1699,7 +1712,8 @@ fresh connection details. Pusher sends heartbeats every 25 seconds or sooner
 and closes after a thirty-second response deadline. Leaving or replacing a
 chat cancels setup and heartbeat work.
 The green Kick label on an ordinary system row names the platform; a red Kick
-label marks an error such as a disconnect, rather than an error in every service.
+label marks an actionable error in that platform. Routine disconnect and retry
+messages stay out of the feed; the connection chip still shows their state.
 YouTube uses its own embedded reader: it retries after two, four and eight seconds,
 then takes the same five-minute pause. Thirty seconds of connected reading resets
 its retry counter. Each restart checks site permission again and uses fresh frame

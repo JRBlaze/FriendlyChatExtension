@@ -55,7 +55,11 @@ async function run() {
   const files = pack.collect(ROOT);
   for (const file of [FILE, 'src/releases/notes.html', 'src/releases/notes.css']) assert.ok(files.includes(file));
   const markup = fs.readFileSync(path.join(ROOT, 'src/releases/notes.html'), 'utf8');
-  for (const version of ['1.23.0','1.23.1','1.23.2','1.23.3','1.23.4','1.23.5','1.23.6','1.23.7','1.23.8','1.23.9','1.23.10']) assert.ok(markup.includes('Version ' + version));
+  for (const version of ['1.23.0','1.23.1','1.23.2','1.23.3','1.23.4','1.23.5','1.23.6','1.23.7','1.23.8','1.23.9','1.23.10','1.23.11']) assert.ok(markup.includes('Version ' + version));
+  assert.ok(markup.indexOf('Version 1.23.11') < markup.indexOf('Version 1.23.10'));
+  assert.match(markup, /Quieter system messages/);
+  assert.match(markup, /Brighter personal notices/);
+  assert.match(markup, /Clearer Share buttons/);
   assert.ok(markup.indexOf('Version 1.23.10') < markup.indexOf('Version 1.23.9'));
   assert.match(markup, /Less work alongside Kick video/);
   assert.match(markup, /Native chat stays visible/);
