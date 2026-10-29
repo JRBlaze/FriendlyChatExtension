@@ -729,7 +729,22 @@
         return el;
       },
 
-      addSys(text) { queue(FCM.buildSysEl(text)); },
+      addSys(text) {
+        // Keep transport/cache housekeeping out of the conversation. Match
+        // only known diagnostics so platform notices and actionable failures
+        // remain visible; event and Share rows use their own entry points.
+        const message = String(text || '').trim().replace(/^\[[^\]]+\]\s*|^(?:Twitch|Kick)\s*:\s*/i, '');
+        if (!message
+          || /^(?:Connecting|Connected) to (?:Twitch|Kick)\b/i.test(message)
+          || /^Left (?:Twitch|Kick):/i.test(message)
+          || /^Loaded \d+\b.*\b(?:emotes|history messages)\b/i.test(message)
+          || /^\d+ emotes ready from last time\b/i.test(message)
+          || /^(?:disconnected|connection error|connection timed out — reconnecting|server asked us to reconnect|chat service changed — switching to its current connection|reconnecting in \d+s\.\.\.)$/i.test(message)
+          || /^v[\d.]+ · Watching /i.test(message)
+          || /^Moderation tools enabled for /i.test(message)
+          || /^.+ (?:is also live on (?:Twitch|Kick) — connecting automatically|just went live on (?:Twitch|Kick))$/i.test(message)) return;
+        queue(FCM.buildSysEl(text));
+      },
 
       addEvent(platform, text, activeFilter, meta) {
         queue(FCM.buildEventEl(platform, text, activeFilter, meta));
