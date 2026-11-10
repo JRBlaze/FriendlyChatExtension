@@ -326,7 +326,7 @@
   // on top of the login form inside the sign-in window.
   FCM.TWITCH_RESERVED = new Set([
     '', 'directory', 'settings', 'videos', 'p', 'downloads', 'jobs', 'turbo',
-    'friends', 'subscriptions', 'inventory', 'wallet', 'drops', 'search',
+    'friends', 'subscriptions', 'inventory', 'wallet', 'drops', 'search', 'stories',
     'following', 'store', 'prime', 'bits', 'privacy', 'legal', 'about', 'u',
     'moderator', 'popout', 'embed', 'team', 'collections', 'products', 'payments',
     'login', 'signup', 'logout', 'oauth2', 'authorize', 'connect', 'activate',
@@ -339,7 +339,7 @@
     '', 'browse', 'following', 'categories', 'category', 'search', 'settings', 'drops',
     'dashboard', 'clips', 'about', 'help', 'careers', 'privacy', 'terms',
     'community-guidelines', 'transparency-report', 'creator', 'subscriptions',
-    'wallet', 'messages', 'notifications', 'video', 'popout',
+    'wallet', 'messages', 'notifications', 'video', 'popout', 'collectibles',
     'login', 'signup', 'logout', 'oauth', 'oauth2', 'authorize', 'connect',
     'account', 'verify', 'password', 'checkout', 'subscribe', 'admin', 'user',
   ]);

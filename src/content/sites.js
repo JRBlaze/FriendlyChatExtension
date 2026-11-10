@@ -509,6 +509,8 @@
     channelFromUrl() {
       const parts = location.pathname.split('/').filter(Boolean);
       if (!parts.length) return null;
+      // Stories are channel subpages, but have no live chat.
+      if (parts[1]?.toLowerCase() === 'stories') return null;
       // /popout/<channel>/chat and /moderator/<channel> are still channel pages.
       let slug = parts[0].toLowerCase();
       if ((slug === 'popout' || slug === 'moderator' || slug === 'embed') && parts[1]) {

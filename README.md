@@ -8,7 +8,8 @@ Open a Twitch channel and the merged chat overlay appears over Twitch's own chat
 streamer is also live on Kick, the overlay says so and offers to add the Kick chat to the same
 feed. Open a Kick channel and it works the other way round. You can also add
 YouTube live chat to either page, using a suggested channel or a video/channel URL.
-The overlay stays off non-channel pages, including Kick's Drops and inventory pages.
+The overlay stays off non-channel pages, including Twitch Stories (`/<channel>/stories/...`) and Kick's
+Drops, inventory and Collectibles pages.
 On Kick it activates on public channel pages at `kick.com` and `www.kick.com`,
 plus the live-chat page `dashboard.kick.com/stream`. Other creator dashboard
 pages and service subdomains do not show the overlay. Moving between the live
@@ -17,6 +18,11 @@ dashboard and other dashboard pages shows or removes it automatically.
 ![Platform](https://img.shields.io/badge/Chrome-MV3-blue)
 ![Firefox](https://img.shields.io/badge/Firefox-140%2B-orange)
 [![Version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FJRBlaze%2FFriendlyChatExtension%2Fmain%2Fmanifest.json&query=%24.version&label=version&color=green)](../../releases/latest)
+
+## New in 1.23.12
+
+- Keep the chat overlay off Kick Collectibles and Twitch Stories. Returning to a
+  live channel restores the overlay.
 
 ## New in 1.23.11
 
@@ -436,7 +442,7 @@ has signed. Chrome is first below; Firefox is [further down](#install-in-firefox
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.23.11.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.23.12.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and an extra folder named `FriendlyChatExtension-main`
@@ -468,7 +474,7 @@ Firefox ESR 140. Firefox for Android is not supported: the sign-in API the exten
 accounts with does not exist there.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.23.11-firefox.xpi` from the Assets list. That file is the add-on, signed
+`FriendlyChatExtension-v1.23.12-firefox.xpi` from the Assets list. That file is the add-on, signed
 by Mozilla, and there is nothing to unzip.
 
 1. **Open the file with Firefox.** Click it in Firefox's downloads list, or drag the file from
@@ -495,7 +501,7 @@ The add-on is not on addons.mozilla.org, and will not be: Mozilla signs it witho
 and this repository's releases are the only place it is published.
 
 **Trying an unsigned build.** Each release also carries
-`FriendlyChatExtension-v1.23.11-firefox-unsigned.xpi`, the same package before Mozilla signed it.
+`FriendlyChatExtension-v1.23.12-firefox-unsigned.xpi`, the same package before Mozilla signed it.
 Opened the ordinary way, release Firefox refuses it as unverified; it loads only as a temporary
 add-on: open `about:debugging`, choose *This Firefox*, press *Load Temporary Add-on…* and pick the
 file itself, without unpacking it. A temporary add-on is removed when Firefox restarts, and its
