@@ -70,6 +70,68 @@ function fixture(browser = 'chrome', pathname = '/drops') {
 
 async function run() {
   for (const browser of ['chrome', 'firefox']) {
+    for (const route of ['/progrockpianobar/stories/0e9641b0-daef-4b3a-8aa5-737e59b696b8',
+      '/fixture_channel/stories', '/fixture_channel/stories/', '/fixture_channel/StOrIeS/item?view=1#story']) {
+      const page = fixture(browser, 'https://www.twitch.tv' + route);
+      await page.start();
+      assert.equal(page.overlays.length, 0, route + ' never mounts');
+      assert.equal(page.ports.length, 0, 'story opens no session');
+      await page.navigate('/fixture_channel');
+      assert.equal(page.overlays.length, 1);
+      await page.navigate(route);
+      assert.equal(page.overlays.length, 1);
+      assert.equal(page.overlays[0].destroyed, true);
+      assert.equal(page.ports[0].disconnected, true);
+      assert.equal(page.timeouts.size, 0);
+      await page.navigate('/fixture_channel', true);
+      assert.equal(page.overlays.length, 2, 'return from story restores channel overlay');
+    }
+    for (const route of ['/fixture_channel', '/fixture_channel/videos', '/fixture_channel/storiesfan',
+      '/popout/storiesfan/chat', '/moderator/storiesfan', '/embed/storiesfan/chat']) {
+      const page = fixture(browser, 'https://www.twitch.tv' + route);
+      await page.start();
+      assert.equal(page.overlays.length, 1, route + ' keeps existing channel behavior');
+    }
+    // Non-chat destinations share the same reserved-path and SPA lifecycle rules.
+    for (const [platform, host, reserved] of [
+      ['twitch', 'www.twitch.tv', 'stories'], ['kick', 'kick.com', 'collectibles'],
+      ['kick', 'www.kick.com', 'collectibles'],
+    ]) {
+      const base = 'https://' + host;
+      for (const route of ['/' + reserved, '/' + reserved + '/',
+        '/' + reserved + '/fixture/item?sort=new#detail', '/' + reserved.toUpperCase() + '/fixture',
+        '/popout/' + reserved + '/chat']) {
+        const page = fixture(browser, base + route);
+        assert.equal(page.FCM.SITES[platform].channelFromUrl(), null, base + route + ' is not a channel');
+        assert.equal(page.FCM.slugFromUrl(page.location.href, platform), null, 'not a counterpart hint');
+        await page.start();
+        assert.equal(page.overlays.length, 0, 'direct visit creates no overlay');
+        assert.equal(page.ports.length, 0, 'direct visit opens no chat session');
+        assert.equal(page.timeouts.size, 0, 'direct visit schedules no discovery/watch actions');
+        await page.navigate('/fixture_channel');
+        assert.equal(page.overlays.length, 1, 'entering a channel mounts the overlay');
+        assert.equal(page.ports.length, 1, 'entering a channel connects');
+        await page.navigate(route, true);
+        assert.equal(page.overlays.length, 1, 'excluded destination does not mount a replacement');
+        assert.equal(page.overlays[0].destroyed, true, 'leaving a channel removes the overlay');
+        assert.equal(page.ports[0].disconnected, true, 'leaving a channel closes its port');
+        assert.equal(page.ports[0].sent.at(-1).channel, '', 'worker leaves the channel');
+        assert.equal(page.timeouts.size, 0, 'discovery/watch timers are cancelled');
+        assert.equal([...page.intervals.values()].some(timer => timer.ms === 20000), false, 'keepalive stops');
+        await page.navigate('/' + reserved + '/another');
+        assert.equal(page.ports.length, 1, 'browsing excluded pages stays disconnected');
+        await page.navigate('/fixture_channel', true);
+        assert.equal(page.overlays.length, 2, 'returning to a channel restores the overlay');
+        assert.equal(page.ports.length, 2, 'returning starts a new session');
+      }
+      for (const channel of [reserved + 'fan', reserved + '_live', 'my_' + reserved]) {
+        const page = fixture(browser, base + '/' + channel);
+        assert.equal(page.FCM.SITES[platform].channelFromUrl(), channel, 'similar channel names remain valid');
+        assert.equal(page.FCM.slugFromUrl(page.location.href, platform), channel);
+        await page.start();
+        assert.equal(page.overlays.length, 1, 'similar names still mount');
+      }
+    }
     for (const pathname of [...dashboardPaths, '/', '/future/dashboard/page', '/jrblaze', '/popout/jrblaze/chat', '/stream/extra', '/streaming']) {
       const dashboard = fixture(browser, 'https://dashboard.kick.com' + pathname);
       assert.equal(dashboard.FCM.currentSite(), dashboard.FCM.SITES.kick, 'dashboard retains navigation detection');
