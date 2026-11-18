@@ -19,6 +19,23 @@ dashboard and other dashboard pages shows or removes it automatically.
 ![Firefox](https://img.shields.io/badge/Firefox-140%2B-orange)
 [![Version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FJRBlaze%2FFriendlyChatExtension%2Fmain%2Fmanifest.json&query=%24.version&label=version&color=green)](../../releases/latest)
 
+## New in 1.23.13
+
+- Hover a message to Reply or Copy its body without opening the username menu.
+  These shortcuts work for viewers as well as moderators; replying keeps the
+  existing platform-specific reply and send rules.
+- Twitch and Kick restrictions appear above the composer: followers only,
+  subscribers only, emotes only, slow mode, and Twitch unique-message mode.
+  Partial updates preserve other restrictions; leaving a channel clears them.
+- Pasting or expanding text replaces the selected range, preserving surrounding
+  text and emote names. This fixes the duplicate shortcut suffix when a text
+  expander selects the shortcut before pasting its expansion.
+- On Twitch pages, native English shoutout notices with Twitch channel links
+  are mirrored into the event feed. Show events controls these notices. This
+  reads the native chat already in the tab; Twitch shoutouts on Kick-hosted
+  overlays are not supplied by IRC. Live Twitch markup and OS TextExpander
+  integration still need verification; isolated regression tests use fixtures.
+
 ## New in 1.23.12
 
 - Keep the chat overlay off Kick Collectibles and Twitch Stories. Returning to a
@@ -442,7 +459,7 @@ has signed. Chrome is first below; Firefox is [further down](#install-in-firefox
 There is nothing to build and nothing to install first — Chrome loads the folder as it is.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.23.12.zip` from the Assets list, then follow the steps below.
+`FriendlyChatExtension-v1.23.13.zip` from the Assets list, then follow the steps below.
 
 (You can also use the green **Code → Download ZIP** button, but that gives you the whole
 repository — tests, the Cloudflare worker, and an extra folder named `FriendlyChatExtension-main`
@@ -474,7 +491,7 @@ Firefox ESR 140. Firefox for Android is not supported: the sign-in API the exten
 accounts with does not exist there.
 
 **[⬇ Download the latest release](../../releases/latest)** — grab
-`FriendlyChatExtension-v1.23.12-firefox.xpi` from the Assets list. That file is the add-on, signed
+`FriendlyChatExtension-v1.23.13-firefox.xpi` from the Assets list. That file is the add-on, signed
 by Mozilla, and there is nothing to unzip.
 
 1. **Open the file with Firefox.** Click it in Firefox's downloads list, or drag the file from
@@ -501,7 +518,7 @@ The add-on is not on addons.mozilla.org, and will not be: Mozilla signs it witho
 and this repository's releases are the only place it is published.
 
 **Trying an unsigned build.** Each release also carries
-`FriendlyChatExtension-v1.23.12-firefox-unsigned.xpi`, the same package before Mozilla signed it.
+`FriendlyChatExtension-v1.23.13-firefox-unsigned.xpi`, the same package before Mozilla signed it.
 Opened the ordinary way, release Firefox refuses it as unverified; it loads only as a temporary
 add-on: open `about:debugging`, choose *This Firefox*, press *Load Temporary Add-on…* and pick the
 file itself, without unpacking it. A temporary add-on is removed when Firefox restarts, and its

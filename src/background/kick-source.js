@@ -99,6 +99,7 @@
       if (conn.forceClose || !current()) return;
 
       sink.roomId(String(info.user_id || channelId || ''));
+      if (sink.chatModes) sink.chatModes(info.chatroom);
 
       // The one thing this record can settle: the broadcaster always moderates
       // their own room, and their name is the channel's name.
@@ -258,6 +259,10 @@
         if (FCM.isPusherProtocolEvent(msg.event)) return;
 
         const payload = FCM.safeJsonParse(msg.data, {});
+        if (msg.event === 'App\\Events\\ChatroomUpdatedEvent') {
+          if (sink.chatModes && payload && typeof payload === 'object') sink.chatModes(payload.chatroom || payload);
+          return;
+        }
 
         if (msg.event === 'App\\Events\\MessageDeletedEvent') {
           const deletedId = (payload && payload.message && payload.message.id) || (payload && payload.id);

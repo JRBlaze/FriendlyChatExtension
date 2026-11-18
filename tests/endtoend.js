@@ -260,14 +260,14 @@ function bootPair(startPath, opts = {}) {
       setCounterpart(info) { o.counterparts.push(info); },
       setAccounts() {},
       setModerator() {}, modResult() {}, sendResult() {}, applyStoredSettings() {}, toast() {},
-      setStatus(platform, state, channel) { o.statuses.push({ platform, state, channel }); },
+      setStatus(platform, state, channel, modes) { o.statuses.push({ platform, state, channel, modes }); },
     };
     overlays.push(o);
     return o;
   };
 
   vm.runInContext(fs.readFileSync(path.join(ROOT, 'src/content/boot.js'), 'utf8'),
-    contentSandbox, { filename: 'boot.js' });
+    contentSandbox, { filename: 'src/content/boot.js' });
   }
 
   makeContent();

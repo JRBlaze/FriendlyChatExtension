@@ -154,6 +154,7 @@
           }
 
           if (command === 'ROOMSTATE') {
+            if (sink.chatModes) sink.chatModes(tags);
             if (tags['room-id']) sink.roomId(tags['room-id']);
             return;
           }

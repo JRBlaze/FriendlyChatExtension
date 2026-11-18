@@ -199,7 +199,13 @@ function makeSink(session, platform, generation) {
     status: (state) => {
       if (!current()) return;
       conn.state = state;
-      send(session, { type: 'status', platform, state, channel: conn.channel });
+      send(session, { type: 'status', platform, state, channel: conn.channel, modes: FCM.chatModeLabels(platform, conn.chatModes || {}) });
+    },
+    chatModes: (data) => {
+      if (!current()) return;
+      conn.chatModes = { ...conn.chatModes, ...data };
+      send(session, { type: 'status', platform, state: conn.state, channel: conn.channel,
+        modes: FCM.chatModeLabels(platform, conn.chatModes) });
     },
     roomId: (id) => {
       if (!current()) return;
@@ -841,6 +847,7 @@ function leaveChannel(session, platform, { silent = false } = {}) {
   conn.channelId = null;
   conn.subscriberBadges = null;
   conn.roomId = null;
+  conn.chatModes = null;
   conn.auth = null;
   conn.state = 'idle';
   // What has already been fetched, and what has already been said about it.
@@ -1058,6 +1065,7 @@ chrome.runtime.onConnect.addListener((port) => {
               canModerate: session.conns[p].canModerate,
               // A reloaded page has to be told again, the same as the badge.
               subscription: session.conns[p].subscription || null,
+              modes: FCM.chatModeLabels(p, session.conns[p].chatModes || {}),
             };
             return acc;
           }, {}),

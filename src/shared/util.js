@@ -730,4 +730,28 @@
 
     return { label, type, message: message || String(txt || '') };
   };
+  // Display room restrictions only; platform servers remain the send authority.
+  FCM.chatModeLabels = function (platform, data) {
+    const labels = [];
+    const positive = value => Number.isFinite(Number(value)) && Number(value) > 0;
+    const enabled = value => {
+      const flag = value && typeof value === 'object' ? value.enabled : value;
+      return flag === true || flag === 1 || flag === '1';
+    };
+    const twitch = platform === 'twitch';
+    if (!twitch && platform !== 'kick') return labels;
+    const follows = twitch ? data['followers-only'] : data.followers_mode?.min_duration ?? data.following_min_duration;
+    const followerMode = twitch ? follows !== undefined && follows !== null && follows !== ''
+      && Number.isFinite(Number(follows)) && Number(follows) >= 0 : enabled(data.followers_mode);
+    if (followerMode) labels.push(`Followers only${positive(follows) ? ` (${Number(follows)}m)` : ''}`);
+    if (enabled(data[twitch ? 'subs-only' : 'subscribers_mode'])) labels.push('Subscribers only');
+    if (enabled(data[twitch ? 'emote-only' : 'emotes_mode'])) labels.push('Emotes only');
+    const interval = twitch ? data.slow : data.slow_mode?.message_interval ?? data.message_interval;
+    if (twitch ? positive(interval) : enabled(data.slow_mode)) {
+      labels.push(`Slow mode${positive(interval) ? ` (${Number(interval)}s)` : ''}`);
+    }
+    if (twitch && enabled(data.r9k)) labels.push('Unique messages');
+    return labels;
+  };
+
 })(self.FCM);

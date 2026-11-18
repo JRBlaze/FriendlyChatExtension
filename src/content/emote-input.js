@@ -142,13 +142,15 @@
     return sel && sel.rangeCount ? sel.getRangeAt(0) : null;
   }
 
-  function caretOffset(el) {
+  function caretOffset(el, end = false) {
     const range = selectedRange(el);
     if (!range) return readValue(el).length;
-    if (!el.contains(range.startContainer) && range.startContainer !== el) {
+    const node = end && range.endContainer ? range.endContainer : range.startContainer;
+    const offset = end && range.endContainer ? range.endOffset : range.startOffset;
+    if (!el.contains(node) && node !== el) {
       return readValue(el).length;
     }
-    return offsetAt(el, range.startContainer, range.startOffset);
+    return offsetAt(el, node, offset);
   }
 
   // Turns a character offset back into a place a caret can sit.
@@ -228,7 +230,7 @@
     ['selectionStart', 'selectionEnd'].forEach((name) => {
       Object.defineProperty(el, name, {
         configurable: true,
-        get() { return caretOffset(el); },
+        get() { return caretOffset(el, name === 'selectionEnd'); },
       });
     });
 
@@ -285,7 +287,8 @@
       const text = (e.clipboardData.getData('text/plain') || '').replace(/\s*\n+\s*/g, ' ');
       const value = readValue(el);
       const caret = caretOffset(el);
-      let next = value.slice(0, caret) + text + value.slice(caret);
+      const end = caretOffset(el, true);
+      let next = value.slice(0, caret) + text + value.slice(end);
       if (maxLength) next = next.slice(0, maxLength);
       writeValue(el, next);
       setCaret(el, Math.min(caret + text.length, next.length));

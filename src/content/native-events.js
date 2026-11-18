@@ -92,6 +92,25 @@
     return { text: `${who} redeemed ${reward}${cost ? ` (${cost} points)` : ''}.` };
   }
 
+  // Shoutouts are native notices rather than IRC USERNOTICE messages. Read
+  // only an explicit notice with a real Twitch channel link; never chat text.
+  function readShoutout(el) {
+    if (el.querySelector(MESSAGE_SELECTOR)) return null;
+    const text = String(el.textContent || '').replace(/\s+/g, ' ').trim();
+    if (text.length > MAX_NOTICE_CHARS || !/\b(?:shoutout|shout(?:ed)?\s+out)\b/i.test(text)) return null;
+    const channels = new Set();
+    for (const link of el.querySelectorAll('a[href]')) {
+      try {
+        const url = new URL(link.getAttribute('href'), 'https://www.twitch.tv');
+        if (url.protocol !== 'https:' || !['www.twitch.tv', 'twitch.tv'].includes(url.hostname)) continue;
+        if (!/^\/[a-z0-9_]{2,25}\/?$/i.test(url.pathname)) continue;
+        const channel = url.pathname.split('/')[1].toLowerCase();
+        if (!FCM.TWITCH_RESERVED.has(channel)) channels.add(`https://www.twitch.tv/${channel}`);
+      } catch (_) { /* an invalid link is not a channel */ }
+    }
+    return channels.size ? { text: `${text} ${Array.from(channels).join(' ')}` } : null;
+  }
+
   // ── Prompts for this viewer ─────────────────────────────────────────────────
 
   // Nothing Twitch asks a viewer to share runs to a paragraph.
@@ -284,7 +303,7 @@
         ? [node]
         : (node.querySelectorAll ? node.querySelectorAll(NOTICE_SELECTOR) : []);
       notices.forEach((notice) => {
-        const found = readRedemption(notice);
+        const found = readShoutout(notice) || readRedemption(notice);
         if (!found || alreadySaid(found.text)) return;
         onEvent(found.text);
       });
