@@ -277,6 +277,7 @@
         <div class="fcm-native fcm-hidden"></div>
 
         <div class="fcm-composer">
+          <div class="fcm-chatmodes fcm-hidden" role="status" aria-live="polite"></div>
           <div class="fcm-reply fcm-hidden"></div>
           <details class="fcm-send-section" open>
             <summary class="fcm-section-toggle">Send to <span class="fcm-target-summary"></span></summary>
@@ -337,6 +338,7 @@
     const replyEl = $('.fcm-reply');
     const countEl = $('.fcm-count');
     const sendNoteEl = $('.fcm-sendnote');
+    const chatModesEl = $('.fcm-chatmodes');
     const toastEl = $('.fcm-toast');
     const nativeEl = $('.fcm-native');
     // Held by reference: the settings sheet grows a Reset button of its own, and
@@ -3405,9 +3407,12 @@
 
       batch(rows) { rows.forEach((row) => previewClips(feed.addMessage({ ...row, history: true }, filter), row)); },
 
-      setStatus(platform, state, chan) {
+      setStatus(platform, state, chan, modes = []) {
         const previous = status[platform].channel;
-        status[platform] = { state, channel: chan || null };
+        status[platform] = { state, channel: chan || null, modes };
+        chatModesEl.textContent = FCM.PLATFORMS.filter(p => status[p].channel && status[p].modes?.length)
+          .map(p => `${FCM.PLATFORM_META[p].name}: ${status[p].modes.join(' · ')}`).join(' | ');
+        chatModesEl.classList.toggle('fcm-hidden', !chatModesEl.textContent);
         if (recentEmotes) recentEmotes.refresh();
         syncNativeEvents();
         // Leaving takes that platform's emotes with it. Only a real leave gets

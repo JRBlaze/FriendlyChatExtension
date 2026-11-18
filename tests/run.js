@@ -200,6 +200,11 @@ const FCM_LINKS_KEY = 'fcm_channel_links_v1';
 
 const suites = {};
 
+suites.novemberissues = async function () {
+  await require('./issues-88-91.test').run();
+  ok(true, 'issues #88-91 regression checks');
+};
+
 suites.compactoverlay = function () {
   require('./compact-overlay.test').run();
   ok(true, 'compact overlay layout and disclosure contracts');

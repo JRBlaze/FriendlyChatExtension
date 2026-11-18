@@ -1063,6 +1063,36 @@
       return text;
     }
 
+    async function copyMessage(row) {
+      const text = messageText(row);
+      closeMenu();
+      if (!text.trim()) { toast('This message is no longer available to copy'); return; }
+      try {
+        await navigator.clipboard.writeText(text);
+        toast('Message copied');
+      } catch (_) {
+        toast('Could not copy. Select the message text and copy it manually.');
+      }
+    }
+
+    // Viewer actions do not depend on moderator standing or its preference.
+    // Keep these in a separate row band so no message or mod control is covered.
+    function ensureRowActions(row) {
+      if (!row || row.querySelector('.fcm-row-actions')) return;
+      const platform = row.dataset.platform;
+      const target = targetOf(row);
+      if (!FCM.REPLY_PLATFORMS.includes(platform) || !target.username) return;
+      const bar = document.createElement('span');
+      bar.className = 'fcm-row-actions';
+      bar.setAttribute('role', 'group');
+      bar.setAttribute('aria-label', 'Message actions');
+      bar.appendChild(stripButton('Reply', `Reply on ${FCM.PLATFORM_META[platform].name}`, () => {
+        if (!row.classList.contains('fcm-deleted')) insertMention(target.username, platform, target.messageId);
+      }));
+      bar.appendChild(stripButton('Copy', 'Copy message', () => copyMessage(row)));
+      row.appendChild(bar);
+    }
+
     function openMenu(event, authorEl) {
       event.preventDefault();
       event.stopPropagation();
@@ -1113,17 +1143,7 @@
       }
       addAction('Copy message', {
         disabled: !messageText(row).trim(),
-        run: async () => {
-          const text = messageText(row);
-          closeMenu();
-          if (!text.trim()) { toast('This message is no longer available to copy'); return; }
-          try {
-            await navigator.clipboard.writeText(text);
-            toast('Message copied');
-          } catch (_) {
-            toast('Could not copy. Select the message text and copy it manually.');
-          }
-        },
+        run: () => copyMessage(row),
       });
       addAction('Copy username', {
         run: () => { navigator.clipboard.writeText(name).catch(() => {}); closeMenu(); },
@@ -1423,7 +1443,12 @@
     // listener on the feed, not one per row.
     feedEl.addEventListener('mouseover', (e) => {
       const row = e.target.closest ? e.target.closest('.fcm-msg') : null;
+      ensureRowActions(row);
       if (row) ensureModBar(row, e.clientX, e.clientY);
+    });
+
+    feedEl.addEventListener('focusin', (e) => {
+      ensureRowActions(e.target.closest('.fcm-msg'));
     });
 
     // mousemove as well as mouseover, because moving *within* the Ban button

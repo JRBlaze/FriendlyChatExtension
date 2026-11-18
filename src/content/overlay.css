@@ -1724,3 +1724,10 @@
 .fcm-send-section[open] > .fcm-section-toggle { float: left; margin-right: 6px; }
 .fcm-send-section[open] .fcm-targets { min-width: 0; }
 .fcm-send-section[open] .fcm-target-summary { display: none; }
+
+/* Viewer shortcuts occupy their own band below the message. */
+.fcm-row-actions { display: none; gap: 4px; justify-content: flex-end; padding-top: 4px; }
+.fcm-msg:hover .fcm-row-actions,
+.fcm-msg:focus-within .fcm-row-actions { display: flex; }
+
+.fcm-chatmodes { font-size: 11px; line-height: 1.4; color: var(--text-muted); overflow-wrap: anywhere; }
