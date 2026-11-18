@@ -1451,6 +1451,16 @@
       ensureRowActions(e.target.closest('.fcm-msg'));
     });
 
+    // Touch has no hover. A completed tap focuses the row, revealing the same
+    // controls as keyboard focus. Native links/buttons keep their own focus.
+    feedEl.addEventListener('pointerup', (e) => {
+      if (e.pointerType !== 'touch') return;
+      const row = e.target.closest('.fcm-msg');
+      if (!row || e.target.closest('a,button')) return;
+      ensureRowActions(row);
+      row.focus({ preventScroll: true });
+    });
+
     // mousemove as well as mouseover, because moving *within* the Ban button
     // raises no mouseover at all — and a pointer travelling across the strip
     // towards an emote underneath it is doing exactly that. This is the event

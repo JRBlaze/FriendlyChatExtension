@@ -95,7 +95,7 @@ async function run(output) {
     }
     assert.deepEqual(errors, []);
     const css = fs.readFileSync(path.join(ROOT, 'src/content/overlay.css'), 'utf8');
-    const rules = [...css.matchAll(/[^{}]+\{[^{}]*\}/g)].filter(match => /\.fcm-row-actions|\.fcm-chatmodes/.test(match[0]));
+    const rules = [...css.matchAll(/[^{}]+\{[^{}]*\}/g)].filter(match => /\.fcm-row-actions \{|\.fcm-msg:hover \.fcm-row-actions|\.fcm-chatmodes \{/.test(match[0]));
     fs.writeFileSync(path.join(output, 'css-coverage.json'), JSON.stringify(cssCoverage));
     assert.equal(rules.length, 3);
     for (const rule of rules) {

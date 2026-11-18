@@ -1208,6 +1208,8 @@
   FCM.buildMessageEl = function (msg, activeFilter, deferImages = false) {
     const platform = msg.platform;
     const el = document.createElement('div');
+    // Focusing a row reveals its lazy Reply/Copy controls without a pointer.
+    el.tabIndex = 0;
     const classes = ['fcm-msg'];
     if (activeFilter && !activeFilter.has(platform)) classes.push('fcm-hide');
 

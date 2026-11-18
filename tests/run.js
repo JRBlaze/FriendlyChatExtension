@@ -200,6 +200,11 @@ const FCM_LINKS_KEY = 'fcm_channel_links_v1';
 
 const suites = {};
 
+suites.messageactions = async function () {
+  await require('./message-actions-access.test').run();
+  ok(true, 'message actions by keyboard and touch');
+};
+
 suites.novemberissues = async function () {
   await require('./issues-88-91.test').run();
   ok(true, 'issues #88-91 regression checks');
