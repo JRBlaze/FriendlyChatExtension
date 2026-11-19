@@ -31,6 +31,19 @@ function fixture(options = {}) {
   return {store, tabs, listeners, operations, fire: details => listeners[0](details), recover() {error = '';}};
 }
 
+// This runs in the full suite before the release workflow can sign or publish.
+function assertCurrentNotes(markup, version) {
+  const sections = [...markup.matchAll(/<section\b[^>]*>([\s\S]*?)<\/section>/g)];
+  assert.ok(sections.length, 'bundled release notes need a latest section');
+  const latest = sections[0][1];
+  const heading = /<h2\b[^>]*>Version ([0-9.]+)<\/h2>/.exec(latest);
+  assert.equal(heading && heading[1], version, 'first bundled release notes must match manifest.version');
+  assert.equal((markup.match(/LATEST UPDATE/g) || []).length, 1, 'exactly one latest marker');
+  assert.match(latest, /LATEST UPDATE/, 'latest marker belongs to the current version');
+  const items = [...latest.matchAll(/<li\b[^>]*>([\s\S]*?)<\/li>/g)];
+  assert.ok(items.some(item => item[1].replace(/<[^>]*>/g, '').trim()), 'current version needs nonempty change notes');
+}
+
 async function run() {
   for (const missing of ['chrome', 'runtime', 'event']) assert.equal(fixture({missing}).listeners.length, 0);
   const f = fixture();
@@ -55,7 +68,18 @@ async function run() {
   const files = pack.collect(ROOT);
   for (const file of [FILE, 'src/releases/notes.html', 'src/releases/notes.css']) assert.ok(files.includes(file));
   const markup = fs.readFileSync(path.join(ROOT, 'src/releases/notes.html'), 'utf8');
-  for (const version of ['1.23.0','1.23.1','1.23.2','1.23.3','1.23.4','1.23.5','1.23.6','1.23.7','1.23.8','1.23.9','1.23.10','1.23.11']) assert.ok(markup.includes('Version ' + version));
+  const currentVersion = JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8')).version;
+  const valid = '<section><p>LATEST UPDATE</p><h2>Version 1.2.3</h2><ul><li>A useful update</li></ul></section>';
+  assertCurrentNotes(valid, '1.2.3');
+  for (const invalid of ['', valid.replace('1.2.3', '1.2.2'), valid.replace('LATEST UPDATE', ''),
+    valid + 'LATEST UPDATE', valid.replace('<li>A useful update</li>', ''),
+    valid.replace('A useful update', '<strong> </strong>'), valid.replace('LATEST UPDATE', '') + '<section>LATEST UPDATE</section>',
+    valid.replace('<h2>Version 1.2.3</h2>', ''), valid.replace('1.2.3', '1.2.30')]) {
+    assert.throws(() => assertCurrentNotes(invalid, '1.2.3'));
+  }
+  assertCurrentNotes(markup, currentVersion);
+
+  for (const version of ['1.23.0','1.23.1','1.23.2','1.23.3','1.23.4','1.23.5','1.23.6','1.23.7','1.23.8','1.23.9','1.23.10','1.23.11','1.23.12','1.23.13','1.23.14']) assert.ok(markup.includes('Version ' + version));
   assert.ok(markup.indexOf('Version 1.23.11') < markup.indexOf('Version 1.23.10'));
   assert.match(markup, /Quieter system messages/);
   assert.match(markup, /Brighter personal notices/);
@@ -102,4 +126,5 @@ async function run() {
   console.log('Installed release-notes lifecycle tests passed.');
 }
 module.exports = run;
+module.exports.assertCurrentNotes = assertCurrentNotes;
 if (require.main === module) run().catch(error => {console.error(error);process.exitCode = 1;});
